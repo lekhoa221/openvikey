@@ -6,3 +6,5 @@
 {"name": "vni_casing_capital", "method": "vni", "tone": "modern", "input": "Vie6t5", "expected": "Việt"}
 {"name": "vni_casing_allcaps", "method": "vni", "tone": "modern", "input": "VIE6T5", "expected": "VIỆT"}
 {"name": "vni_d9_cap", "method": "vni", "tone": "modern", "input": "D9", "expected": "Đ"}
+{"name": "vni_tone_modern_oa", "method": "vni", "tone": "modern", "input": "oa2", "expected": "oà"}
+{"name": "vni_tone_classic_oa", "method": "vni", "tone": "classic", "input": "oa2", "expected": "òa"}

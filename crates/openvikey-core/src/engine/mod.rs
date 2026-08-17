@@ -1,4 +1,6 @@
 //! Deterministic composition engine module.
+//!
+//! Frozen at Wave 0 (ADR 0002). No correction, model, or store belongs here.
 
 pub mod backend;
 

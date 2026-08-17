@@ -6,6 +6,7 @@ use serde::Deserialize;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+use unicode_normalization::UnicodeNormalization;
 
 #[derive(Debug, Deserialize)]
 struct GoldenCase {
@@ -213,4 +214,100 @@ fn test_backspace_at_various_positions() {
     // Backspace 3 (pops 'n') -> "đuơ"
     engine.process(&bs);
     assert_eq!(engine.rendered(), "đuơ");
+}
+
+fn key_event(seq: u64, ch: char) -> InputEvent {
+    InputEvent {
+        seq,
+        at_ms: i64::try_from(seq).unwrap_or(0) * 10,
+        kind: InputKind::Key {
+            logical: ch,
+            physical: None,
+        },
+        modifiers: Modifiers::empty(),
+        is_repeat: false,
+        context: InputContext::default(),
+    }
+}
+
+#[test]
+fn test_composed_snapshot_normalized_is_nfc() {
+    let mut engine = Engine::new(EngineConfig::default());
+    for (idx, ch) in "hoas".chars().enumerate() {
+        engine.process(&key_event(idx as u64, ch));
+    }
+    let snapshot = engine.snapshot();
+    assert_eq!(snapshot.rendered, "hoá");
+    assert_eq!(snapshot.normalized, "hoá".nfc().collect::<String>());
+    assert_eq!(
+        snapshot.normalized,
+        snapshot.rendered.nfc().collect::<String>()
+    );
+}
+
+#[test]
+fn test_revision_increases_on_each_key_and_boundary() {
+    let mut engine = Engine::new(EngineConfig::default());
+    assert_eq!(engine.revision(), 0);
+    engine.process(&key_event(1, 'a'));
+    let after_a = engine.revision();
+    engine.process(&key_event(2, 's'));
+    let after_s = engine.revision();
+    assert!(after_a > 0);
+    assert!(after_s > after_a);
+
+    let commit = engine.process(&key_event(3, ' '));
+    match &commit[0] {
+        EngineAction::Commit { revision, .. } => {
+            assert!(*revision > after_s);
+        }
+        other => panic!("expected Commit, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_punctuation_commits_url_pieces_not_one_token() {
+    let mut engine = Engine::new(EngineConfig::default());
+    let mut commits = Vec::new();
+    for (idx, ch) in "https://a".chars().enumerate() {
+        for action in engine.process(&key_event(idx as u64, ch)) {
+            if let EngineAction::Commit {
+                text, delimiter, ..
+            } = action
+            {
+                commits.push((text, delimiter));
+            }
+        }
+    }
+    assert!(
+        commits.iter().any(|(_, delim)| *delim == Some(':')),
+        "':' is a boundary; URL is not one composing token: {commits:?}"
+    );
+    assert!(
+        commits.iter().any(|(_, delim)| *delim == Some('/')),
+        "'/' is a boundary; URL is not one composing token: {commits:?}"
+    );
+}
+
+#[test]
+fn test_insert_text_nfd_preserves_original_bytes_on_commit() {
+    let mut engine = Engine::new(EngineConfig::default());
+    let nfd: String = "é".nfd().collect();
+    assert_ne!(nfd, "é".nfc().collect::<String>());
+
+    let actions = engine.process(&InputEvent {
+        seq: 1,
+        at_ms: 1,
+        kind: InputKind::InsertText { text: nfd.clone() },
+        modifiers: Modifiers::empty(),
+        is_repeat: false,
+        context: InputContext::default(),
+    });
+
+    match &actions[0] {
+        EngineAction::Commit { text, .. } => {
+            assert_eq!(text, &nfd, "undo/original path must keep the inserted form");
+        }
+        other => panic!("expected Commit, got {other:?}"),
+    }
 }

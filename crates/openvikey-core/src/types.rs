@@ -1,4 +1,7 @@
 //! Core semantic types, contracts, input/output events, and undo tracking.
+//!
+//! Frozen at Wave 0 (ADR 0002). Add fields only with a new ADR; do not
+//! change the meaning of existing variants.
 
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;

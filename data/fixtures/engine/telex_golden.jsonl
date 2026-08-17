@@ -11,3 +11,8 @@
 {"name": "telex_passthrough_english", "method": "telex", "tone": "modern", "input": "simple", "expected": "simple"}
 {"name": "telex_escape_tone", "method": "telex", "tone": "modern", "input": "vieetjj", "expected": "viêtj"}
 {"name": "telex_passthrough_url", "method": "telex", "tone": "modern", "input": "https", "expected": "https"}
+{"name": "telex_escape_ss", "method": "telex", "tone": "modern", "input": "ass", "expected": "as"}
+{"name": "telex_escape_ww", "method": "telex", "tone": "modern", "input": "ww", "expected": "w"}
+{"name": "telex_escape_aaa", "method": "telex", "tone": "modern", "input": "aaa", "expected": "aa"}
+{"name": "telex_z_strips_tone", "method": "telex", "tone": "modern", "input": "hafz", "expected": "ha"}
+{"name": "telex_switch_tone", "method": "telex", "tone": "modern", "input": "toanfs", "expected": "toán"}
