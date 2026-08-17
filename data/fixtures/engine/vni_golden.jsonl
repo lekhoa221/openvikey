@@ -1,0 +1,8 @@
+{"name": "vni_basic_viet", "method": "vni", "tone": "modern", "input": "vie6t5", "expected": "việt"}
+{"name": "vni_basic_nam", "method": "vni", "tone": "modern", "input": "nam", "expected": "nam"}
+{"name": "vni_duong", "method": "vni", "tone": "modern", "input": "d9u7o7ng2", "expected": "đường"}
+{"name": "vni_tone_modern_hoa", "method": "vni", "tone": "modern", "input": "hoa1", "expected": "hoá"}
+{"name": "vni_tone_classic_hoa", "method": "vni", "tone": "classic", "input": "hoa1", "expected": "hóa"}
+{"name": "vni_casing_capital", "method": "vni", "tone": "modern", "input": "Vie6t5", "expected": "Việt"}
+{"name": "vni_casing_allcaps", "method": "vni", "tone": "modern", "input": "VIE6T5", "expected": "VIỆT"}
+{"name": "vni_d9_cap", "method": "vni", "tone": "modern", "input": "D9", "expected": "Đ"}

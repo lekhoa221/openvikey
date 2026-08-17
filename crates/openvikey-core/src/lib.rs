@@ -2,6 +2,7 @@
 //!
 //! Privacy-local, deterministic Vietnamese input method engine and learning model.
 
+pub mod engine;
 pub mod types;
 
 /// Package version

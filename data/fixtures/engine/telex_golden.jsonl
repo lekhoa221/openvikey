@@ -1,0 +1,9 @@
+{"name": "telex_basic_viet", "method": "telex", "tone": "modern", "input": "vieetj", "expected": "việt"}
+{"name": "telex_basic_nam", "method": "telex", "tone": "modern", "input": "nam", "expected": "nam"}
+{"name": "telex_duong", "method": "telex", "tone": "modern", "input": "dduowngf", "expected": "đường"}
+{"name": "telex_tone_modern_hoa", "method": "telex", "tone": "modern", "input": "hoas", "expected": "hoá"}
+{"name": "telex_tone_classic_hoa", "method": "telex", "tone": "classic", "input": "hoas", "expected": "hóa"}
+{"name": "telex_casing_capital", "method": "telex", "tone": "modern", "input": "Vieetj", "expected": "Việt"}
+{"name": "telex_casing_allcaps", "method": "telex", "tone": "modern", "input": "VIEETJ", "expected": "VIỆT"}
+{"name": "telex_casing_d_cap", "method": "telex", "tone": "modern", "input": "Dd", "expected": "Đ"}
+{"name": "telex_passthrough_english", "method": "telex", "tone": "modern", "input": "simple", "expected": "simple"}
