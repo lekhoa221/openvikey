@@ -654,6 +654,76 @@ impl LabSession {
         self.next_seq = self.next_seq.saturating_add(1);
         seq
     }
+
+    /// Cheap pre-inject checkpoint (no `AbbrevGenerator` / lexicon).
+    ///
+    /// Clones [`LearningSession`] only when `kind` can commit or mine (Boundary / Backspace),
+    /// so letter composition keys avoid cloning the adaptive model.
+    #[must_use]
+    pub fn checkpoint_for_inject(&self, kind: &InputKind) -> SessionInjectCheckpoint {
+        let learning = matches!(kind, InputKind::Boundary { .. } | InputKind::Backspace)
+            .then(|| self.learning.clone());
+        SessionInjectCheckpoint {
+            engine: self.engine.clone(),
+            document: self.document.clone(),
+            left_context: self.left_context.clone(),
+            next_seq: self.next_seq,
+            next_edit_id: self.next_edit_id,
+            miner: self.miner.clone(),
+            mining_snapshot: self.mining_snapshot.clone(),
+            last_slice: self.last_slice.clone(),
+            last_original_nfc: self.last_original_nfc.clone(),
+            last_left_token: self.last_left_token.clone(),
+            last_method: self.last_method,
+            last_auto_revision: self.last_auto_revision,
+            last_auto_token: self.last_auto_token.clone(),
+            last_at_ms: self.last_at_ms,
+            capture: self.capture.clone(),
+            learning,
+        }
+    }
+
+    /// Restore state captured by [`Self::checkpoint_for_inject`].
+    pub fn restore_inject_checkpoint(&mut self, checkpoint: SessionInjectCheckpoint) {
+        self.engine = checkpoint.engine;
+        self.document = checkpoint.document;
+        self.left_context = checkpoint.left_context;
+        self.next_seq = checkpoint.next_seq;
+        self.next_edit_id = checkpoint.next_edit_id;
+        self.miner = checkpoint.miner;
+        self.mining_snapshot = checkpoint.mining_snapshot;
+        self.last_slice = checkpoint.last_slice;
+        self.last_original_nfc = checkpoint.last_original_nfc;
+        self.last_left_token = checkpoint.last_left_token;
+        self.last_method = checkpoint.last_method;
+        self.last_auto_revision = checkpoint.last_auto_revision;
+        self.last_auto_token = checkpoint.last_auto_token;
+        self.last_at_ms = checkpoint.last_at_ms;
+        self.capture = checkpoint.capture;
+        if let Some(learning) = checkpoint.learning {
+            self.learning = learning;
+        }
+    }
+}
+
+/// Pre-inject snapshot for rolling back when OS SendInput fails.
+pub struct SessionInjectCheckpoint {
+    engine: Engine,
+    document: DocumentBuffer,
+    left_context: LeftContext,
+    next_seq: u64,
+    next_edit_id: u64,
+    miner: ImplicitCorrectionMiner,
+    mining_snapshot: Option<CommittedUnit>,
+    last_slice: Option<CorrectionSlice>,
+    last_original_nfc: String,
+    last_left_token: Option<String>,
+    last_method: InputMethod,
+    last_auto_revision: Option<u64>,
+    last_auto_token: Option<String>,
+    last_at_ms: i64,
+    capture: Vec<CaptureRecord>,
+    learning: Option<LearningSession>,
 }
 
 /// Unicode punctuation the engine's ASCII boundary table does not treat as commit.

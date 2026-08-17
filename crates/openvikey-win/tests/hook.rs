@@ -77,6 +77,7 @@ fn dispatch_ll_letter_passes_when_inject_fails() {
     }
 
     let mut typing = TypingHost::new_telex_fixture();
+    let before = typing.session.composition_text();
     typing.set_injector(Box::new(ProfilingInjector {
         profile: InjectProfile::Win32,
         sender: FailSender,
@@ -85,4 +86,50 @@ fn dispatch_ll_letter_passes_when_inject_fails() {
     let host = Mutex::new(typing);
     // Letter would be EatAndInject, but inject fails → Pass (0), do not eat.
     assert_eq!(dispatch_ll(&host, key(0x58), 1), 0);
+    let guard = host.lock().unwrap();
+    assert_eq!(
+        guard.session.composition_text(),
+        before,
+        "session must roll back when SendInput fails"
+    );
+    assert!(guard.recorded.is_empty());
+    assert!(guard.sent.is_empty());
+}
+
+#[test]
+fn dispatch_ll_enter_eats_but_rolls_back_session_on_inject_fail() {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
+    use openvikey_win::inject::{
+        InjectError, InjectProfile, InputSender, ProfilingInjector, SynthesizedEvent,
+    };
+
+    struct FailSender;
+    impl InputSender for FailSender {
+        fn send(&mut self, events: &[SynthesizedEvent]) -> Result<u32, InjectError> {
+            Err(InjectError::Partial {
+                sent: 0,
+                expected: events.len(),
+            })
+        }
+    }
+
+    let mut typing = TypingHost::new_telex_fixture();
+    // Letter succeeds without live injector (record-only).
+    typing.handle_key(key(0x58), 1);
+    let before_enter = typing.session.composition_text();
+    assert!(!before_enter.is_empty());
+    // Clear `sent` so Commit emits a Replace (otherwise Enter has zero inject cmds).
+    typing.sent.clear();
+    typing.set_injector(Box::new(ProfilingInjector {
+        profile: InjectProfile::Win32,
+        sender: FailSender,
+        sending: Arc::new(AtomicBool::new(false)),
+    }));
+    let host = Mutex::new(typing);
+    // Enter CommitAndPass: inject fails → EatAndIgnore (1), session unchanged.
+    assert_eq!(dispatch_ll(&host, key(0x0D), 2), 1);
+    let guard = host.lock().unwrap();
+    assert_eq!(guard.session.composition_text(), before_enter);
 }

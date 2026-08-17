@@ -274,9 +274,13 @@ impl TypingHost {
     }
 
     fn apply_typed(&mut self, kind: InputKind, at_ms: i64) -> Result<(), InjectError> {
+        let checkpoint = self.session.checkpoint_for_inject(&kind);
         let obs = self.session.inject(kind, InputContext::default(), at_ms);
         let (cmds, sent) = commands_from_typed(&obs, &self.sent);
-        self.apply_commands(&cmds)?;
+        if let Err(error) = self.apply_commands(&cmds) {
+            self.session.restore_inject_checkpoint(checkpoint);
+            return Err(error);
+        }
         if obs
             .engine_actions
             .iter()
