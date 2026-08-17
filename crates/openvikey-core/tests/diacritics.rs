@@ -36,6 +36,10 @@ fn lexicon() -> Lexicon {
                 token_nfc: "năm".to_string(),
                 frequency: 70,
             },
+            LexiconEntry {
+                token_nfc: "sự".to_string(),
+                frequency: 60,
+            },
         ],
         [(("của".to_string(), "bạn".to_string()), 1.0)],
         Some("diacritics-test"),
@@ -94,6 +98,10 @@ fn accented_input_and_phrase_level_restoration_are_out_of_scope() {
     assert_eq!(
         generator.generate(&snapshot("nam"), &LeftContext::default())[0].text,
         "năm"
+    );
+    assert_eq!(
+        generator.generate(&snapshot("su"), &LeftContext::default())[0].text,
+        "sự"
     );
     assert!(
         generator

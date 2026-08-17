@@ -1,6 +1,6 @@
 //! Bounded weighted edit-distance candidates over the local lexicon.
 
-use crate::generate::vietnamese::{folded_ascii, is_supported_lexicon_token};
+use crate::generate::vietnamese::{folded_ascii, is_supported_lexicon_token, vni_features};
 use crate::generate::{Generator, LeftContext};
 use crate::lexicon::Lexicon;
 use crate::types::{Candidate, CandidateSource, CompositionSnapshot};
@@ -31,7 +31,7 @@ impl Generator for FuzzyGenerator<'_> {
     fn generate(
         &self,
         snapshot: &CompositionSnapshot,
-        _left_context: &LeftContext,
+        left_context: &LeftContext,
     ) -> Vec<Candidate> {
         if self.max_candidates == 0
             || snapshot.normalized.chars().any(char::is_whitespace)
@@ -45,7 +45,8 @@ impl Generator for FuzzyGenerator<'_> {
         if input_folded.is_empty() {
             return Vec::new();
         }
-        let has_vni_digits = snapshot.raw_keys.chars().any(|ch| ch.is_ascii_digit());
+        let requested_vni = requested_vni_features(&snapshot.raw_keys);
+        let has_vni_digits = requested_vni.iter().any(|requested| *requested);
         let plain_unaccented = input_nfc
             .chars()
             .all(|ch| ch.is_ascii_alphabetic() || ch.is_ascii_digit());
@@ -67,11 +68,19 @@ impl Generator for FuzzyGenerator<'_> {
                 }
                 distance = 0.20;
             }
+            distance = apply_vni_signal(distance, &requested_vni, &entry.token_nfc);
             if distance > MAX_WEIGHTED_DISTANCE {
                 continue;
             }
             let frequency_bonus = f64::from(entry.frequency.min(1_000)) / 50_000.0;
-            let score = (0.97 - 0.18 * distance + frequency_bonus).clamp(0.0, 1.0);
+            let bigram_bonus = left_context
+                .prev_token_nfc
+                .as_deref()
+                .and_then(|left| self.lexicon.bigram(left, &entry.token_nfc))
+                .unwrap_or(0.0)
+                .clamp(0.0, 1.0)
+                * 0.20;
+            let score = (0.97 - 0.18 * distance + frequency_bonus + bigram_bonus).clamp(0.0, 1.0);
             matches.push((entry.token_nfc.clone(), score));
         }
 
@@ -90,6 +99,32 @@ impl Generator for FuzzyGenerator<'_> {
             })
             .collect()
     }
+}
+
+fn requested_vni_features(raw_keys: &str) -> [bool; 10] {
+    let mut requested = [false; 10];
+    for digit in raw_keys.chars().filter_map(|ch| ch.to_digit(10)) {
+        if let Ok(index) = usize::try_from(digit)
+            && index < requested.len()
+            && index > 0
+        {
+            requested[index] = true;
+        }
+    }
+    requested
+}
+
+fn apply_vni_signal(distance: f64, requested: &[bool; 10], target: &str) -> f64 {
+    let expected = vni_features(target);
+    let adjustment = requested
+        .iter()
+        .zip(expected)
+        .skip(1)
+        .filter(|(requested, _)| **requested)
+        .fold(0.0, |total, (_, expected)| {
+            total + if expected { -0.20 } else { 0.20 }
+        });
+    (distance + adjustment).max(0.05)
 }
 
 fn letters_only(text: &str) -> String {

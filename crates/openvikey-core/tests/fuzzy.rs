@@ -6,21 +6,37 @@ use openvikey_core::lexicon::{Lexicon, LexiconEntry};
 use openvikey_core::types::{CandidateSource, CompositionSnapshot};
 
 fn lexicon(words: &[(&str, u32)]) -> Lexicon {
+    lexicon_with_bigrams(words, &[])
+}
+
+fn lexicon_with_bigrams(words: &[(&str, u32)], bigrams: &[(&str, &str, f64)]) -> Lexicon {
     Lexicon::from_entries(
         words.iter().map(|(token, frequency)| LexiconEntry {
             token_nfc: (*token).to_string(),
             frequency: *frequency,
         }),
-        [],
+        bigrams
+            .iter()
+            .map(|(left, token, score)| (((*left).to_string(), (*token).to_string()), *score)),
         Some("fuzzy-test"),
     )
 }
 
 fn generated<'a>(generator: &'a FuzzyGenerator<'a>, input: &str) -> Vec<String> {
+    generated_with_left(generator, input, None)
+}
+
+fn generated_with_left<'a>(
+    generator: &'a FuzzyGenerator<'a>,
+    input: &str,
+    left: Option<&str>,
+) -> Vec<String> {
     generator
         .generate(
             &CompositionSnapshot::new(1, input.to_string(), input.to_string()),
-            &LeftContext::default(),
+            &LeftContext {
+                prev_token_nfc: left.map(str::to_string),
+            },
         )
         .into_iter()
         .map(|candidate| candidate.text)
@@ -40,43 +56,64 @@ fn weighted_transposition_adjacency_and_duplicate_key_find_words() {
 
 #[test]
 fn mixed_vni_digits_and_typos_from_real_input_are_recovered() {
-    let lexicon = lexicon(&[
-        ("mẫu", 100),
-        ("phát", 90),
-        ("dạng", 80),
-        ("hợp", 70),
-        ("thống", 60),
-        ("được", 50),
-        ("prompt", 40),
-        ("bạn", 30),
-        ("biết", 20),
-        ("nó", 10),
-        ("không", 10),
-        ("này", 10),
-    ]);
+    let lexicon = lexicon_with_bigrams(
+        &[
+            ("mẫu", 100),
+            ("phát", 90),
+            ("dạng", 80),
+            ("hợp", 70),
+            ("thống", 60),
+            ("được", 50),
+            ("prompt", 40),
+            ("bạn", 30),
+            ("biết", 20),
+            ("nó", 10),
+            ("không", 10),
+            ("này", 10),
+            ("chữ", 10),
+            ("hẳn", 10),
+            ("là", 10),
+            ("gõ", 10),
+        ],
+        &[("hẳn", "là", 1.0)],
+    );
     let generator = FuzzyGenerator::new(&lexicon, 5);
 
-    for (input, expected) in [
-        ("ma674u", "mẫu"),
-        ("paht1", "phát"),
-        ("dnag5", "dạng"),
-        ("hiop75", "hợp"),
-        ("htong61", "thống"),
-        ("đưcọ", "được"),
-        ("proimtp", "prompt"),
-        ("bab5", "bạn"),
-        ("nbiet61", "biết"),
-        ("n1o", "nó"),
-        ("kh6oing", "không"),
-        ("nah2y", "này"),
+    for (input, expected, left) in [
+        ("ma674u", "mẫu", None),
+        ("paht1", "phát", None),
+        ("dnag5", "dạng", None),
+        ("hiop75", "hợp", None),
+        ("htong61", "thống", None),
+        ("đưcọ", "được", None),
+        ("proimtp", "prompt", None),
+        ("bab5", "bạn", None),
+        ("nbiet61", "biết", None),
+        ("n1o", "nó", None),
+        ("kh6oing", "không", None),
+        ("nah2y", "này", None),
+        ("chũ", "chữ", None),
+        ("hẵ", "hẳn", None),
+        ("nal2", "là", Some("hẳn")),
+        ("go4", "gõ", None),
     ] {
-        assert!(
-            generated(&generator, input)
-                .iter()
-                .any(|candidate| candidate == expected),
-            "missing {input} -> {expected}"
+        assert_eq!(
+            generated_with_left(&generator, input, left)
+                .first()
+                .map(String::as_str),
+            Some(expected),
+            "wrong top candidate for {input}"
         );
     }
+}
+
+#[test]
+fn vni_tone_and_modifier_digits_outrank_unigram_frequency() {
+    let lexicon = lexicon(&[("bàn", 1_000), ("bạn", 1), ("hộp", 1_000), ("hợp", 1)]);
+    let generator = FuzzyGenerator::new(&lexicon, 5);
+
+    assert_eq!(generated(&generator, "ban5")[0], "bạn");
+    assert_eq!(generated(&generator, "hiop75")[0], "hợp");
 }
 
 #[test]
