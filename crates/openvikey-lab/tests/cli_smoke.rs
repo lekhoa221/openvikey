@@ -36,7 +36,7 @@ fn help_lists_every_required_command() {
     let output = Command::new(binary()).arg("--help").output().unwrap();
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
-    for command in ["type", "script", "model", "corpus", "perf"] {
+    for command in ["type", "script", "model", "corpus", "perf", "session"] {
         assert!(stdout.contains(command), "missing command {command}");
     }
 }
@@ -234,4 +234,19 @@ fn run_dump(path: &Path, passphrase: &str) -> std::process::Output {
         .write_all(passphrase.as_bytes())
         .unwrap();
     child.wait_with_output().unwrap()
+}
+
+#[test]
+fn session_without_tty_exits_with_terminal_message() {
+    let output = Command::new(binary())
+        .args(["session"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.to_lowercase().contains("terminal"),
+        "stderr was {stderr}"
+    );
 }

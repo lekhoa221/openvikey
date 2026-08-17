@@ -1,7 +1,7 @@
 # OpenViKey Phần 2 — Personal Capture-and-Learn (Thiết kế)
 
 - **Ngày:** 2026-08-17
-- **Trạng thái:** v2 — **draft sau review kỹ thuật; CHƯA implementation-ready** (writing-plans sẽ chi tiết hoá TDD)
+- **Trạng thái:** v2 — **implemented** (lab `session` reducer + REPL; 2026-08-17)
 - **Governing spec (phần 1):** [`2026-08-17-openvikey-design.md`](./2026-08-17-openvikey-design.md)
 - **Implementation plan phần 1:** [`../plans/2026-08-17-openvikey-v1-implementation-plan.md`](../plans/2026-08-17-openvikey-v1-implementation-plan.md)
 - **License:** MIT (kế thừa)

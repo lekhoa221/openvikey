@@ -13,7 +13,7 @@ Không hai người gõ giống nhau — như nét chữ tay. OpenViKey xây m�
 
 - **Tự học ngầm:** thấy bạn gõ `teh` → xoá → gõ `the`, nó ghi nhận `teh→the` là phép sửa của bạn — không cần khai báo.
 - **Độ tự tin học được:** mỗi phép sửa "tốt nghiệp" từ *gợi ý* lên *tự thay im lặng* khi bạn liên tục chấp nhận, và bị hạ cấp khi bạn từ chối. "Chắc chắn" là thứ đo được, không phải luật chết.
-- **Riêng tư tuyệt đối:** mô hình cá nhân được coi như dữ liệu định danh — lưu **mã hoá, 100% trên máy bạn**, không server, không cloud, không telemetry.
+- **Riêng tư tuyệt đối:** mô hình cá nhân được coi như dữ liệu định danh — lưu mã hoá local, không backend/telemetry/automatic upload; chỉ ciphertext do bạn chủ động export mới có thể rời máy.
 
 ## Sáu năng lực (bức tranh đầy đủ)
 
@@ -26,17 +26,41 @@ Không hai người gõ giống nhau — như nét chữ tay. OpenViKey xây m�
 
 ## Lộ trình
 
-- **v1 (đang làm) — "chứng minh bộ não":** engine + 4 loại sửa + vòng tự học chạy trong harness thử nghiệm (CLI/TUI), **chưa** hook hệ thống. Mục tiêu: chứng minh phần khó nhất trước.
+- **v1 (đang làm) — "chứng minh bộ não":** engine + 4 loại sửa + vòng tự học chạy trong CLI harness thử nghiệm, **chưa** hook hệ thống. Mục tiêu: chứng minh phần khó nhất trước.
 - **v2 — Windows:** tích hợp toàn hệ thống qua TSF (Text Services Framework).
-- **v3 — macOS:** qua CGEventTap, tái dùng chung core.
+- **v3 — macOS:** spike InputMethodKit (`IMKInputController`) so với CGEventTap rồi chọn adapter, tái dùng chung core.
 
 ## Kiến trúc (tóm tắt)
 
-- `openvikey-core` (Rust thuần, không phụ thuộc OS): `engine`, `lexicon`, `correct`, `model` (tự học), `decision`, `store` (mã hoá), `feedback`.
+- `openvikey-core` (Rust thuần, không phụ thuộc OS): `types`, `engine`, `lexicon`, `generate`, `rank`, `model`, `decision`, `feedback`, `store`.
 - `openvikey-lab`: harness v1 để *nhìn bộ não hoạt động* + test-runner đo độ chính xác.
-- *(sau)* `openvikey-win` (TSF), `openvikey-mac` (CGEventTap) — lớp mỏng bọc core.
+- *(sau)* `openvikey-win` (TSF), `openvikey-mac` (InputMethodKit/CGEventTap — chờ spike) — lớp mỏng bọc core.
 
 Thiết kế chi tiết: [`docs/superpowers/specs/2026-08-17-openvikey-design.md`](docs/superpowers/specs/2026-08-17-openvikey-design.md).
+
+Kế hoạch triển khai v1: [`docs/superpowers/plans/2026-08-17-openvikey-v1-implementation-plan.md`](docs/superpowers/plans/2026-08-17-openvikey-v1-implementation-plan.md).
+
+## Lab CLI (harness, not a system IME)
+
+`openvikey-lab` is a **local developer/lab harness**. It is **not** a system input method: there is **no tray icon**, **no UniKey/OpenKey window**, and **no TSF/OS keyboard hook**. Typing here does not send keys into other applications.
+
+### `type` — stdin JSONL (unchanged)
+
+```bash
+cargo run -p openvikey-lab -- type --method telex --lexicon data/fixtures/lexicon/authored.json
+```
+
+Each stdin character becomes a live engine observation on stdout (JSONL).
+
+### `session` — personal capture REPL
+
+Interactive one-line raw-mode session. The passphrase is prompted (hidden) **before** raw mode. The personal model and capture log are stored encrypted; they are not a substitute for OS-level IME integration.
+
+```bash
+cargo run -p openvikey-lab -- session --method telex --lexicon data/fixtures/lexicon/authored.json --model openvikey-model.ovk --capture openvikey-capture.ovk
+```
+
+Requires a real terminal (piped stdin exits with an error mentioning `terminal`). Space and Enter both commit with a space. Tab accepts the top suggestion, Esc rejects it, Ctrl+Z undoes the last Auto edit **in this process**, Ctrl+C / Ctrl+D flush both encrypted files and quit.
 
 ## Bảo mật & riêng tư
 

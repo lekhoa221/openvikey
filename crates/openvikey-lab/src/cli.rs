@@ -1,11 +1,14 @@
 //! Clap command surface for the observable lab harness.
 
+use crate::capture::{ensure_distinct_store_paths, load_personal_store};
 use crate::corpus::{self, EvaluationMode};
 use crate::perf::{PerfConfig, run_benchmarks};
+use crate::persistence::DebouncedSaver;
 use crate::provenance;
+use crate::repl::{enter_raw_mode, read_hidden_passphrase, require_tty, run_repl};
 use crate::report::evaluate_manifest;
 use crate::script::run_script_jsonl;
-use crate::session::LabSession;
+use crate::session::{LabSession, SessionCursors};
 use clap::{Parser, Subcommand, ValueEnum};
 use openvikey_core::engine::EngineConfig;
 use openvikey_core::lexicon::{Lexicon, LexiconArtifact};
@@ -70,6 +73,19 @@ enum Commands {
         iterations: usize,
         #[arg(long, default_value_t = 6_000)]
         stress_entries: usize,
+    },
+    /// Interactive raw-mode capture session (lab REPL, not a system IME)
+    Session {
+        #[arg(long, value_enum, default_value = "telex")]
+        method: MethodArg,
+        #[arg(long, default_value = "data/fixtures/lexicon/authored.json")]
+        lexicon: PathBuf,
+        #[arg(long, default_value = "openvikey-model.ovk")]
+        model: PathBuf,
+        #[arg(long, default_value = "openvikey-capture.ovk")]
+        capture: PathBuf,
+        #[arg(long, value_enum, default_value = "normal")]
+        context: ContextArg,
     },
 }
 
@@ -212,7 +228,49 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             write_output(&out, &report.to_pretty_json()?)?;
             println!("Performance report written to: {}", out.display());
         }
+        Commands::Session {
+            method,
+            lexicon,
+            model,
+            capture,
+            context,
+        } => run_session(method.into(), &lexicon, &model, &capture, context.flags())?,
     }
+    Ok(())
+}
+
+fn run_session(
+    method: InputMethod,
+    lexicon_path: &Path,
+    model_path: &Path,
+    capture_path: &Path,
+    context: InputContext,
+) -> Result<(), Box<dyn std::error::Error>> {
+    require_tty()?;
+    ensure_distinct_store_paths(model_path, capture_path)?;
+    let passphrase = read_hidden_passphrase()?;
+    let provider = PassphraseProvider::new(passphrase.as_str(), KdfConfig::default());
+    let artifact: LexiconArtifact = serde_json::from_slice(&fs::read(lexicon_path)?)?;
+    let lexicon = Lexicon::from_artifact(artifact);
+    let (model, log) = load_personal_store(model_path, capture_path, &provider)?;
+    let mut session = LabSession::new_with_model(
+        EngineConfig {
+            method,
+            tone_placement: TonePlacement::Modern,
+        },
+        lexicon,
+        model,
+        SessionCursors {
+            next_seq: log.header.next_seq,
+            next_edit_id: log.header.next_edit_id,
+        },
+    );
+    session.restore_capture(log.records);
+    session.restore_last_at_ms(log.header.last_at_ms);
+    let model_saver = DebouncedSaver::spawn_encrypted(model_path, provider.clone());
+    let capture_saver = DebouncedSaver::spawn_encrypted(capture_path, provider);
+    let _raw = enter_raw_mode()?;
+    run_repl(&mut session, context, &model_saver, &capture_saver)?;
     Ok(())
 }
 

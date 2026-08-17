@@ -1,11 +1,11 @@
 # OpenViKey — Thiết kế (Design Spec)
 
 - **Ngày:** 2026-08-17
-- **Trạng thái:** Draft v2 (đã chỉnh theo review — chờ review lại)
+- **Trạng thái:** v3 — implementation-ready
 - **Tên dự án:** OpenViKey (`openvikey`)
 - **License:** **MIT** — mã nguồn mở hoàn toàn (OSI). *Tác giả không thu phí và không thương mại hoá; MIT không hạn chế người khác* (kể cả dùng thương mại). Không gọi dự án là "phi thương mại".
 
-> **Changelog v2:** siết phạm vi v1 (defer sync/merge, OS-keyring thật, khôi phục dấu cả cụm, settings UI); biến contract engine, thuật toán học, tiêu chí thành công thành thứ *đo được & tất định*; sửa mâu thuẫn pipeline; thêm envelope-encryption & performance budget; cập nhật provenance.
+> **Changelog v3:** đóng review v2: sửa metric denominator; làm Beta evidence/decay tất định; chốt state machine `ignore/suggest/auto`; hoàn thiện `InputEvent`/semantic edit/inverse undo; chốt passphrase persistence và sensitive-context contract. Implementation plan: [`../plans/2026-08-17-openvikey-v1-implementation-plan.md`](../plans/2026-08-17-openvikey-v1-implementation-plan.md).
 
 ---
 
@@ -36,7 +36,7 @@ Vấn đề gốc: gõ nhanh hay sai (đảo chữ, nuốt/đặt dấu sai ch�
 - Sinh ứng viên (candidate generation) cho cả 4 loại sửa — **diacritics giới hạn per-token top-k suggestion, chỉ ngữ cảnh trái**.
 - `decision` + `model` học **mô phỏng** (deterministic), gồm undo/hoàn tác.
 - **Corpus test-runner** đo các metric ở §3.
-- **Lưu mã hoá local** qua `SecretProvider`/`KeyProvider` *inject* (test dùng provider in-memory/tất định).
+- **Lưu mã hoá local** qua `SecretProvider` inject: lab dùng passphrase file provider; unit test dùng provider in-memory/tất định.
 
 **v1 KHÔNG làm (defer sang milestone sau — đã chốt với chủ dự án):**
 - Hook bàn phím toàn hệ thống (TSF/CGEventTap) — GĐ2/3.
@@ -52,31 +52,33 @@ Vấn đề gốc: gõ nhanh hay sai (đảo chữ, nuốt/đặt dấu sai ch�
 - **GĐ3:** macOS — **spike: IMKInputController (InputMethodKit) vs CGEventTap** (chưa quyết, §10).
 
 ### 2.4 Non-goals (vĩnh viễn)
-Zero backend, không tài khoản, không cloud, không telemetry, không lưu data người dùng ở đâu ngoài máy họ.
+Zero backend, không tài khoản, không telemetry, không **automatic upload**. Plaintext model và khoá không rời máy; chỉ ciphertext do người dùng chủ động export mới có thể rời máy (§7).
 
 ---
 
 ## 3. Tiêu chí thành công (đo được) — v1
 
-> Nguyên tắc: **held-out corpus** — dữ liệu build lexicon/model KHÁC dữ liệu đánh giá. Tách metric cho *auto-replace* và *suggestion*. Ngưỡng dưới là **mục tiêu khởi điểm để calibrate**, không phải hằng số bất biến.
+> Nguyên tắc: **held-out corpus** — dữ liệu build lexicon/model KHÁC dữ liệu đánh giá. Tách metric cho *auto-replace* và *suggestion*. Ngưỡng dưới là **mục tiêu khởi điểm để calibrate**, không phải hằng số bất biến. Corpus đánh giá được đóng băng bằng manifest (version + SHA-256 + provenance + split seed) trước khi calibrate.
 
 ### 3.1 Engine (tất định)
 - Vượt **ma trận golden** `(chuỗi phím → tiếng Việt kỳ vọng)` phủ các trục: **input method** {Telex, VNI}; **đặt dấu** {modern `oà` / classic `òa`}; casing; reset/escape (double-key, phím khôi phục); **NFC/NFD**; tiếng Anh passthrough; URL/code/mixed. 100% pass.
 
 ### 3.2 Chất lượng sửa (theo từng loại lỗi)
 Taxonomy lỗi: (a) đặt dấu sai vị trí, (b) đảo chữ/phím liền kề, (c) thiếu dấu, (d) viết tắt.
-- **Auto-replace:** precision ≥ **0.99** (⇒ **FPR ≤ 1%**) trên held-out; báo cả **coverage** (tỉ lệ lỗi được auto-sửa).
-- **Suggestion:** **top-1 ≥ 0.85**, **top-3 ≥ 0.95** trên các lỗi thuộc coverage.
-- **Recall theo từng loại lỗi** (a)–(d) báo riêng.
-- **Không sửa bừa:** từ *đã có dấu & hợp lệ* không bao giờ bị auto-đổi. Chữ *không dấu / viết tắt hợp lệ-mà-mơ-hồ* → đi **suggestion**, và tính vào FPR nếu auto-đổi sai.
+- **Auto precision:** `TP / (TP + FP)` ≥ **0.99** trên toàn bộ labeled held-out stream (gồm cả token đúng và token cài lỗi).
+- **Correct-token FPR:** `false_auto_replacements / total_correct_tokens` ≤ **0.1%** trên tập câu đúng held-out (khác denominator với precision).
+- **Auto coverage/recall:** `TP / total_labeled_errors`; báo tổng và riêng theo (a)–(d), không đặt ngưỡng tối thiểu ở v1 để tránh đổi precision lấy recall.
+- **Suggestion:** top-1 ≥ **0.85**, top-3 ≥ **0.95**, tính trên **toàn bộ labeled errors thuộc loại generator hỗ trợ**; báo riêng candidate-coverage (có sinh ít nhất một ứng viên).
+- **Kích thước tối thiểu:** correct-token corpus ≥ **50.000 token**; error corpus ≥ **1.000 ca** và ≥ **200 ca cho mỗi loại** (a)–(d). Báo point estimate + khoảng tin cậy Wilson 95%; gate dùng point estimate, CI dùng để cảnh báo độ chắc chắn.
+- **Không sửa bừa:** từ *đã có dấu & hợp lệ* không bao giờ bị auto-đổi. Chữ *không dấu / viết tắt hợp lệ-mà-mơ-hồ* → tối đa **suggestion** ở cold-start; nếu auto-đổi sai thì tính là `FP` cho precision và là false correction trên correct-token corpus tương ứng.
 
 ### 3.3 Học (mô phỏng tất định)
-- Phép sửa nhất quán **promote** lên auto sau **≤ K_promote** lần net-positive (mặc định K=8, calibrate).
-- Phép sửa bị từ chối **demote** khỏi auto sau **≤ K_demote** lần undo (mặc định K=2).
-- **Convergence:** cùng chuỗi sự kiện → cùng trạng thái model (property test).
+- Trong canonical script (18 accept cùng `at_ms`, không negative), prior Beta(1,1) phải **promote** sau đúng `K_promote=18 explicit accepts +1.0`, vì `(1+18)/(1+1+18)=0.95`. Khi sự kiện trải theo thời gian và bị decay, có thể cần nhiều hơn; tín hiệu dương yếu cũng cần nhiều sự kiện hơn.
+- Phép sửa đang auto bị **demote** sau `K_demote=2` undo trong **10 auto-emission gần nhất của cùng rule-context**, bất kể confidence tổng.
+- **Convergence:** cùng chuỗi `InputEvent`/`FeedbackEvent` (gồm `seq` và `at_ms`) + cùng `evaluate_at_ms` → cùng trạng thái model (property test); model không tự đọc wall-clock.
 
 ### 3.4 Undo & riêng tư
-- Mọi auto-replace **hoàn tác được**; chốt-rồi-undo trả nguyên trạng grapheme.
+- Mọi auto-replace **hoàn tác được**; chốt-rồi-undo trả đúng chuỗi gốc + delimiter và vị trí caret, kể cả replacement nhiều grapheme/nhiều từ.
 - Không lời gọi mạng nào phát sinh khi chạy (test bằng network sandbox/asserts).
 
 ---
@@ -87,44 +89,78 @@ Taxonomy lỗi: (a) đặt dấu sai vị trí, (b) đảo chữ/phím liền k�
 
 | Module | Nhiệm vụ | Phụ thuộc |
 |---|---|---|
-| `types` | Kiểu chung: `InputEvent`, `CompositionSnapshot`, `Candidate`, `EngineAction`. | — |
+| `types` | Kiểu chung: `InputEvent`, `FeedbackEvent`, `InputContext`, `CompositionSnapshot`, `Candidate`, `EngineAction`. | — |
 | `engine` | Telex/VNI: phím → `CompositionSnapshot{raw_keys, rendered, normalized}`. Tất định. | `types` |
 | `lexicon` | Từ điển nền + tần suất từ/bigram (data-driven, nạp từ file). | `types` |
-| `generate` | **Generators thuần** (telex_fix, fuzzy, abbrev, diacritics) → ứng viên có điểm + **evidence/rule nguồn**. KHÔNG đọc `model`. | `lexicon`, `engine` |
-| `rank` | normalize thang điểm → **dedupe** → base rank → **personal rerank** (đọc `model`). | `model` |
+| `generate` | **Generators thuần** (telex_fix, fuzzy, abbrev, diacritics) → ứng viên có điểm + **evidence/rule nguồn**. KHÔNG đọc `model`. | `lexicon`, `types` |
+| `rank` | normalize điểm về `[0,1]` → **dedupe** → base rank → **personal rerank** (đọc `model`). | `model`, `types` |
 | `model` | Thống kê cá nhân: đếm evidence theo **rule-context key**, confidence, hysteresis, decay. | `types` |
 | `decision` | Policy: `auto / suggest / ignore` theo confidence + hysteresis. | `model` |
 | `feedback` | Tín hiệu ngầm (gõ-xoá-gõ lại) + tường minh → cập nhật `model`. | `model` |
-| `store` | Envelope-encryption; persistence sau trait `KeyProvider`/`SecretProvider` (inject). | `model` |
+| `store` | Envelope-encryption; persistence sau trait `SecretProvider` (inject). | `model` |
 
-**Provider traits** (inject từ ngoài; v1 dùng bản in-memory/tất định):
+**Provider traits** (inject từ ngoài):
 ```
-trait SecretProvider { fn wrap(&self, dek: &Dek) -> Wrapped; fn unwrap(&self, w: &Wrapped) -> Option<Dek>; }
+trait SecretProvider {
+    fn wrap(&self, dek: &Dek) -> Result<WrappedKey, StoreError>;
+    fn unwrap(&self, wrapped: &WrappedKey) -> Result<Dek, StoreError>;
+}
 ```
-→ core **không** biết DPAPI/Keychain; adapter GĐ2/3 cấp bản thật.
+→ core **không** biết DPAPI/Keychain; adapter GĐ2/3 cấp bản thật. `openvikey-lab` v1 dùng **passphrase file provider** để mở lại model qua process restart; unit test dùng provider in-memory/tất định. Chỉ dùng tên `SecretProvider` trong code/spec.
 
-**`openvikey-lab`** (harness v1): CLI/TUI nạp `InputEvent`, hiển thị composition + ứng viên + gợi ý, cho accept/reject; **test-runner** chạy corpus đo §3; **dump model** dạng text để kiểm tra "đã học gì".
+**`openvikey-lab`** (harness v1): CLI nạp `InputEvent`, hiển thị composition + ứng viên + gợi ý, cho accept/reject; **test-runner** chạy corpus đo §3; **dump model** dạng text để kiểm tra "đã học gì". Full-screen TUI defer sau v1.
 
 **Về sau:** `openvikey-win` (TSF), `openvikey-mac` (IMK/CGEventTap) — bọc core, tự dịch `ReplaceRange` sang **UTF-16/CGEvent**.
 
 ### 4.2 Core contract (ngữ nghĩa)
-- **`CompositionSnapshot`**: `raw_keys` (chuỗi phím thô — `telex_fix` cần), `rendered` (text đang hiển thị), `normalized` (**NFC**).
-- **`EngineAction`**: `UpdateComposition | Commit | ReplaceRange{range, text} | ShowSuggestions(Vec<Candidate>) | UndoReplacement`.
-- **Đơn vị `range`**: tính bằng **grapheme cluster** ở core (adapter dịch sang UTF-16 code unit cho TSF / CGEvent cho macOS). Chuẩn hoá **NFC** trước khi so khớp lexicon.
-- **Undo của autocorrect** là action riêng (`UndoReplacement`) — khác backspace thường; một lần undo hoàn nguyên đúng phần đã replace và ghi tín hiệu reject.
+- **`CompositionSnapshot`**: `revision`, `raw_keys` (chuỗi phím thô — `telex_fix` cần), `rendered` (text đang hiển thị), `normalized` (**NFC**).
+- **Mọi action tự chứa payload**; adapter không cần đọc state ẩn để áp edit.
+- **Đơn vị `EditRange`**: tính bằng **grapheme cluster**, có `basis = ActiveComposition | CommittedBeforeCaret` và `revision` để từ chối edit stale. TSF/IMK adapter dịch sang UTF-16 range; CGEvent adapter mô phỏng delete/insert từ semantic edit. Chuẩn hoá NFC trước khi so lexicon, nhưng giữ `original` để undo byte/text-exact theo contract hiển thị.
+- **Undo autocorrect** nhận `edit_id`, tìm edit log gần nhất còn hợp lệ và phát **inverse `ReplaceRange`** (`original`/`replacement` đổi chỗ), đồng thời sinh `FeedbackEvent::Undo`. Không có action trống `UndoReplacement`.
+
+Contract tối thiểu (tên field chuẩn cho plan; Rust syntax cụ thể có thể tinh chỉnh mà không đổi nghĩa):
+```
+InputEvent {
+  seq: u64, at_ms: i64,
+  kind: Key{logical, physical?} | Backspace | Boundary{delimiter}
+      | InsertText{text} | CursorMoved | SelectionChanged | Reset,
+  modifiers, is_repeat,
+  context: InputContext{allow_transform, allow_learning}
+}
+
+FeedbackEvent {
+  seq: u64, at_ms: i64,
+  kind: Accept{candidate_id} | ExplicitReject{candidate_id}
+      | Undo{edit_id} | AutoSettled{edit_id}
+      | SuggestionSettled{candidate_id}
+      | ImplicitCorrection{original, replacement}
+}
+
+EditRange { basis, start_grapheme, length_grapheme, revision }
+
+EngineAction =
+  UpdateComposition{revision, text}
+  | Commit{revision, text, delimiter?}
+  | ReplaceRange{edit_id, range, original, replacement}
+  | ShowSuggestions{revision, candidates}
+```
+
+`CursorMoved`/`SelectionChanged` làm invalid composition và edit log liên quan; sau đó feedback miner không được suy ra cặp `X→Y` qua ranh giới này.
 
 ### 4.3 Luồng dữ liệu
 ```
 InputEvent → engine (compose → CompositionSnapshot)
    → [ranh giới từ]
    → generate (generators thuần → candidates + evidence)
-   → rank (normalize thang điểm → dedupe → base rank → personal rerank[model])
-   → decision (hysteresis: auto / suggest / ignore)
+   → rank (normalize [0,1] → dedupe → base rank → personal rerank[model])
+   → decision (state machine: ignore / suggest / auto)
         ├─ auto    → ReplaceRange + ghi log undo
         └─ suggest → ShowSuggestions (top-k)
    ← feedback (accept / explicit-reject / undo / ignore*) → model → store (debounced, encrypted)
    (* ignore = tín hiệu YẾU/censored, không phải reject cứng)
 ```
+
+`openvikey-lab`/adapter sở hữu debounce worker và I/O scheduling; đường xử lý phím của core không chờ ghi đĩa. Mọi phép tính phụ thuộc thời gian nhận `at_ms`/`evaluate_at_ms` từ caller, không gọi wall-clock trực tiếp.
 
 ---
 
@@ -138,12 +174,12 @@ InputEvent → engine (compose → CompositionSnapshot)
 - **`diacritics`** — **per-token top-k**, xếp theo bigram (nền + cá nhân), *chỉ ngữ cảnh trái*. Mặc định ra **suggestion** (mơ hồ cao).
 
 ### 5.2 Chuẩn hoá & hợp nhất
-- Đưa điểm mọi generator về **cùng thang** (calibrated score).
+- Đưa điểm mọi generator về **cùng thang `[0,1]`** bằng calibration config có `version` và hash, được fit chỉ trên calibration split (không dùng held-out test split).
 - **Dedupe** khi nhiều generator ra cùng text (gộp evidence, giữ nguồn mạnh nhất).
 - **Tie-break/priority** khi xung đột (vd abbrev vs fuzzy): theo evidence cá nhân rồi base score.
 
 ### 5.3 Personal rerank
-`rank` áp thống kê cá nhân (`model`) lên danh sách đã hợp nhất → thứ hạng cuối. Candidate mang **evidence + source_rule** để `feedback` quy tín hiệu về **đúng rule-context**.
+`rank` áp thống kê cá nhân (`model`) lên danh sách đã hợp nhất → `final_score ∈ [0,1]` + thứ hạng cuối. Candidate mang **evidence + source_rule** để `feedback` quy tín hiệu về **đúng rule-context**. Cùng input + model + calibration config phải cho cùng score/order; tie cuối cùng dùng thứ tự lexical NFC để tất định.
 
 ### 5.4 Giới hạn v1 (đã chốt)
 Khôi phục dấu **cả cụm/câu** (`khong the nao → không thể nào`) cần *delayed decision / beam search / sửa token đã commit* → **milestone riêng**. v1 chỉ per-token suggestion với ngữ cảnh trái.
@@ -153,29 +189,50 @@ Khôi phục dấu **cả cụm/câu** (`khong the nao → không thể nào`) c
 ## 6. Hệ thống tự học (thuật toán tất định)
 
 ### 6.1 Đơn vị học: rule-context key
-Mỗi phép sửa được khoá theo context: `{input_method, correction_type, từ_trái?, source_rule}` (app/session thêm ở GĐ2). Evidence tích theo key này.
+Mỗi phép sửa được khoá theo context: `{input_method, correction_type, original_nfc, candidate_nfc, từ_trái_nfc?, source_rule_id}` (app thêm ở GĐ2). Cặp `original→candidate` là bắt buộc để hai phép fuzzy/abbrev khác nhau không dùng chung confidence. Evidence tích theo key ổn định này; session/revision chỉ thuộc event identity, không thuộc learning key lâu dài.
 
-### 6.2 Confidence & hysteresis (state-dependent)
-- Confidence = hậu nghiệm Beta với **prior α₀=β₀=1** (calibrate) trên đếm net.
-- **Hysteresis phụ thuộc trạng thái:**
-  - đang *suggest* → **promote** lên *auto* khi `conf ≥ 0.95` **và** evidence ≥ `min_evidence` (mặc định 8).
-  - đang *auto* → **demote** về *suggest* khi `conf < 0.85` **hoặc** ≥ `K_demote` undo gần đây.
+### 6.2 Confidence (Beta mass, không dùng net-count)
+Tại thời điểm caller truyền `evaluate_at_ms`:
+```
+positive_mass = Σ positive_add(event) × decay(event.at_ms, evaluate_at_ms)
+negative_mass = Σ negative_add(event) × decay(event.at_ms, evaluate_at_ms)
+α = α₀ + positive_mass       (α₀ = 1)
+β = β₀ + negative_mass       (β₀ = 1)
+confidence = α / (α + β)
+```
+`positive_mass` và `negative_mass` luôn không âm; không trừ tín hiệu âm trực tiếp khỏi α và không gọi tổng chênh lệch là “net count”.
 
-### 6.3 Trọng số tín hiệu (calibrate)
-| Tín hiệu | Trọng số | Ghi chú |
+### 6.3 Decision state machine & hysteresis
+Mỗi rule-context bắt đầu ở `ignore`. `final_score` là score đã calibrate/rerank ở §5.
+
+| Trạng thái | Điều kiện | Trạng thái/action mới |
 |---|---|---|
-| Chọn suggestion / accept | +1.0 | tường minh |
-| Không-undo sau cửa sổ settle | +0.3 | **positive yếu, ghi đúng 1 lần** |
-| Undo autocorrect | −1.5 | tường minh, mạnh |
-| Lờ suggestion | −0.2 | **yếu/censored** (có thể user không thấy) |
-| Ngầm gõ-xoá-gõ lại `X→Y` | +1.0 cho `X→Y` | mining từ hành vi |
+| `ignore` | `final_score ≥ S_suggest_on` (mặc định **0.70**) | `suggest` |
+| `suggest` | `final_score < S_suggest_off` (mặc định **0.60**) | `ignore` |
+| `suggest` | `final_score ≥ S_auto` (**0.90**) AND `confidence ≥ 0.95` AND `positive_mass ≥ 18` AND source policy cho auto | `auto` |
+| `auto` | `confidence < 0.85` OR `final_score < S_auto` OR 2 undo trong 10 auto-emission gần nhất | `suggest` |
 
-### 6.4 Decay & ổn định
-- **Decay áp trên evidence event** (không trên confidence trực tiếp): trọng số sự kiện suy giảm theo tuổi (half-life calibrate) → gần đây nặng hơn, không overfit 1 phiên.
+- `S_suggest_off < S_suggest_on` tạo hysteresis cho `ignore ↔ suggest`; `0.85 < 0.95` tạo hysteresis cho `suggest ↔ auto`.
+- Candidate cold-start mơ hồ (unaccented/abbrev hợp lệ) bắt đầu tối đa ở `suggest` dù base score cao.
+- `diacritics` có source policy `max_action=Suggest` trong v1, nên không thể auto dù confidence cao.
+- Mọi threshold nằm trong versioned decision config; đổi config không sửa lịch sử evidence.
+
+### 6.4 Trọng số tín hiệu (calibrate)
+| Tín hiệu | `positive_add` | `negative_add` | Ghi chú |
+|---|---:|---:|---|
+| Chọn suggestion / accept | 1.0 | 0 | tường minh |
+| `AutoSettled` (không undo) | 0.3 | 0 | ghi đúng 1 lần sau **10 input/edit event** kế tiếp |
+| Undo autocorrect | 0 | 1.5 | tường minh, mạnh |
+| `SuggestionSettled` (lờ suggestion đã hiển thị) | 0 | 0.2 | yếu/censored; không ghi nếu UI bị đóng/reset trước settle |
+| Ngầm gõ-xoá-gõ lại `X→Y` | 1.0 | 0 | chỉ cho đúng rule `X→Y` |
+
+### 6.5 Decay, clock & ổn định
+- **Decay áp trên evidence event**, không trên confidence trực tiếp: `decay = 2^(-age_ms / half_life_ms)`, mặc định `half_life=30 ngày` và clamp `age_ms ≥ 0`.
+- Core không gọi system clock. `InputEvent`/`FeedbackEvent` mang `at_ms`; query confidence nhận `evaluate_at_ms`. Test dùng logical clock tất định.
 - **Sàn nền:** lexicon nền luôn có tiếng nói (regularization) → chống "học chết" một lỗi.
 - **Xử lý cursor/edit:** nếu con trỏ nhảy/không liền mạch giữa X và Y → **không** coi là cặp sửa (tránh học nhầm).
 
-### 6.5 Cold start & minh bạch
+### 6.6 Cold start & minh bạch
 - Ship kèm lexicon nền + viết tắt mồi + mẫu lỗi phổ biến; lớp cá nhân đắp lên, dần lấn át.
 - API xem/sửa/xoá từng mục đã học + "quên tất cả" (GUI để GĐ sau; v1 có API + text dump).
 
@@ -189,12 +246,14 @@ Ràng buộc: **local-first, zero backend.** Diễn đạt chính xác: **không
 - **DEK** (Data Encryption Key) ngẫu nhiên mã hoá blob model.
 - DEK được **bọc độc lập** bởi 2 wrapper (mở bằng *bất kỳ* cái nào):
   1. khoá từ **OS keyring** (DPAPI/Keychain) — tiện, GĐ2+;
-  2. khoá dẫn từ **passphrase** (Argon2id) — *di động*, mở được trên máy mới.
+  2. khoá dẫn từ **passphrase** (Argon2id) — *di động*, mở được trên máy mới; đây là wrapper persistence thật của `openvikey-lab` v1.
 - → giải bài toán "máy mới mở blob khi OS-key không di chuyển".
 
 ### 7.2 Mã hoá
-- **XChaCha20-Poly1305** (nonce ngẫu nhiên 24-byte → an toàn với random nonce; tránh reuse).
-- **Header**: magic + version + **AAD** (bind version/metadata) + salt Argon2id + tham số KDF.
+- **XChaCha20-Poly1305** (nonce 24-byte từ CSPRNG; mỗi lần ghi dùng nonce mới, tránh reuse).
+- Container tách **immutable payload header** (`magic`, container/schema version, payload nonce, model metadata) làm AAD cho model ciphertext khỏi các **wrapped-key slot** được xác thực riêng. Mỗi key slot chứa wrapper kind/version, salt, KDF params và wrapped DEK.
+- Rewrap passphrase chỉ thay key slot; immutable payload header + model ciphertext/tag giữ nguyên, nên không cần mã hoá lại model.
+- Argon2id default theo [RFC 9106](https://www.ietf.org/rfc/rfc9106.html) low-memory profile: `m=64 MiB, t=3, p=4`; benchmark lúc mở file, nhưng không hạ thấp hơn [OWASP Password Storage floor](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html) `m=19 MiB, t=2, p=1`. Tham số + salt riêng nằm trong authenticated key slot.
 - Schema **versioned** để migrate.
 
 ### 7.3 Độ bền
@@ -202,7 +261,7 @@ Ràng buộc: **local-first, zero backend.** Diễn đạt chính xác: **không
 - **Key rotation** & đổi passphrase (rewrap DEK, không cần giải/mã lại toàn model).
 
 ### 7.4 Chốt chặn ngữ cảnh nhạy cảm
-Không học & không kích hoạt ở ô mật khẩu/terminal/denylist (mô phỏng ở v1; thật ở GĐ2).
+`InputContext` tách hai capability: `allow_transform` và `allow_learning`. Với password/terminal/denylist, harness v1 mô phỏng policy `false/false` và test rằng không generator/model/store side effect nào chạy. Adapter GĐ2+ chịu trách nhiệm phát hiện context thật; core chỉ thi hành flags, không tự đoán app/field.
 
 ### 7.5 Đồng bộ (DEFER khỏi v1)
 v1 **single-device**. Khi làm sync: state-based **G/PN-Counter CRDT** (per-replica vector, merge **component-wise max**, **không cộng blob**), **tombstone** cho xoá, **decay KHÔNG áp lúc merge**, replica-id + version vector, **convergence tests**.
@@ -212,9 +271,10 @@ v1 **single-device**. Khi làm sync: state-based **G/PN-Counter CRDT** (per-repl
 ## 8. Chiến lược test (mục đích cốt lõi của v1 — TDD)
 
 - **Golden engine matrix** (§3.1): tất định, 100% pass.
-- **Corpus runner** (§3.2): held-out; báo auto precision/FPR/coverage + suggestion top-1/3 + recall theo loại lỗi.
-- **Learning simulation** (§3.3): "user script" nhất quán → khẳng định promote/demote đúng số lần; **convergence property test** (cùng events → cùng state).
-- **Property tests:** từ có-dấu-hợp-lệ không bị auto-đổi; auto luôn undo được; chốt-rồi-undo trả nguyên trạng; ignore không phạt như reject cứng.
+- **Corpus runner** (§3.2): manifest-pinned held-out; báo đúng denominator cho precision/FPR/coverage + suggestion top-1/3 + recall theo loại lỗi + Wilson CI.
+- **Learning simulation** (§3.3/§6): canonical script promote ở accept thứ 18; demote sau 2/10 undo; **convergence property test** với injected logical clock.
+- **Contract/property tests:** action payload tự chứa; stale revision bị từ chối; cursor/selection invalidates edit log; auto luôn sinh inverse edit undo trả nguyên trạng + delimiter + caret.
+- **Safety policy tests:** từ có-dấu-hợp-lệ không bị auto-đổi; diacritics không auto ở v1; ignore không phạt như reject cứng; `allow_transform=false`/`allow_learning=false` không tạo transform/evidence/store mutation.
 - **Perf tests** (§11).
 - **Security tests:** không network call; blob mã hoá; atomic-write/recovery; rewrap khi đổi passphrase.
 
@@ -263,5 +323,5 @@ OpenKey (C++/GPL, mẫu Win+Mac), bamboo-core (Go/MIT, tách core sạch), VKey 
 ---
 
 ## 12. Bước tiếp theo
-1. Người dùng review spec v2.
-2. Chuyển **writing-plans** → kế hoạch triển khai v1 (headless brain, TDD), gồm: lập **bảng provenance data**, và **vi-rs compatibility gate**.
+1. Triển khai theo [`2026-08-17-openvikey-v1-implementation-plan.md`](../plans/2026-08-17-openvikey-v1-implementation-plan.md), bắt đầu từ workspace/provenance và `vi-rs` compatibility gate.
+2. Không mở rộng sang OS integration, sync, TUI hay phrase-level diacritics nếu chưa cập nhật spec/ADR.

@@ -1,5 +1,8 @@
 //! OpenViKey Lab CLI harness.
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    openvikey_lab::cli::run()
+fn main() {
+    if let Err(error) = openvikey_lab::cli::run() {
+        eprintln!("Error: {error}");
+        std::process::exit(1);
+    }
 }
