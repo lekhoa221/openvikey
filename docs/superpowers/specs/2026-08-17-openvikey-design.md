@@ -1,209 +1,267 @@
 # OpenViKey — Thiết kế (Design Spec)
 
 - **Ngày:** 2026-08-17
-- **Trạng thái:** Draft (chờ review)
+- **Trạng thái:** Draft v2 (đã chỉnh theo review — chờ review lại)
 - **Tên dự án:** OpenViKey (`openvikey`)
-- **License dự kiến:** Open source hoàn toàn (permissive, ví dụ MIT/Apache-2.0), phi thương mại — không thu phí.
+- **License:** **MIT** — mã nguồn mở hoàn toàn (OSI). *Tác giả không thu phí và không thương mại hoá; MIT không hạn chế người khác* (kể cả dùng thương mại). Không gọi dự án là "phi thương mại".
+
+> **Changelog v2:** siết phạm vi v1 (defer sync/merge, OS-keyring thật, khôi phục dấu cả cụm, settings UI); biến contract engine, thuật toán học, tiêu chí thành công thành thứ *đo được & tất định*; sửa mâu thuẫn pipeline; thêm envelope-encryption & performance budget; cập nhật provenance.
 
 ---
 
 ## 1. Tầm nhìn & điểm khác biệt
 
-OpenViKey là **bộ gõ tiếng Việt tự học cá nhân**. Khác với UniKey/OpenKey (bộ gõ *tĩnh*: luật cố định + danh sách viết tắt phải tự khai báo), OpenViKey xây một **mô hình gõ chữ cá nhân hoá** thích nghi dần theo *cách gõ riêng của từng người* — giống như mỗi người một nét chữ tay.
+OpenViKey là **bộ gõ tiếng Việt tự học cá nhân**. Khác UniKey/OpenKey (bộ gõ *tĩnh*: luật cố định + danh sách viết tắt tự khai báo), OpenViKey xây một **mô hình gõ chữ cá nhân hoá** thích nghi dần theo *cách gõ riêng của từng người* — như mỗi người một nét chữ tay.
 
-Vấn đề gốc cần giải: gõ tiếng Việt nhanh thì hay sai (đảo chữ, nuốt dấu, đặt dấu sai chỗ, viết tắt), phải xoá đi gõ lại liên tục; các công cụ hiện có yêu cầu liệt kê luật thủ công và không học được thói quen cá nhân.
+Vấn đề gốc: gõ nhanh hay sai (đảo chữ, nuốt/đặt dấu sai chỗ, viết tắt), phải xoá đi gõ lại; công cụ hiện có bắt liệt kê luật thủ công và không học thói quen cá nhân.
 
-**Luận điểm cốt lõi:** không hai người gõ giống nhau. "Chắc chắn" (khi nào tự sửa) không phải một ngưỡng cố định, mà là **độ tự tin học được** riêng cho từng người, từng phép sửa.
+**Luận điểm cốt lõi:** "chắc chắn" (khi nào tự sửa) không phải ngưỡng cố định mà là **độ tự tin học được**, riêng theo từng người, từng phép sửa.
 
 ---
 
-## 2. Mục tiêu & phạm vi
+## 2. Phạm vi
 
-### 2.1 Sáu năng lực sản phẩm (bức tranh đầy đủ)
-1. **Engine gõ** Telex/VNI: phím → tiếng Việt.
-2. **Sửa lỗi gõ/đảo chữ (fuzzy):** `khọgn → không`, `chàoo → chào`.
-3. **Sửa telex/dấu sai vị trí:** `ch2ao → chào`.
-4. **Viết tắt tự bung:** `ko → không`, `dc → được`, `ntn → như thế nào`.
-5. **Tự thêm dấu cho chữ không dấu (diacritic restoration):** `khong the nao → không thể nào`.
-6. **Mô hình tự tin thích nghi:** học từ tín hiệu ngầm + tường minh, "tốt nghiệp" phép sửa từ *gợi ý* lên *tự thay*, và hạ cấp khi bị từ chối.
+### 2.1 Sáu năng lực sản phẩm (bức tranh đầy đủ, không phải tất cả trong v1)
+1. Engine gõ Telex/VNI.
+2. Sửa lỗi gõ/đảo chữ (fuzzy): `khọgn → không`.
+3. Sửa telex/dấu sai vị trí: `ch2ao → chào`.
+4. Viết tắt tự bung: `ko → không`.
+5. Thêm dấu cho chữ không dấu (per-token trong v1; cả cụm-câu là milestone sau).
+6. Mô hình tự tin thích nghi theo từng người dùng.
 
-### 2.2 Nền tảng & lộ trình
-- **Đích cuối:** Windows + macOS, dùng chung một core.
-- **Giai đoạn 1 (v1 — spec này tập trung vào đây):** *Headless brain*. Toàn bộ engine + 4 loại sửa + vòng học chạy trong một **harness thử nghiệm (CLI/TUI)** — **chưa** hook toàn hệ thống. Mục tiêu: **chứng minh phần khó nhất (sự "thông minh")** trước khi đụng tích hợp OS.
-- **Giai đoạn 2:** Bọc tích hợp toàn hệ thống trên **Windows qua TSF (Text Services Framework)** quanh core đã chín.
-- **Giai đoạn 3:** **macOS qua CGEventTap**, tái dùng chính core đó.
+### 2.2 Feature matrix — v1 (headless brain)
 
-### 2.3 Non-goals (v1)
-- Không hook bàn phím toàn hệ thống (để GĐ 2).
-- Không UI cài đặt hoàn chỉnh, không đóng gói installer.
-- Không hạ tầng backend, không tài khoản, không cloud, không telemetry — **vĩnh viễn**.
-- Không macOS trong v1.
+**v1 BẮT BUỘC làm:**
+- `engine` Telex/VNI + `CompositionSnapshot` (raw_keys / rendered / normalized-NFC).
+- Sinh ứng viên (candidate generation) cho cả 4 loại sửa — **diacritics giới hạn per-token top-k suggestion, chỉ ngữ cảnh trái**.
+- `decision` + `model` học **mô phỏng** (deterministic), gồm undo/hoàn tác.
+- **Corpus test-runner** đo các metric ở §3.
+- **Lưu mã hoá local** qua `SecretProvider`/`KeyProvider` *inject* (test dùng provider in-memory/tất định).
+
+**v1 KHÔNG làm (defer sang milestone sau — đã chốt với chủ dự án):**
+- Hook bàn phím toàn hệ thống (TSF/CGEventTap) — GĐ2/3.
+- **OS-keyring thật** (DPAPI/Keychain) — v1 chỉ dùng provider inject.
+- **Đồng bộ & merge đa máy** (CRDT) — §7.5.
+- **Khôi phục dấu cả cụm/câu** (delayed decision / beam search) — milestone riêng, §5.4.
+- **Settings UI** / bảng "app đã học gì" bản GUI (v1 chỉ cần API + dump text để test).
+
+### 2.3 Nền tảng & lộ trình
+- **Đích cuối:** Windows + macOS, chung `openvikey-core`.
+- **GĐ1 (v1 — spec này):** headless brain, chứng minh sự "thông minh".
+- **GĐ2:** Windows qua **TSF**.
+- **GĐ3:** macOS — **spike: IMKInputController (InputMethodKit) vs CGEventTap** (chưa quyết, §10).
+
+### 2.4 Non-goals (vĩnh viễn)
+Zero backend, không tài khoản, không cloud, không telemetry, không lưu data người dùng ở đâu ngoài máy họ.
 
 ---
 
 ## 3. Tiêu chí thành công (đo được) — v1
 
-1. **Đúng cơ bản:** engine Telex/VNI vượt một bộ golden test tất định (chuỗi phím → tiếng Việt kỳ vọng) cho mọi ca chuẩn.
-2. **Bốn bộ sửa hoạt động:** mỗi bộ (telex-fix, fuzzy, abbrev, diacritics) vượt bộ golden test riêng.
-3. **Không sửa bừa:** trên corpus câu tiếng Việt gõ đúng, **tỉ lệ sửa-sai (false-correction) < ngưỡng đặt ra** (chỉ số quan trọng nhất). Từ gõ đúng không bao giờ bị đổi.
-4. **Học được:** trong mô phỏng vòng học, một phép sửa nhất quán **tốt nghiệp** lên "tự thay" sau ≤ N lần lặp; một phép sửa bị từ chối liên tục **hạ cấp** khỏi "tự thay".
-5. **Hoàn tác được:** mọi tự-thay đều đảo ngược được; chốt-rồi-undo trả về nguyên trạng ký tự.
-6. **Riêng tư:** model lưu ở dạng mã hoá; không có lời gọi mạng nào phát sinh khi chạy.
+> Nguyên tắc: **held-out corpus** — dữ liệu build lexicon/model KHÁC dữ liệu đánh giá. Tách metric cho *auto-replace* và *suggestion*. Ngưỡng dưới là **mục tiêu khởi điểm để calibrate**, không phải hằng số bất biến.
+
+### 3.1 Engine (tất định)
+- Vượt **ma trận golden** `(chuỗi phím → tiếng Việt kỳ vọng)` phủ các trục: **input method** {Telex, VNI}; **đặt dấu** {modern `oà` / classic `òa`}; casing; reset/escape (double-key, phím khôi phục); **NFC/NFD**; tiếng Anh passthrough; URL/code/mixed. 100% pass.
+
+### 3.2 Chất lượng sửa (theo từng loại lỗi)
+Taxonomy lỗi: (a) đặt dấu sai vị trí, (b) đảo chữ/phím liền kề, (c) thiếu dấu, (d) viết tắt.
+- **Auto-replace:** precision ≥ **0.99** (⇒ **FPR ≤ 1%**) trên held-out; báo cả **coverage** (tỉ lệ lỗi được auto-sửa).
+- **Suggestion:** **top-1 ≥ 0.85**, **top-3 ≥ 0.95** trên các lỗi thuộc coverage.
+- **Recall theo từng loại lỗi** (a)–(d) báo riêng.
+- **Không sửa bừa:** từ *đã có dấu & hợp lệ* không bao giờ bị auto-đổi. Chữ *không dấu / viết tắt hợp lệ-mà-mơ-hồ* → đi **suggestion**, và tính vào FPR nếu auto-đổi sai.
+
+### 3.3 Học (mô phỏng tất định)
+- Phép sửa nhất quán **promote** lên auto sau **≤ K_promote** lần net-positive (mặc định K=8, calibrate).
+- Phép sửa bị từ chối **demote** khỏi auto sau **≤ K_demote** lần undo (mặc định K=2).
+- **Convergence:** cùng chuỗi sự kiện → cùng trạng thái model (property test).
+
+### 3.4 Undo & riêng tư
+- Mọi auto-replace **hoàn tác được**; chốt-rồi-undo trả nguyên trạng grapheme.
+- Không lời gọi mạng nào phát sinh khi chạy (test bằng network sandbox/asserts).
 
 ---
 
 ## 4. Kiến trúc
 
-### 4.1 Crate & module
-
-**`openvikey-core`** (Rust thuần, không phụ thuộc OS) — bộ não:
+### 4.1 Crate & module (`openvikey-core`, Rust thuần, KHÔNG phụ thuộc OS)
 
 | Module | Nhiệm vụ | Phụ thuộc |
 |---|---|---|
-| `engine` | Telex/VNI: phím → tiếng Việt; giữ *từ đang soạn* (composing buffer). Phần tất định. | — |
-| `lexicon` | Từ điển tiếng Việt nền + bảng tần suất từ/bigram (kiến thức cold-start), nạp từ file data đóng gói. | — |
-| `correct` | 4 bộ sửa chạy trên một từ hoàn chỉnh + ngữ cảnh trái → sinh ứng viên có điểm. | `lexicon`, `model` |
-| `model` | **Mô hình cá nhân** đè lên `lexicon`: đếm chấp nhận/từ chối, tần suất từ riêng, viết tắt & cặp gõ-sai→sửa đã học; điểm tự tin + ngưỡng + decay. | — |
-| `decision` | Cổng tự tin: mỗi ứng viên → *tự-thay / gợi-ý / bỏ qua*. | `model` |
-| `store` | Lưu mã hoá (XChaCha20-Poly1305 + Argon2id + OS keyring); nạp/ghi/**merge** blob model. | `model` |
-| `feedback` | Nuốt tín hiệu ngầm (gõ-xoá-gõ lại) + tường minh (accept/reject) → cập nhật `model`. | `model` |
+| `types` | Kiểu chung: `InputEvent`, `CompositionSnapshot`, `Candidate`, `EngineAction`. | — |
+| `engine` | Telex/VNI: phím → `CompositionSnapshot{raw_keys, rendered, normalized}`. Tất định. | `types` |
+| `lexicon` | Từ điển nền + tần suất từ/bigram (data-driven, nạp từ file). | `types` |
+| `generate` | **Generators thuần** (telex_fix, fuzzy, abbrev, diacritics) → ứng viên có điểm + **evidence/rule nguồn**. KHÔNG đọc `model`. | `lexicon`, `engine` |
+| `rank` | normalize thang điểm → **dedupe** → base rank → **personal rerank** (đọc `model`). | `model` |
+| `model` | Thống kê cá nhân: đếm evidence theo **rule-context key**, confidence, hysteresis, decay. | `types` |
+| `decision` | Policy: `auto / suggest / ignore` theo confidence + hysteresis. | `model` |
+| `feedback` | Tín hiệu ngầm (gõ-xoá-gõ lại) + tường minh → cập nhật `model`. | `model` |
+| `store` | Envelope-encryption; persistence sau trait `KeyProvider`/`SecretProvider` (inject). | `model` |
 
-**`openvikey-lab`** (harness v1): CLI/TUI nạp phím vào core, hiển thị từ-đang-soạn + ứng viên + gợi ý, cho phép accept/reject để *quan sát bộ não*; kèm **test-runner** chạy corpus đo độ chính xác & hành vi học.
-
-**Về sau (không thuộc v1):** `openvikey-win` (TSF), `openvikey-mac` (CGEventTap) — mỏng, bọc quanh `openvikey-core`.
-
-### 4.2 Nguyên tắc thiết kế
-- **Core tách rời hoàn toàn khỏi nền tảng** (bài học từ bamboo-core/libunikey): core không biết gì về OS, chỉ nhận sự kiện phím và trả về *(số backspace cần phát, text mới, danh sách gợi ý)*.
-- **Interface rõ ràng** cho engine (tham khảo `IInputEngine` của VKey): `push_key`, `backspace`, `peek`, `commit`, `reset` — không dùng global state.
-- Mỗi module một trách nhiệm, test độc lập được.
-
-### 4.3 Luồng dữ liệu (mỗi lần gõ phím)
+**Provider traits** (inject từ ngoài; v1 dùng bản in-memory/tất định):
 ```
-phím → engine (soạn từ) → [ranh giới từ? space/dấu câu]
-   → correct (4 bộ sửa → ứng viên có điểm)
-   → model (tái tính trọng số theo thống kê cá nhân)
-   → decision (cổng tự tin)
-        ├─ tự tin cao → TỰ THAY (phát backspace + text mới) + ghi log để undo
-        └─ tự tin thấp → HIỆN GỢI Ý (1–3 ứng viên)
-   ← feedback (accept/reject; hoặc phát hiện gõ-xoá-gõ lại) → cập nhật model → store
+trait SecretProvider { fn wrap(&self, dek: &Dek) -> Wrapped; fn unwrap(&self, w: &Wrapped) -> Option<Dek>; }
+```
+→ core **không** biết DPAPI/Keychain; adapter GĐ2/3 cấp bản thật.
+
+**`openvikey-lab`** (harness v1): CLI/TUI nạp `InputEvent`, hiển thị composition + ứng viên + gợi ý, cho accept/reject; **test-runner** chạy corpus đo §3; **dump model** dạng text để kiểm tra "đã học gì".
+
+**Về sau:** `openvikey-win` (TSF), `openvikey-mac` (IMK/CGEventTap) — bọc core, tự dịch `ReplaceRange` sang **UTF-16/CGEvent**.
+
+### 4.2 Core contract (ngữ nghĩa)
+- **`CompositionSnapshot`**: `raw_keys` (chuỗi phím thô — `telex_fix` cần), `rendered` (text đang hiển thị), `normalized` (**NFC**).
+- **`EngineAction`**: `UpdateComposition | Commit | ReplaceRange{range, text} | ShowSuggestions(Vec<Candidate>) | UndoReplacement`.
+- **Đơn vị `range`**: tính bằng **grapheme cluster** ở core (adapter dịch sang UTF-16 code unit cho TSF / CGEvent cho macOS). Chuẩn hoá **NFC** trước khi so khớp lexicon.
+- **Undo của autocorrect** là action riêng (`UndoReplacement`) — khác backspace thường; một lần undo hoàn nguyên đúng phần đã replace và ghi tín hiệu reject.
+
+### 4.3 Luồng dữ liệu
+```
+InputEvent → engine (compose → CompositionSnapshot)
+   → [ranh giới từ]
+   → generate (generators thuần → candidates + evidence)
+   → rank (normalize thang điểm → dedupe → base rank → personal rerank[model])
+   → decision (hysteresis: auto / suggest / ignore)
+        ├─ auto    → ReplaceRange + ghi log undo
+        └─ suggest → ShowSuggestions (top-k)
+   ← feedback (accept / explicit-reject / undo / ignore*) → model → store (debounced, encrypted)
+   (* ignore = tín hiệu YẾU/censored, không phải reject cứng)
 ```
 
 ---
 
-## 5. Pipeline sửa lỗi (chi tiết 4 bộ sửa)
+## 5. Pipeline sinh & xếp hạng ứng viên
 
-Đầu vào mỗi bộ: một *từ hoàn chỉnh* (khi gặp ranh giới từ) + ngữ cảnh trái (vài từ trước). Đầu ra: danh sách ứng viên `(text, loại, điểm gốc)`.
+### 5.1 Generators (thuần, độc lập model)
+Đầu vào: `CompositionSnapshot` (+ ngữ cảnh trái vài token). Đầu ra: `Candidate{text, source_rule, evidence, base_score}`.
+- **`telex_fix`** — đọc `raw_keys`, phát hiện dấu/mũ đặt sai vị trí, tái dựng theo luật đặt dấu TV.
+- **`fuzzy`** — edit distance **có trọng số** với lexicon: phím liền kề & transposition rẻ hơn; ràng buộc âm tiết TV hợp lệ.
+- **`abbrev`** — bung viết tắt (bộ mồi + đã học).
+- **`diacritics`** — **per-token top-k**, xếp theo bigram (nền + cá nhân), *chỉ ngữ cảnh trái*. Mặc định ra **suggestion** (mơ hồ cao).
 
-- **`telex_fix`** — bắt lỗi *chuỗi gõ* dấu/mũ đặt sai vị trí (vd `ch2ao`, số/ký tự dấu lọt sai chỗ) và tái dựng đúng theo quy tắc đặt dấu tiếng Việt.
-- **`fuzzy`** — so khớp mờ với `lexicon` theo **edit distance có trọng số**: phím liền kề trên bàn phím rẻ hơn, hoán vị (transposition) rẻ hơn, có xét âm tiết hợp lệ tiếng Việt. Xử lý `khọgn → không`.
-- **`abbrev`** — bung viết tắt từ *bộ mồi phổ biến* + *viết tắt đã học của người dùng*. `ko → không`.
-- **`diacritics`** — khôi phục dấu từ chữ không dấu; xếp hạng nhiều phương án theo **mô hình ngôn ngữ bigram** (nền + cá nhân). Đây là bộ **mơ hồ nhất** → thường ra *gợi ý* thay vì tự-thay.
+### 5.2 Chuẩn hoá & hợp nhất
+- Đưa điểm mọi generator về **cùng thang** (calibrated score).
+- **Dedupe** khi nhiều generator ra cùng text (gộp evidence, giữ nguồn mạnh nhất).
+- **Tie-break/priority** khi xung đột (vd abbrev vs fuzzy): theo evidence cá nhân rồi base score.
 
-Tất cả ứng viên đi qua `model` (tái tính trọng số theo cá nhân) rồi `decision`.
+### 5.3 Personal rerank
+`rank` áp thống kê cá nhân (`model`) lên danh sách đã hợp nhất → thứ hạng cuối. Candidate mang **evidence + source_rule** để `feedback` quy tín hiệu về **đúng rule-context**.
 
----
-
-## 6. Hệ thống tự học (trái tim sản phẩm)
-
-### 6.1 Điểm tự tin & hai ngưỡng
-- Mỗi luật/cặp sửa giữ bộ đếm *chấp nhận/từ chối*; confidence = tỉ lệ chấp nhận được làm mượt (Bayesian smoothing).
-- **Hai ngưỡng có vùng đệm (hysteresis)** chống dao động: `T_gợi-ý` (vượt → hiện gợi ý) và `T_tự-thay` (vượt → tự thay). Đây chính là định nghĩa định lượng của "chắc chắn".
-
-### 6.2 Tín hiệu học
-- **Ngầm (mạnh nhất, không tốn công người dùng):** phát hiện mẫu *gõ X → backspace → gõ Y* trong cửa sổ ngắn → ứng viên sửa `X→Y`.
-- **Tường minh:** chọn gợi ý / không hoàn tác tự-thay = `+`; hoàn tác trong N phím / lờ gợi ý = `−`.
-- **Corpus cá nhân:** từ đã chốt cập nhật bảng tần suất riêng → nuôi `fuzzy` và `diacritics` nghiêng về từ ngữ *người dùng thật sự dùng*.
-
-### 6.3 Ổn định & an toàn học
-- **Decay theo thời gian:** gần đây quan trọng hơn nhưng không overfit một phiên.
-- **Sàn nền (regularization):** `lexicon` nền luôn có tiếng nói → chống "học chết" một lỗi gõ.
-- **Cold start:** ngày đầu app không rỗng — ship kèm lexicon nền + bộ viết tắt mồi + mẫu lỗi gõ phổ biến; lớp cá nhân đắp lên và dần lấn át.
-- **Vòng lặp phản hồi:** vì tự-thay có thể tự củng cố cái sai → **undo một phím** + **nhật ký "vừa sửa gì"**.
-
-### 6.4 Minh bạch & kiểm soát
-- Bảng "app đã học gì": xem/sửa/xoá từng mục; nút **"quên cái này"** và **"quên tất cả"**.
-- Model khi giải mã là đọc được bằng mắt người (định dạng minh bạch).
+### 5.4 Giới hạn v1 (đã chốt)
+Khôi phục dấu **cả cụm/câu** (`khong the nao → không thể nào`) cần *delayed decision / beam search / sửa token đã commit* → **milestone riêng**. v1 chỉ per-token suggestion với ngữ cảnh trái.
 
 ---
 
-## 7. Bảo mật & lưu trữ
+## 6. Hệ thống tự học (thuật toán tất định)
 
-Ràng buộc bất di bất dịch: **local-first, zero backend, không lưu data người dùng ở bất kỳ đâu ngoài máy họ.** Model cá nhân được coi như *dữ liệu định danh sinh trắc* → bảo mật từ ngày đầu.
+### 6.1 Đơn vị học: rule-context key
+Mỗi phép sửa được khoá theo context: `{input_method, correction_type, từ_trái?, source_rule}` (app/session thêm ở GĐ2). Evidence tích theo key này.
 
-1. **Mã hoá tại chỗ:** toàn bộ model nằm trong một container mã hoá **XChaCha20-Poly1305** (hoặc AES-256-GCM).
-2. **Nguồn khoá:** khoá chính bọc trong **kho bảo mật HĐH** — Windows DPAPI/Credential Manager, macOS Keychain — để không phải gõ mật khẩu mỗi lần. Kèm **passphrase** người dùng đặt (dẫn xuất khoá **Argon2id**) làm khoá *di động* cho đồng bộ.
-3. **Đồng bộ = chính blob mã hoá đó, người dùng tự mang đi** (Dropbox/iCloud/USB của họ). Nơi trung chuyển không bao giờ thấy nội dung → không cần server nào.
-4. **Merge khi đồng bộ:** Win và Mac học độc lập → gộp có **cộng dồn đếm + mốc thời gian + decay** (hướng CRDT), không ghi đè thô.
-5. **Không telemetry, không gọi mạng** mặc định — chạy offline hoàn toàn.
-6. **Chốt chặn ngữ cảnh nhạy cảm:** không học & không kích hoạt trong ô mật khẩu, terminal, app trong denylist (mô phỏng ở v1 harness; thật ở GĐ 2).
+### 6.2 Confidence & hysteresis (state-dependent)
+- Confidence = hậu nghiệm Beta với **prior α₀=β₀=1** (calibrate) trên đếm net.
+- **Hysteresis phụ thuộc trạng thái:**
+  - đang *suggest* → **promote** lên *auto* khi `conf ≥ 0.95` **và** evidence ≥ `min_evidence` (mặc định 8).
+  - đang *auto* → **demote** về *suggest* khi `conf < 0.85` **hoặc** ≥ `K_demote` undo gần đây.
+
+### 6.3 Trọng số tín hiệu (calibrate)
+| Tín hiệu | Trọng số | Ghi chú |
+|---|---|---|
+| Chọn suggestion / accept | +1.0 | tường minh |
+| Không-undo sau cửa sổ settle | +0.3 | **positive yếu, ghi đúng 1 lần** |
+| Undo autocorrect | −1.5 | tường minh, mạnh |
+| Lờ suggestion | −0.2 | **yếu/censored** (có thể user không thấy) |
+| Ngầm gõ-xoá-gõ lại `X→Y` | +1.0 cho `X→Y` | mining từ hành vi |
+
+### 6.4 Decay & ổn định
+- **Decay áp trên evidence event** (không trên confidence trực tiếp): trọng số sự kiện suy giảm theo tuổi (half-life calibrate) → gần đây nặng hơn, không overfit 1 phiên.
+- **Sàn nền:** lexicon nền luôn có tiếng nói (regularization) → chống "học chết" một lỗi.
+- **Xử lý cursor/edit:** nếu con trỏ nhảy/không liền mạch giữa X và Y → **không** coi là cặp sửa (tránh học nhầm).
+
+### 6.5 Cold start & minh bạch
+- Ship kèm lexicon nền + viết tắt mồi + mẫu lỗi phổ biến; lớp cá nhân đắp lên, dần lấn át.
+- API xem/sửa/xoá từng mục đã học + "quên tất cả" (GUI để GĐ sau; v1 có API + text dump).
 
 ---
 
-## 8. Chiến lược test (mục đích cốt lõi của v1)
+## 7. Bảo mật & lưu trữ (envelope encryption)
 
-Làm **test-first (TDD)**:
-- **Golden corpus:** ca `(chuỗi phím → tiếng Việt kỳ vọng)` tất định cho engine + từng bộ sửa.
-- **Đo độ chính xác:** chạy trên corpus câu có chèn lỗi → precision/recall và **tỉ lệ sửa-sai** (chỉ số then chốt).
-- **Mô phỏng vòng học:** "user script" gõ theo phong cách + lỗi nhất quán → khẳng định model *tốt nghiệp* đúng phép sửa sau N lần và *hạ cấp* cái bị từ chối.
-- **Property test:** từ gõ đúng không bao giờ bị sửa; tự-thay luôn hoàn tác được; chốt-rồi-undo trả nguyên trạng.
+Ràng buộc: **local-first, zero backend.** Diễn đạt chính xác: **không tự động gửi plaintext hay khoá đi đâu; chỉ *ciphertext* do người dùng chủ động export mới có thể rời máy.**
+
+### 7.1 Sơ đồ khoá (envelope)
+- **DEK** (Data Encryption Key) ngẫu nhiên mã hoá blob model.
+- DEK được **bọc độc lập** bởi 2 wrapper (mở bằng *bất kỳ* cái nào):
+  1. khoá từ **OS keyring** (DPAPI/Keychain) — tiện, GĐ2+;
+  2. khoá dẫn từ **passphrase** (Argon2id) — *di động*, mở được trên máy mới.
+- → giải bài toán "máy mới mở blob khi OS-key không di chuyển".
+
+### 7.2 Mã hoá
+- **XChaCha20-Poly1305** (nonce ngẫu nhiên 24-byte → an toàn với random nonce; tránh reuse).
+- **Header**: magic + version + **AAD** (bind version/metadata) + salt Argon2id + tham số KDF.
+- Schema **versioned** để migrate.
+
+### 7.3 Độ bền
+- **Atomic write** (ghi file tạm → rename) + **backup** bản trước + phục hồi khi corrupt/mất điện.
+- **Key rotation** & đổi passphrase (rewrap DEK, không cần giải/mã lại toàn model).
+
+### 7.4 Chốt chặn ngữ cảnh nhạy cảm
+Không học & không kích hoạt ở ô mật khẩu/terminal/denylist (mô phỏng ở v1; thật ở GĐ2).
+
+### 7.5 Đồng bộ (DEFER khỏi v1)
+v1 **single-device**. Khi làm sync: state-based **G/PN-Counter CRDT** (per-replica vector, merge **component-wise max**, **không cộng blob**), **tombstone** cho xoá, **decay KHÔNG áp lúc merge**, replica-id + version vector, **convergence tests**.
 
 ---
 
-## 9. Prior art & tài liệu tham khảo
+## 8. Chiến lược test (mục đích cốt lõi của v1 — TDD)
 
-> Đã khảo sát & clone (shallow) để nghiên cứu — "học cái người khác đã làm thay vì tự vẽ lại con đường". URL đã verify trực tiếp trên GitHub. Bản đồ *repo → feature* giúp biết đọc cái gì khi làm phần nào.
+- **Golden engine matrix** (§3.1): tất định, 100% pass.
+- **Corpus runner** (§3.2): held-out; báo auto precision/FPR/coverage + suggestion top-1/3 + recall theo loại lỗi.
+- **Learning simulation** (§3.3): "user script" nhất quán → khẳng định promote/demote đúng số lần; **convergence property test** (cùng events → cùng state).
+- **Property tests:** từ có-dấu-hợp-lệ không bị auto-đổi; auto luôn undo được; chốt-rồi-undo trả nguyên trạng; ignore không phạt như reject cứng.
+- **Perf tests** (§11).
+- **Security tests:** không network call; blob mã hoá; atomic-write/recovery; rewrap khi đổi passphrase.
 
-### 9.1 Repo tiếng Việt đã có sẵn (`D:\Workspace\CloneFromGit\VNKeyboard`)
-- **OpenKey** (C++, GPL) — mẫu đa nền tảng Win+Mac gần nhất: engine C++ dùng chung + CGEventTap (mac) + LL hook (win).
-- **bamboo-core** (Go, MIT) — engine thuần tách rời nền tảng cực sạch (mẫu tách core/platform).
-- **VKey** (C++20, GPL) — thiết kế `IInputEngine` + `EngineFactory` đẹp nhất, có TSF.
-- **libunikey / ibus-unikey / ukengine** (C++, LGPL) — engine UniKey gốc dạng thư viện.
-- **PHTV** (Swift, AGPL) — IME macOS hiện đại (tham khảo lớp CGEventTap).
+---
 
-### 9.2 Repo tiếng Việt clone thêm (`D:\Workspace\CloneFromGit\VNKeyboard`)
-| Repo | Ngôn ngữ | License | Liên quan (feature) |
-|---|---|---|---|
-| `ZeroX-DG/vi-rs` | Rust | MIT ✅ | **Prior art gần nhất** — engine gõ TV bằng Rust; ứng viên *dependency* cho `engine` (F1). |
-| `huytd/goxkey` | Rust | BSD-3 ✅ | App IME Rust dựng *trên* vi-rs → mẫu nối engine ↔ hook OS (F1, khung app). |
-| `vndangkhoa/vietc` | Rust | MIT ✅ | IME Rust hiện đại: macro + nhớ theo app + **phát hiện ô mật khẩu** (F1, F4, chốt chặn ngữ cảnh). |
-| `ducngg/v7` | Python | Apache-2.0 ✅ | AI IME viết tắt phụ âm+dấu (`x0ch2→xin chào`) qua GPT riêng (F4, F6). |
-| `lamquangminh/EVKey` | C++ | (kiểm tra `docs/LICENSE`) | IME Win/mac phổ biến sau UniKey — benchmark smart-typing/auto-correct (F2, F3, F4). |
-| `undertheseanlp/underthesea` | Python | Apache-2.0 ✅ | NLP tiếng Việt: tách từ + corpus + tần suất — dữ liệu cho **thêm dấu** (F5). |
-| `duongntbk/restore_vietnamese_diacritics` | Python | MIT ✅ | Khôi phục dấu bằng Transformer (~94%) — tham chiếu *tái dùng được* tốt nhất cho F5. |
-| `suicao/Vn-Accent-Restorer` | Python | — (chỉ nghiên cứu) | Nhiều cách tiếp cận thêm dấu (RNN/Transformer/seq2seq) để so sánh (F5). |
+## 9. Prior art & provenance
 
-*Dead-ends (khỏi tìm):* **GoTV/GoTiengViet** = freeware, **không** open source; bonus nếu cần thêm mẫu macOS: `xmannv/xkey` (Swift), `locple/VietKK` (JS).
+> Đã clone (shallow) **16/16 repo** để nghiên cứu (verify: bucket 2 đủ 8). Bản đồ *repo → feature*.
 
-### 9.3 Hệ thống auto-fix / adaptive-input ngôn ngữ khác (`D:\Workspace\CloneFromGit\SmartInput-OtherLangs`)
-| Repo | Ngôn ngữ | License | Liên quan (feature) |
-|---|---|---|---|
-| `espanso/espanso` | Rust | GPL-3.0 (⚠️ copyleft, chỉ nghiên cứu) | **Kiến trúc song sinh**: Rust đa nền tảng, bắt phím toàn hệ thống + chèn text; blueprint khung app + F4. |
-| `wolfgarbe/SymSpell` | C# | MIT ✅ | Thuật toán Symmetric-Delete — chuẩn cho **fuzzy nhanh** (F2, F3). Port sang Rust. |
-| `google/mozc` | C++ | BSD-3 ✅ | Google Japanese Input: chuyển đổi thống kê + **học lịch sử người dùng** — chuẩn vàng cho F5, F6. |
-| `rime/librime` | C++ | BSD-3 ✅ | IME Trung với **từ điển người dùng tự học** + engine schema YAML (F1, F6). |
-| `AnySoftKeyboard/AnySoftKeyboard` | Java | Apache-2.0 ✅ | Autocorrect + next-word + **học từ cá nhân** + Incognito (tắt học) — gương cho F2, F4, F6 & toggle riêng tư. |
-| `openboard-team/openboard` | Java | GPL-3.0 (⚠️) | LatinIME: từ điển cá nhân + next-word + suggestion-strip (F5, F6). |
-| `Manouchehri/presage` | C++ | GPL-2.0 (⚠️, mirror) | Predictive-text + **mô hình ngôn ngữ người dùng thích nghi** — thẳng vào F6. |
-| `hunspell/hunspell` | C++ | LGPL/GPL/MPL | Spell-check + phân tích hình thái (dictionary/affix) cho F2. |
+### 9.1 Repo tiếng Việt có sẵn (`CloneFromGit\VNKeyboard`)
+OpenKey (C++/GPL, mẫu Win+Mac), bamboo-core (Go/MIT, tách core sạch), VKey (C++/GPL, `IInputEngine`+TSF), libunikey/ibus-unikey/ukengine (C++/LGPL), PHTV (Swift/AGPL, CGEventTap).
 
-**Top 3 đọc trước cho điểm khác biệt (F6 — tự học):** `mozc` (học lịch sử + chuyển đổi thống kê), `AnySoftKeyboard` (học từ cá nhân + toggle riêng tư sát mục tiêu của ta), `presage` (mô hình ngôn ngữ thích nghi). Cho core Rust: bắt đầu `vi-rs` + `goxkey`, dùng `espanso` làm blueprint bắt/chèn phím.
+### 9.2 Repo tiếng Việt clone thêm (`CloneFromGit\VNKeyboard`)
+`ZeroX-DG/vi-rs` (Rust/MIT, F1 — **early-stage "~95%", cần compatibility gate trước khi phụ thuộc**), `huytd/goxkey` (Rust/BSD-3, khung app), `vndangkhoa/vietc` (Rust/MIT, F1/F4 + password-field), `ducngg/v7` (Py/Apache-2.0, F4/F6), `lamquangminh/EVKey` (C++, **license chưa rõ → verify**, benchmark F2/F3/F4), `undertheseanlp/underthesea` (Py/Apache-2.0, data F5), `duongntbk/restore_vietnamese_diacritics` (Py/MIT, F5), `suicao/Vn-Accent-Restorer` (Py/—, F5 study).
 
-**Lưu ý license khi *tái dùng code* (không chỉ đọc):** an toàn để mượn → vi-rs, goxkey, vietc, mozc, librime, SymSpell, underthesea, AnySoftKeyboard, duongntbk. **Copyleft (GPL) — đọc thoải mái, nhưng chép/link code buộc dự án theo GPL** → espanso, openboard, presage, hunspell(nhánh GPL). OpenViKey là MIT nên **tránh chép code GPL**; chỉ học ý tưởng.
+### 9.3 Ngôn ngữ khác (`CloneFromGit\SmartInput-OtherLangs`)
+`espanso` (Rust/GPL-3 ⚠️, blueprint bắt/chèn phím), `SymSpell` (C#/MIT, fuzzy F2/F3), `mozc` (C++/BSD-3, F5/F6 học lịch sử), `librime` (C++/BSD-3, từ điển user F1/F6), `AnySoftKeyboard` (Java/Apache-2.0, F2/F4/F6 + toggle riêng tư), `openboard` (Java/GPL-3 ⚠️, F5/F6), `presage` (C++/GPL-2 ⚠️ mirror, F6), `hunspell` (C++/LGPL-GPL-MPL, F2).
 
-*Repo thứ cấp (clone thêm nếu cần):* `fcitx/fcitx5`, `nuspell/nuspell`, `keymanapp/keyman` (monorepo lớn — bắt buộc `--depth 1`), `florisboard/florisboard` (lưu ý: autocorrect **chưa** ship), `kunkel321/AutoCorrect2` (giá trị ở **dataset 7000+ hotstring** typo→fix cho F3, F4).
+### 9.4 Provenance & license (khi *tái dùng*, không chỉ đọc)
+- **License code ≠ license dữ liệu:** corpus/từ điển/pretrained-weights có giấy phép RIÊNG. Trước khi nhúng data (nhất là cho F5), phải kiểm license *dữ liệu*.
+- OpenViKey là **MIT** → **tránh chép/link code GPL** (espanso, openboard, presage, hunspell-nhánh-GPL); chỉ học ý tưởng.
+- **Bảng provenance sẽ ghi:** repo · commit hash · license code · license data · redistribution · mục đích dùng. (Lập khi bắt đầu nhúng data ở giai đoạn plan.)
 
 ---
 
 ## 10. Rủi ro & câu hỏi mở
-
-- **TSF trên Rust (GĐ 2):** ít ví dụ hơn C++ → có thể phải viết binding COM, hoặc tiến hoá sang kiến trúc lai (brain Rust + shim C++). Quyết định *hoãn* tới GĐ 2 (YAGNI).
-- **Chất lượng diacritic restoration** phụ thuộc mô hình ngôn ngữ + dữ liệu → cần corpus tiếng Việt đủ tốt; giữ bộ này thiên *gợi ý* để hạn chế sửa-sai.
-- **Ranh giới từ tiếng Việt** (âm tiết vs từ ghép) ảnh hưởng thời điểm chạy correction → cần thử nghiệm.
-- **Cân bằng aggressiveness:** ngưỡng khởi tạo & tốc độ tốt-nghiệp cần tinh chỉnh qua thực nghiệm ở harness.
+- **macOS (GĐ3):** IMKInputController (InputMethodKit — API IME gốc, có composition/candidate/replacement-range) **vs** CGEventTap (event tap, cần Accessibility + Input Monitoring). → **spike, chưa quyết**.
+- **TSF trên Rust (GĐ2):** ít ví dụ; có thể tiến hoá kiến trúc lai (brain Rust + shim C++). Hoãn (YAGNI).
+- **Chất lượng diacritics** phụ thuộc data & license → giữ per-token/suggestion ở v1.
+- **Calibrate ngưỡng** (hysteresis, trọng số, decay half-life, metric targets) qua thực nghiệm ở harness.
+- **vi-rs compatibility gate** trước khi chọn làm dependency của `engine`.
 
 ---
 
-## 11. Bước tiếp theo
-1. Hoàn tất clone repo tham khảo (2 phạm vi) → cập nhật mục 9.
-2. Người dùng review spec này.
-3. Chuyển sang **writing-plans** để lập kế hoạch triển khai chi tiết cho v1 (headless brain, TDD).
+## 11. Performance budget (interactive input engine)
+
+| Chỉ số | Mục tiêu khởi điểm (calibrate) |
+|---|---|
+| Per-key latency | P50 < 1ms, **P95 < 5ms** |
+| Candidate generation (lúc commit từ) | P95 < 15ms |
+| Startup / load model | < 300ms |
+| Peak memory | < 150MB |
+| Kích thước lexicon+model đóng gói | < ~50MB |
+| Lưu mã hoá | **async, debounce (~2s), không blocking** đường gõ |
+
+---
+
+## 12. Bước tiếp theo
+1. Người dùng review spec v2.
+2. Chuyển **writing-plans** → kế hoạch triển khai v1 (headless brain, TDD), gồm: lập **bảng provenance data**, và **vi-rs compatibility gate**.

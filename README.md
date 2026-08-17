@@ -40,8 +40,8 @@ Thiết kế chi tiết: [`docs/superpowers/specs/2026-08-17-openvikey-design.md
 
 ## Bảo mật & riêng tư
 
-Local-first, **zero backend**. Mô hình lưu trong container mã hoá (XChaCha20-Poly1305 + Argon2id), khoá bọc trong OS keychain (DPAPI/Keychain). Đồng bộ = tự mang blob mã hoá giữa máy của bạn; không nơi nào lưu dữ liệu của bạn.
+Local-first, **zero backend**. Mô hình lưu trong container mã hoá (envelope: DEK + XChaCha20-Poly1305, DEK bọc bởi OS keychain và/hoặc passphrase Argon2id). **Không tự động gửi plaintext hay khoá đi đâu** — chỉ *ciphertext do bạn chủ động export* mới có thể rời máy. Đồng bộ đa máy (mang blob mã hoá đi) là tính năng *dự kiến*; v1 chạy single-device.
 
 ## License
 
-[MIT](LICENSE) — mã nguồn mở hoàn toàn, phi thương mại.
+[MIT](LICENSE) — mã nguồn mở hoàn toàn (OSI). Tác giả không thu phí và không thương mại hoá; MIT **không** hạn chế người khác (kể cả dùng thương mại).
