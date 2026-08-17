@@ -28,8 +28,8 @@ fn each_write_uses_a_unique_payload_nonce() {
 
 #[test]
 fn wrong_passphrase_header_version_and_ciphertext_are_distinct() {
-    let provider = PassphraseProvider::new("correct horse", KdfConfig::testing());
-    let wrong = PassphraseProvider::new("wrong battery", KdfConfig::testing());
+    let provider = PassphraseProvider::new_for_testing("correct horse");
+    let wrong = PassphraseProvider::new_for_testing("wrong battery");
     let blob = seal(b"private model", &provider).unwrap();
     assert_eq!(open(&blob, &wrong), Err(StoreError::WrongPassphrase));
 
@@ -62,8 +62,8 @@ fn wrong_passphrase_header_version_and_ciphertext_are_distinct() {
 
 #[test]
 fn passphrase_rewrap_keeps_encrypted_payload_unchanged() {
-    let old = PassphraseProvider::new("old passphrase", KdfConfig::testing());
-    let new = PassphraseProvider::new("new passphrase", KdfConfig::testing());
+    let old = PassphraseProvider::new_for_testing("old passphrase");
+    let new = PassphraseProvider::new_for_testing("new passphrase");
     let blob = seal(b"model payload", &old).unwrap();
     let immutable_before = payload_section(&blob).unwrap().to_vec();
 
@@ -71,6 +71,19 @@ fn passphrase_rewrap_keeps_encrypted_payload_unchanged() {
     assert_eq!(payload_section(&rewrapped).unwrap(), immutable_before);
     assert_eq!(open(&rewrapped, &new).unwrap(), b"model payload");
     assert_eq!(open(&rewrapped, &old), Err(StoreError::WrongPassphrase));
+}
+
+#[test]
+fn production_provider_rejects_parameters_below_owasp_floor() {
+    let weak = PassphraseProvider::new(
+        "weak config",
+        KdfConfig {
+            memory_kib: 19 * 1_024 - 1,
+            iterations: 2,
+            parallelism: 1,
+        },
+    );
+    assert!(matches!(seal(b"model", &weak), Err(StoreError::Kdf(_))));
 }
 
 #[test]

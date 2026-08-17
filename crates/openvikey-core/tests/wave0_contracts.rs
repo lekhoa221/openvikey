@@ -6,7 +6,9 @@ use openvikey_core::decision::{ActionCap, DecisionConfig, DecisionState};
 use openvikey_core::generate::{Generator, LeftContext};
 use openvikey_core::lexicon::{Lexicon, LexiconEntry};
 use openvikey_core::model::{EmptyModel, ModelView, RuleContextKey};
-use openvikey_core::store::{InMemorySecretProvider, InMemoryStore, ModelStore, SecretProvider};
+use openvikey_core::store::{
+    Dek, InMemorySecretProvider, InMemoryStore, ModelStore, SecretProvider,
+};
 use openvikey_core::types::{
     Candidate, CandidateSource, CompositionSnapshot, FeedbackEvent, FeedbackKind, InputMethod,
 };
@@ -165,6 +167,15 @@ fn store_round_trips_opaque_json_bytes_not_a_typed_model() {
     let restored =
         EmptyModel::from_json_payload(&loaded).expect("typed decode is the caller's job");
     assert_eq!(restored, model);
+}
+
+#[test]
+fn wrapped_key_debug_redacts_in_memory_dek() {
+    let provider = InMemorySecretProvider::new();
+    let wrapped = provider.wrap(&Dek::from_bytes(vec![42; 32])).unwrap();
+    let debug = format!("{wrapped:?}");
+    assert!(debug.contains("redacted"));
+    assert!(!debug.contains("42"));
 }
 
 #[test]

@@ -55,10 +55,20 @@ impl WrapperKind {
 }
 
 /// Wrapped DEK. Opaque to the encrypted payload.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct WrappedKey {
+    #[zeroize(skip)]
     pub kind: WrapperKind,
     pub bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for WrappedKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WrappedKey")
+            .field("kind", &self.kind)
+            .field("bytes", &"[redacted]")
+            .finish()
+    }
 }
 
 /// Injected secret wrapper. Core never talks to an OS keyring.

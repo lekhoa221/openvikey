@@ -133,17 +133,9 @@ fn sync_file(path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-#[cfg(not(target_os = "windows"))]
 fn replace_file(temp: &Path, target: &Path) -> Result<(), StoreError> {
-    fs::rename(temp, target)?;
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn replace_file(temp: &Path, target: &Path) -> Result<(), StoreError> {
-    if target.exists() {
-        fs::remove_file(target)?;
-    }
+    // `rename` maps to an atomic same-volume replacement on supported targets,
+    // including Windows; never create a delete-before-rename crash window.
     fs::rename(temp, target)?;
     Ok(())
 }

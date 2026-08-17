@@ -2,7 +2,7 @@
 
 use openvikey_core::model::{AdaptiveModel, RuleContextKey};
 use openvikey_core::store::file::{FailurePoint, FileModelStore};
-use openvikey_core::store::passphrase::{KdfConfig, PassphraseProvider};
+use openvikey_core::store::passphrase::PassphraseProvider;
 use openvikey_core::store::{ModelStore, StoreError};
 use openvikey_core::types::{CandidateSource, FeedbackEvent, FeedbackKind, InputMethod};
 use std::path::PathBuf;
@@ -18,7 +18,7 @@ fn model_path(name: &str) -> PathBuf {
 }
 
 fn provider() -> PassphraseProvider {
-    PassphraseProvider::new("restart passphrase", KdfConfig::testing())
+    PassphraseProvider::new_for_testing("restart passphrase")
 }
 
 #[test]
@@ -67,6 +67,7 @@ fn corrupt_primary_recovers_last_valid_backup() {
     let mut store = FileModelStore::new(&path);
     store.save(b"version one", &provider()).unwrap();
     store.save(b"version two", &provider()).unwrap();
+    assert_eq!(store.load(&provider()).unwrap(), b"version two");
     std::fs::write(&path, b"corrupt primary").unwrap();
 
     let reopened = FileModelStore::new(&path);
@@ -98,6 +99,6 @@ fn wrong_passphrase_does_not_fall_back_as_if_file_were_corrupt() {
     let path = model_path("wrong-passphrase");
     let mut store = FileModelStore::new(&path);
     store.save(b"private", &provider()).unwrap();
-    let wrong = PassphraseProvider::new("wrong", KdfConfig::testing());
+    let wrong = PassphraseProvider::new_for_testing("wrong");
     assert_eq!(store.load(&wrong), Err(StoreError::WrongPassphrase));
 }

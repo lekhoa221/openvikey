@@ -34,14 +34,16 @@ impl KdfConfig {
         }
     }
 
-    fn validate(self) -> Result<(), StoreError> {
-        if self.memory_kib == 0
+    fn validate(self, allow_weak_for_tests: bool) -> Result<(), StoreError> {
+        let invalid_shape = self.memory_kib == 0
             || self.memory_kib > 256 * 1_024
             || self.iterations == 0
             || self.iterations > 10
             || self.parallelism == 0
-            || self.parallelism > 16
-        {
+            || self.parallelism > 16;
+        let below_owasp_floor =
+            self.memory_kib < 19 * 1_024 || self.iterations < 2 || self.parallelism < 1;
+        if invalid_shape || (!allow_weak_for_tests && below_owasp_floor) {
             return Err(StoreError::Kdf(
                 "parameters outside safe bounds".to_string(),
             ));
@@ -65,6 +67,7 @@ impl Default for KdfConfig {
 pub struct PassphraseProvider {
     passphrase: Zeroizing<Vec<u8>>,
     config: KdfConfig,
+    allow_weak_for_tests: bool,
 }
 
 impl PassphraseProvider {
@@ -73,6 +76,17 @@ impl PassphraseProvider {
         Self {
             passphrase: Zeroizing::new(passphrase.as_ref().as_bytes().to_vec()),
             config,
+            allow_weak_for_tests: false,
+        }
+    }
+
+    /// Explicit weak provider for integration tests; never use for persisted user data.
+    #[must_use]
+    pub fn new_for_testing(passphrase: impl AsRef<str>) -> Self {
+        Self {
+            passphrase: Zeroizing::new(passphrase.as_ref().as_bytes().to_vec()),
+            config: KdfConfig::testing(),
+            allow_weak_for_tests: true,
         }
     }
 
@@ -87,6 +101,7 @@ impl std::fmt::Debug for PassphraseProvider {
         f.debug_struct("PassphraseProvider")
             .field("passphrase", &"[redacted]")
             .field("config", &self.config)
+            .field("allow_weak_for_tests", &self.allow_weak_for_tests)
             .finish()
     }
 }
@@ -96,7 +111,7 @@ impl SecretProvider for PassphraseProvider {
         if dek.as_bytes().len() != DEK_LEN {
             return Err(StoreError::CorruptHeader);
         }
-        self.config.validate()?;
+        self.config.validate(self.allow_weak_for_tests)?;
         let mut salt = [0_u8; SALT_LEN];
         let mut nonce = [0_u8; NONCE_LEN];
         getrandom::getrandom(&mut salt)
@@ -135,7 +150,7 @@ impl SecretProvider for PassphraseProvider {
             iterations: read_u32(&wrapped.bytes, 12)?,
             parallelism: read_u32(&wrapped.bytes, 16)?,
         };
-        config.validate()?;
+        config.validate(self.allow_weak_for_tests)?;
         let salt_start = SLOT_MAGIC.len() + 12;
         let salt_end = salt_start + SALT_LEN;
         let nonce_end = salt_end + NONCE_LEN;
