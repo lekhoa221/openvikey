@@ -116,3 +116,11 @@ fn read_chars_into_buffer(
 fn io_from_windows(error: &windows::core::Error) -> io::Error {
     io::Error::other(error.to_string())
 }
+
+/// Detach the console after passphrase entry (tray / message-loop host).
+pub fn release_console() {
+    #[cfg(windows)]
+    unsafe {
+        let _ = windows::Win32::System::Console::FreeConsole();
+    }
+}

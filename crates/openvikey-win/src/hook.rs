@@ -1,4 +1,4 @@
-//! WH_KEYBOARD_LL return helpers (no key queue).
+//! WH_KEYBOARD_LL helpers and callback (no key queue).
 //!
 //! Callback order (synchronous, no key queue channel):
 //! 1. `decide` (lock-free policy)
@@ -9,7 +9,7 @@
 
 use std::sync::Mutex;
 
-use crate::host::{handle_key_locked, TypingHost};
+use crate::host::{handle_key_locked, handle_runtime_key_locked, sync_runtime_locked, TypingHost};
 use crate::policy::{KeyDecision, RawKey};
 
 /// `LLKHF_UP` — transition state is key-up when set.
@@ -47,5 +47,103 @@ pub fn raw_from_ll(vk: u16, flags: u32, extra_info: usize) -> RawKey {
         extra_info,
         left_ctrl: false,
         left_shift: false,
+    }
+}
+
+#[cfg(windows)]
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0))
+}
+
+#[cfg(windows)]
+fn fill_modifiers(raw: &mut RawKey) -> (bool, bool, bool) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetKeyState, VIRTUAL_KEY, VK_CAPITAL, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT,
+        VK_LWIN, VK_MENU, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
+    };
+
+    let down = |vk: VIRTUAL_KEY| unsafe { GetKeyState(i32::from(vk.0)) } < 0;
+    raw.control = down(VK_CONTROL) || down(VK_LCONTROL) || down(VK_RCONTROL);
+    raw.shift = down(VK_SHIFT) || down(VK_LSHIFT) || down(VK_RSHIFT);
+    raw.left_ctrl = down(VK_LCONTROL);
+    raw.left_shift = down(VK_LSHIFT);
+
+    let caps = unsafe { GetKeyState(i32::from(VK_CAPITAL.0)) } & 1 != 0;
+    let alt = down(VK_MENU) || down(VK_LMENU) || down(VK_RMENU);
+    let meta = down(VK_LWIN) || down(VK_RWIN);
+    (caps, alt, meta)
+}
+
+/// Keyboard LL procedure: sync runtime via host helpers, then [`handle_key_locked`].
+///
+/// # Safety
+///
+/// Must be installed via `SetWindowsHookExW(WH_KEYBOARD_LL, ...)`. `lparam` must
+/// point to a valid `KBDLLHOOKSTRUCT` when `code == HC_ACTION`.
+#[cfg(windows)]
+pub unsafe extern "system" fn keyboard_ll_proc(
+    code: i32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::Foundation::LRESULT;
+    use windows::Win32::UI::WindowsAndMessaging::{CallNextHookEx, KBDLLHOOKSTRUCT, HC_ACTION};
+
+    if code != i32::try_from(HC_ACTION).unwrap_or(0) {
+        return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+    }
+    let kb = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
+    let mut raw = raw_from_ll(
+        u16::try_from(kb.vkCode).unwrap_or(0),
+        kb.flags.0,
+        kb.dwExtraInfo,
+    );
+    let (caps, alt, meta) = fill_modifiers(&mut raw);
+    let at_ms = now_ms();
+    sync_runtime_locked(at_ms, caps, alt, meta);
+    let ret = ll_return(&handle_runtime_key_locked(raw, at_ms));
+    if ret != 0 {
+        LRESULT(1)
+    } else {
+        unsafe { CallNextHookEx(None, code, wparam, lparam) }
+    }
+}
+
+/// Installed `WH_KEYBOARD_LL` hook; unhooks on drop.
+#[cfg(windows)]
+pub struct KeyboardLlHook {
+    hook: windows::Win32::UI::WindowsAndMessaging::HHOOK,
+}
+
+#[cfg(windows)]
+impl KeyboardLlHook {
+    /// Install the low-level keyboard hook.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Win32 error when `SetWindowsHookExW` fails.
+    pub fn install() -> windows::core::Result<Self> {
+        use windows::Win32::Foundation::HINSTANCE;
+        use windows::Win32::UI::WindowsAndMessaging::{SetWindowsHookExW, WH_KEYBOARD_LL};
+        let hook = unsafe {
+            SetWindowsHookExW(
+                WH_KEYBOARD_LL,
+                Some(keyboard_ll_proc),
+                Some(HINSTANCE::default()),
+                0,
+            )?
+        };
+        Ok(Self { hook })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for KeyboardLlHook {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::UnhookWindowsHookEx(self.hook);
+        }
     }
 }

@@ -14,7 +14,7 @@ fn assert_forbidden(path: &str, src: &str) {
 
 #[test]
 fn hook_and_mouse_forbid_blocking_and_serialize() {
-    for rel in ["src/hook.rs", "src/mouse.rs"] {
+    for rel in ["src/hook.rs", "src/mouse.rs", "src/ll.rs"] {
         let path = Path::new(rel);
         if !path.exists() {
             continue;
@@ -35,6 +35,16 @@ fn try_lock_lives_in_host_not_hook() {
         !hook.contains("try_lock"),
         "try_lock must live in host.rs, not hook.rs"
     );
+    let mouse = fs::read_to_string("src/mouse.rs").expect("src/mouse.rs");
+    assert!(
+        !mouse.contains("try_lock"),
+        "try_lock must live in host.rs, not mouse.rs"
+    );
+    let ll = fs::read_to_string("src/ll.rs").expect("src/ll.rs");
+    assert!(
+        !ll.contains("try_lock"),
+        "try_lock must live in host.rs, not ll.rs"
+    );
     let host = fs::read_to_string("src/host.rs").expect("src/host.rs");
     assert!(
         host.contains("try_lock"),
@@ -47,4 +57,13 @@ fn hook_has_no_key_mpsc() {
     let hook = fs::read_to_string("src/hook.rs").expect("src/hook.rs");
     assert!(!hook.contains("mpsc"), "no key mpsc in hook.rs");
     assert!(!hook.contains("std::sync::mpsc"), "no key mpsc in hook.rs");
+}
+
+#[test]
+fn main_has_no_unsafe() {
+    let main = fs::read_to_string("src/main.rs").expect("src/main.rs");
+    assert!(
+        !main.contains("unsafe"),
+        "main.rs must not contain unsafe (allowlisted modules only)"
+    );
 }

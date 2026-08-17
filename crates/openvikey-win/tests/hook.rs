@@ -56,3 +56,33 @@ fn dispatch_ll_commit_and_pass_returns_zero() {
     // Enter → CommitAndPass → CallNextHookEx (0)
     assert_eq!(dispatch_ll(&host, key(0x0D), 2), 0);
 }
+
+#[test]
+fn dispatch_ll_letter_passes_when_inject_fails() {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
+    use openvikey_win::inject::{
+        InjectError, InjectProfile, InputSender, ProfilingInjector, SynthesizedEvent,
+    };
+
+    struct FailSender;
+    impl InputSender for FailSender {
+        fn send(&mut self, events: &[SynthesizedEvent]) -> Result<u32, InjectError> {
+            Err(InjectError::Partial {
+                sent: 0,
+                expected: events.len(),
+            })
+        }
+    }
+
+    let mut typing = TypingHost::new_telex_fixture();
+    typing.set_injector(Box::new(ProfilingInjector {
+        profile: InjectProfile::Win32,
+        sender: FailSender,
+        sending: Arc::new(AtomicBool::new(false)),
+    }));
+    let host = Mutex::new(typing);
+    // Letter would be EatAndInject, but inject fails → Pass (0), do not eat.
+    assert_eq!(dispatch_ll(&host, key(0x58), 1), 0);
+}

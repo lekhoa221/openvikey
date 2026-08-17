@@ -211,3 +211,60 @@ fn query_process_image_name(process: HANDLE) -> String {
         .unwrap_or("")
         .to_owned()
 }
+
+/// Keyboard + mouse + winevent hooks for the host process.
+#[cfg(windows)]
+pub struct HostHooks {
+    _keyboard: crate::hook::KeyboardLlHook,
+    _mouse: crate::mouse::MouseLlHook,
+    _focus: FocusHook,
+}
+
+#[cfg(windows)]
+impl HostHooks {
+    /// Install WH_KEYBOARD_LL, WH_MOUSE_LL, and foreground winevent hooks.
+    ///
+    /// # Errors
+    ///
+    /// Returns a Win32 error when any install fails.
+    pub fn install(cache: Arc<FocusCache>) -> Result<Self> {
+        let keyboard = crate::hook::KeyboardLlHook::install()?;
+        let mouse = crate::mouse::MouseLlHook::install()?;
+        let focus = unsafe { FocusHook::install(cache)? };
+        Ok(Self {
+            _keyboard: keyboard,
+            _mouse: mouse,
+            _focus: focus,
+        })
+    }
+}
+
+/// Peek/dispatch host message loop until [`crate::persist::HostShutdown`] is requested.
+pub fn run_host_message_loop(shutdown: &crate::persist::HostShutdown) {
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
+        };
+        while !shutdown.is_requested() {
+            let mut msg = MSG::default();
+            let has_msg = unsafe { PeekMessageW(&raw mut msg, None, 0, 0, PM_REMOVE) };
+            if has_msg.as_bool() {
+                if msg.message == WM_QUIT {
+                    shutdown.run();
+                    break;
+                }
+                unsafe {
+                    let _ = TranslateMessage(&raw const msg);
+                    DispatchMessageW(&raw const msg);
+                }
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = shutdown;
+    }
+}

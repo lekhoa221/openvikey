@@ -1,7 +1,7 @@
 //! Synchronous typing host: session + inject (record and/or SendInput).
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use openvikey_core::engine::EngineConfig;
 use openvikey_core::lexicon::{Lexicon, LexiconEntry};
@@ -12,12 +12,66 @@ use openvikey_core::types::{
 use openvikey_session::session::{LabSession, SessionCursors};
 
 use crate::classify::profile_for_exe;
-use crate::inject::{CommandInjector, InjectProfile};
+use crate::focus::FocusCache;
+use crate::inject::{CommandInjector, InjectError, InjectProfile};
 use crate::policy::{decide, HostHotkey, HostState, KeyDecision, Mode, RawKey};
 use crate::sync::{
     commands_from_accept, commands_from_caret_break, commands_from_typed, commands_from_undo,
     InjectCommand,
 };
+
+struct HostRuntime {
+    host: Arc<Mutex<TypingHost>>,
+    focus: Arc<FocusCache>,
+}
+
+static RUNTIME: OnceLock<HostRuntime> = OnceLock::new();
+
+/// Bind host + focus for LL callbacks (call once before installing hooks).
+pub fn bind_runtime(host: Arc<Mutex<TypingHost>>, focus: Arc<FocusCache>) {
+    let _ = RUNTIME.set(HostRuntime { host, focus });
+}
+
+/// Sync HWND/exe + caps/alt/meta under `try_lock` (only lock site outside [`handle_key_locked`]).
+pub fn sync_runtime_locked(at_ms: i64, caps_lock: bool, alt: bool, meta: bool) {
+    let Some(rt) = RUNTIME.get() else {
+        return;
+    };
+    let Ok(mut guard) = rt.host.try_lock() else {
+        return;
+    };
+    if let Some((hwnd, exe)) = rt.focus.try_get() {
+        guard.set_hwnd(u64::try_from(hwnd).unwrap_or(0), exe, at_ms);
+    }
+    guard.caps_lock = caps_lock;
+    guard.alt = alt;
+    guard.meta = meta;
+}
+
+/// Live keyboard path: [`handle_key_locked`] against the bound runtime host.
+pub fn handle_runtime_key_locked(raw: RawKey, at_ms: i64) -> KeyDecision {
+    let Some(rt) = RUNTIME.get() else {
+        return KeyDecision::Pass;
+    };
+    handle_key_locked(&rt.host, raw, at_ms)
+}
+
+/// Mouse caret-break under a single `try_lock` (focus + modifiers + notify).
+pub fn caret_break_runtime_locked(at_ms: i64, caps_lock: bool, alt: bool, meta: bool) {
+    let Some(rt) = RUNTIME.get() else {
+        return;
+    };
+    let Ok(mut guard) = rt.host.try_lock() else {
+        return;
+    };
+    if let Some((hwnd, exe)) = rt.focus.try_get() {
+        guard.set_hwnd(u64::try_from(hwnd).unwrap_or(0), exe, at_ms);
+    }
+    guard.caps_lock = caps_lock;
+    guard.alt = alt;
+    guard.meta = meta;
+    guard.notify_caret_break(at_ms);
+}
 
 /// In-process host used by unit tests and the LL hook callback.
 #[allow(clippy::struct_excessive_bools)]
@@ -109,7 +163,7 @@ impl TypingHost {
     pub fn set_hwnd(&mut self, hwnd: u64, exe: String, at_ms: i64) {
         if hwnd != self.hwnd {
             let (cmds, sent) = commands_from_caret_break(&self.sent);
-            self.apply_commands(&cmds);
+            let _ = self.apply_commands(&cmds);
             self.sent = sent;
             self.last_injected_token.clear();
             self.last_injected_hwnd = 0;
@@ -142,6 +196,10 @@ impl TypingHost {
     }
 
     /// Synchronous key handling: inject runs on this stack before the decision is returned.
+    ///
+    /// On [`InjectError`], letters/`EatAndInject` become [`KeyDecision::Pass`]; Enter becomes
+    /// [`KeyDecision::EatAndIgnore`] (same as try_lock fail) so we never eat a key that did not
+    /// appear on screen.
     pub fn handle_key(&mut self, raw: RawKey, at_ms: i64) -> KeyDecision {
         let state = HostState {
             mode: self.mode,
@@ -154,15 +212,22 @@ impl TypingHost {
         let decision = decide(&raw, &state);
         match &decision {
             KeyDecision::EatAndInject(kind) => {
-                self.apply_typed(kind.clone(), at_ms);
+                if self.apply_typed(kind.clone(), at_ms).is_err() {
+                    return on_inject_fail(&raw);
+                }
             }
             KeyDecision::CommitAndPass { delimiter } => {
-                self.apply_typed(
-                    InputKind::Boundary {
-                        delimiter: *delimiter,
-                    },
-                    at_ms,
-                );
+                if self
+                    .apply_typed(
+                        InputKind::Boundary {
+                            delimiter: *delimiter,
+                        },
+                        at_ms,
+                    )
+                    .is_err()
+                {
+                    return on_inject_fail(&raw);
+                }
                 if *delimiter == '\n' {
                     self.stack_trace.push("enter".into());
                 }
@@ -190,7 +255,7 @@ impl TypingHost {
         };
         let (cmds, sent, token) =
             commands_from_accept(&visual, &self.sent, &self.last_injected_token);
-        self.apply_commands(&cmds);
+        let _ = self.apply_commands(&cmds);
         self.sent = sent;
         self.last_injected_token = token;
         self.last_injected_hwnd = self.hwnd;
@@ -204,14 +269,14 @@ impl TypingHost {
             return;
         };
         let cmds = commands_from_undo(&visual, &self.last_injected_token);
-        self.apply_commands(&cmds);
+        let _ = self.apply_commands(&cmds);
         self.last_injected_token = visual.show_nfc;
     }
 
-    fn apply_typed(&mut self, kind: InputKind, at_ms: i64) {
+    fn apply_typed(&mut self, kind: InputKind, at_ms: i64) -> Result<(), InjectError> {
         let obs = self.session.inject(kind, InputContext::default(), at_ms);
         let (cmds, sent) = commands_from_typed(&obs, &self.sent);
-        self.apply_commands(&cmds);
+        self.apply_commands(&cmds)?;
         if obs
             .engine_actions
             .iter()
@@ -228,25 +293,27 @@ impl TypingHost {
             self.last_injected_hwnd = self.hwnd;
         }
         self.sent = sent;
+        Ok(())
     }
 
     fn apply_caret_break(&mut self, at_ms: i64) {
         let (cmds, sent) = commands_from_caret_break(&self.sent);
-        self.apply_commands(&cmds);
+        let _ = self.apply_commands(&cmds);
         self.sent = sent;
         let _ = self
             .session
             .inject(InputKind::CursorMoved, InputContext::default(), at_ms);
     }
 
-    fn apply_commands(&mut self, cmds: &[InjectCommand]) {
+    fn apply_commands(&mut self, cmds: &[InjectCommand]) -> Result<(), InjectError> {
+        if let Some(injector) = self.injector.as_mut() {
+            injector.apply_commands(cmds, self.profile)?;
+        }
         if !cmds.is_empty() {
             self.stack_trace.push("inject".into());
         }
         self.recorded.extend(cmds.iter().cloned());
-        if let Some(injector) = self.injector.as_mut() {
-            let _ = injector.apply_commands(cmds, self.profile);
-        }
+        Ok(())
     }
 }
 
@@ -258,6 +325,12 @@ pub fn on_try_lock_fail(raw: &RawKey) -> KeyDecision {
     } else {
         KeyDecision::Pass
     }
+}
+
+/// When SendInput fails after a decision that would eat: same mapping as try_lock fail.
+#[must_use]
+pub fn on_inject_fail(raw: &RawKey) -> KeyDecision {
+    on_try_lock_fail(raw)
 }
 
 /// Try to lock the host; on failure use [`on_try_lock_fail`].

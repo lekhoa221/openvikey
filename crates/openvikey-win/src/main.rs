@@ -15,11 +15,12 @@ use openvikey_session::capture::{
 };
 use openvikey_session::persistence::DebouncedSaver;
 use openvikey_session::session::{LabSession, SessionCursors};
-use openvikey_win::focus::{FocusCache, FocusHook};
-use openvikey_win::host::TypingHost;
+use openvikey_win::focus::{run_host_message_loop, FocusCache};
+#[cfg(windows)]
+use openvikey_win::focus::HostHooks;
+use openvikey_win::host::{bind_runtime, TypingHost};
 use openvikey_win::inject::{InjectProfile, ProfilingInjector, SendInputSender};
-use openvikey_win::ll::{bind_runtime, keyboard_ll_proc, mouse_ll_proc};
-use openvikey_win::passphrase::read_hidden_passphrase;
+use openvikey_win::passphrase::{read_hidden_passphrase, release_console};
 use openvikey_win::persist::{default_store_paths, HostShutdown};
 
 #[derive(Parser, Debug)]
@@ -140,98 +141,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shutdown = Arc::new(HostShutdown::new());
 
     #[cfg(windows)]
-    let _hooks = install_hooks(Arc::clone(&focus))?;
+    let _hooks = HostHooks::install(Arc::clone(&focus))?;
 
-    #[cfg(windows)]
-    {
-        // Free the console after passphrase so the host is tray/message-loop only.
-        unsafe {
-            let _ = windows::Win32::System::Console::FreeConsole();
-        }
-    }
-
-    run_message_loop(&shutdown);
+    release_console();
+    run_host_message_loop(&shutdown);
 
     let _ = model_saver.flush();
     let _ = capture_saver.flush();
     drop(model_saver);
     drop(capture_saver);
     Ok(())
-}
-
-#[cfg(windows)]
-struct InstalledHooks {
-    keyboard: windows::Win32::UI::WindowsAndMessaging::HHOOK,
-    mouse: windows::Win32::UI::WindowsAndMessaging::HHOOK,
-    _focus: FocusHook,
-}
-
-#[cfg(windows)]
-impl Drop for InstalledHooks {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = windows::Win32::UI::WindowsAndMessaging::UnhookWindowsHookEx(self.keyboard);
-            let _ = windows::Win32::UI::WindowsAndMessaging::UnhookWindowsHookEx(self.mouse);
-        }
-    }
-}
-
-#[cfg(windows)]
-fn install_hooks(focus: Arc<FocusCache>) -> windows::core::Result<InstalledHooks> {
-    use windows::Win32::Foundation::HINSTANCE;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        SetWindowsHookExW, WH_KEYBOARD_LL, WH_MOUSE_LL,
-    };
-
-    let keyboard = unsafe {
-        SetWindowsHookExW(
-            WH_KEYBOARD_LL,
-            Some(keyboard_ll_proc),
-            Some(HINSTANCE::default()),
-            0,
-        )?
-    };
-    let mouse = unsafe {
-        SetWindowsHookExW(
-            WH_MOUSE_LL,
-            Some(mouse_ll_proc),
-            Some(HINSTANCE::default()),
-            0,
-        )?
-    };
-    let focus_hook = unsafe { FocusHook::install(focus)? };
-    Ok(InstalledHooks {
-        keyboard,
-        mouse,
-        _focus: focus_hook,
-    })
-}
-
-fn run_message_loop(shutdown: &HostShutdown) {
-    #[cfg(windows)]
-    {
-        use windows::Win32::UI::WindowsAndMessaging::{
-            DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
-        };
-        while !shutdown.is_requested() {
-            let mut msg = MSG::default();
-            let has_msg = unsafe { PeekMessageW(&raw mut msg, None, 0, 0, PM_REMOVE) };
-            if has_msg.as_bool() {
-                if msg.message == WM_QUIT {
-                    shutdown.run();
-                    break;
-                }
-                unsafe {
-                    let _ = TranslateMessage(&raw const msg);
-                    DispatchMessageW(&raw const msg);
-                }
-            } else {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = shutdown;
-    }
 }
