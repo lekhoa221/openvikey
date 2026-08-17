@@ -21,9 +21,18 @@ pub enum SaverError {
 
 enum Message {
     Submit(Vec<u8>),
+    Notify,
     Flush(Sender<Result<(), String>>),
     Shutdown,
 }
+
+enum Pending {
+    None,
+    Bytes(Vec<u8>),
+    Dirty,
+}
+
+type SnapshotFn = Box<dyn FnMut() -> Result<Vec<u8>, String> + Send>;
 
 pub struct DebouncedSaver {
     sender: Sender<Message>,
@@ -32,9 +41,13 @@ pub struct DebouncedSaver {
 
 impl DebouncedSaver {
     #[must_use]
-    pub fn spawn_encrypted(path: impl Into<PathBuf>, provider: PassphraseProvider) -> Self {
+    pub fn spawn_encrypted(
+        path: impl Into<PathBuf>,
+        provider: PassphraseProvider,
+        snapshot: impl FnMut() -> Result<Vec<u8>, String> + Send + 'static,
+    ) -> Self {
         let mut store = FileModelStore::new(path);
-        Self::spawn(MODEL_SAVE_DEBOUNCE, move |payload| {
+        Self::spawn_lazy(MODEL_SAVE_DEBOUNCE, snapshot, move |payload| {
             store
                 .save(&payload, &provider)
                 .map_err(|error| error.to_string())
@@ -44,20 +57,37 @@ impl DebouncedSaver {
     #[must_use]
     pub fn spawn(
         debounce: Duration,
+        save: impl FnMut(Vec<u8>) -> Result<(), String> + Send + 'static,
+    ) -> Self {
+        Self::spawn_with(debounce, None, save)
+    }
+
+    #[must_use]
+    pub fn spawn_lazy(
+        debounce: Duration,
+        snapshot: impl FnMut() -> Result<Vec<u8>, String> + Send + 'static,
+        save: impl FnMut(Vec<u8>) -> Result<(), String> + Send + 'static,
+    ) -> Self {
+        Self::spawn_with(debounce, Some(Box::new(snapshot)), save)
+    }
+
+    fn spawn_with(
+        debounce: Duration,
+        mut snapshot: Option<SnapshotFn>,
         mut save: impl FnMut(Vec<u8>) -> Result<(), String> + Send + 'static,
     ) -> Self {
         let (sender, receiver) = mpsc::channel();
         let worker = thread::spawn(move || {
-            let mut pending: Option<Vec<u8>> = None;
+            let mut pending = Pending::None;
             let mut last_error: Option<String> = None;
             loop {
-                let message = if pending.is_some() {
+                let waiting = !matches!(pending, Pending::None);
+                let message = if waiting {
                     match receiver.recv_timeout(debounce) {
                         Ok(message) => message,
                         Err(RecvTimeoutError::Timeout) => {
-                            if let Some(payload) = pending.take() {
-                                last_error = save(payload).err();
-                            }
+                            last_error =
+                                persist_pending(&mut pending, snapshot.as_mut(), &mut save);
                             continue;
                         }
                         Err(RecvTimeoutError::Disconnected) => break,
@@ -69,18 +99,18 @@ impl DebouncedSaver {
                     }
                 };
                 match message {
-                    Message::Submit(payload) => pending = Some(payload),
+                    Message::Submit(payload) => pending = Pending::Bytes(payload),
+                    Message::Notify => pending = Pending::Dirty,
                     Message::Flush(reply) => {
-                        if let Some(payload) = pending.take() {
-                            last_error = save(payload).err();
+                        if !matches!(pending, Pending::None) {
+                            last_error =
+                                persist_pending(&mut pending, snapshot.as_mut(), &mut save);
                         }
                         let result = last_error.take().map_or(Ok(()), Err);
                         let _ = reply.send(result);
                     }
                     Message::Shutdown => {
-                        if let Some(payload) = pending.take() {
-                            let _ = save(payload);
-                        }
+                        let _ = persist_pending(&mut pending, snapshot.as_mut(), &mut save);
                         break;
                     }
                 }
@@ -98,6 +128,12 @@ impl DebouncedSaver {
             .map_err(|_| SaverError::WorkerUnavailable)
     }
 
+    pub fn notify(&self) -> Result<(), SaverError> {
+        self.sender
+            .send(Message::Notify)
+            .map_err(|_| SaverError::WorkerUnavailable)
+    }
+
     pub fn flush(&self) -> Result<(), SaverError> {
         let (reply, result) = mpsc::channel();
         self.sender
@@ -108,6 +144,25 @@ impl DebouncedSaver {
             .map_err(|_| SaverError::WorkerUnavailable)?
             .map_err(SaverError::Save)
     }
+}
+
+fn persist_pending(
+    pending: &mut Pending,
+    snapshot: Option<&mut SnapshotFn>,
+    save: &mut impl FnMut(Vec<u8>) -> Result<(), String>,
+) -> Option<String> {
+    let payload = match std::mem::replace(pending, Pending::None) {
+        Pending::None => return None,
+        Pending::Bytes(bytes) => bytes,
+        Pending::Dirty => match snapshot {
+            Some(snapshot) => match snapshot() {
+                Ok(bytes) => bytes,
+                Err(error) => return Some(error),
+            },
+            None => return Some("lazy snapshot is missing".to_string()),
+        },
+    };
+    save(payload).err()
 }
 
 impl Drop for DebouncedSaver {

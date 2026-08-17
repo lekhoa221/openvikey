@@ -93,3 +93,25 @@ fn production_kdf_defaults_match_rfc9106_low_memory_profile() {
     assert_eq!(config.iterations, 3);
     assert_eq!(config.parallelism, 4);
 }
+
+#[test]
+fn passphrase_wrap_reuses_kdf_salt_and_keeps_unique_payload_nonces() {
+    let provider = PassphraseProvider::new_for_testing("session passphrase");
+    let first = seal(b"model-v1", &provider).unwrap();
+    let second = seal(b"model-v2", &provider).unwrap();
+    assert_eq!(wrap_salt(&first), wrap_salt(&second));
+    assert_ne!(
+        payload_section(&first).unwrap(),
+        payload_section(&second).unwrap()
+    );
+    assert_eq!(open(&first, &provider).unwrap(), b"model-v1");
+    assert_eq!(open(&second, &provider).unwrap(), b"model-v2");
+}
+
+fn wrap_salt(blob: &[u8]) -> [u8; 16] {
+    let payload_len = payload_section(blob).unwrap().len();
+    let rest = &blob[payload_len..];
+    let wrapped_len = u32::from_le_bytes(rest[1..5].try_into().unwrap()) as usize;
+    let wrapped = &rest[5..5 + wrapped_len];
+    wrapped[20..36].try_into().expect("wrap salt")
+}

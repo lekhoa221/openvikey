@@ -20,6 +20,7 @@ use openvikey_core::types::{InputContext, InputMethod, TonePlacement};
 use std::fs;
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 use zeroize::Zeroizing;
 
 #[derive(Parser, Debug)]
@@ -267,10 +268,26 @@ fn run_session(
     );
     session.restore_capture(log.records);
     session.restore_last_at_ms(log.header.last_at_ms);
-    let model_saver = DebouncedSaver::spawn_encrypted(model_path, provider.clone());
-    let capture_saver = DebouncedSaver::spawn_encrypted(capture_path, provider);
+    let session = Arc::new(Mutex::new(session));
+    let model_saver = DebouncedSaver::spawn_encrypted(model_path, provider.clone(), {
+        let session = Arc::clone(&session);
+        move || {
+            let session = session.lock().unwrap_or_else(PoisonError::into_inner);
+            session.model_payload().map_err(|error| error.to_string())
+        }
+    });
+    let capture_saver = DebouncedSaver::spawn_encrypted(capture_path, provider, {
+        let session = Arc::clone(&session);
+        move || {
+            let session = session.lock().unwrap_or_else(PoisonError::into_inner);
+            session
+                .capture_log()
+                .to_payload()
+                .map_err(|error| error.to_string())
+        }
+    });
     let _raw = enter_raw_mode()?;
-    run_repl(&mut session, context, &model_saver, &capture_saver)?;
+    run_repl(&session, context, &model_saver, &capture_saver)?;
     Ok(())
 }
 

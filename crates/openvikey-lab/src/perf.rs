@@ -1,5 +1,6 @@
 //! Repeatable microbenchmark report for the interactive performance budgets.
 
+use crate::session::LabSession;
 use openvikey_core::engine::{Engine, EngineConfig};
 use openvikey_core::generate::fuzzy::FuzzyGenerator;
 use openvikey_core::generate::{Generator, LeftContext};
@@ -60,6 +61,7 @@ pub struct PerfReport {
     pub lexicon: PerfLexicon,
     pub per_key_us: LatencySummary,
     pub candidate_generation_us: LatencySummary,
+    pub session_inject_us: LatencySummary,
     pub startup_load_us: u64,
     pub peak_memory_bytes: Option<u64>,
     pub packaged_lexicon_model_bytes: u64,
@@ -78,6 +80,7 @@ impl PerfReport {
 pub struct PerfSamples {
     pub per_key: usize,
     pub candidate_generation: usize,
+    pub session_inject: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -104,6 +107,7 @@ pub struct PerfGates {
     pub per_key_p50_under_1ms: bool,
     pub per_key_p95_under_5ms: bool,
     pub candidate_generation_p95_under_15ms: bool,
+    pub session_inject_p95_under_15ms: bool,
     pub startup_under_300ms: bool,
     pub peak_memory_under_150mb: Option<bool>,
     pub packaged_size_under_50mb: bool,
@@ -136,8 +140,10 @@ pub fn run_benchmarks(
 
     let per_key_samples = benchmark_per_key(config);
     let candidate_samples = benchmark_candidates(&benchmark_lexicon, config);
+    let session_samples = benchmark_session_inject(&benchmark_lexicon, config);
     let per_key_us = summarize(&per_key_samples);
     let candidate_generation_us = summarize(&candidate_samples);
+    let session_inject_us = summarize(&session_samples);
     let peak_memory_bytes = peak_memory_bytes();
     let packaged_lexicon_model_bytes =
         u64::try_from(packaged_lexicon_bytes.saturating_add(model_payload.len()))
@@ -151,6 +157,7 @@ pub fn run_benchmarks(
         per_key_p50_under_1ms: per_key_us.p50 < 1_000,
         per_key_p95_under_5ms: per_key_us.p95 < 5_000,
         candidate_generation_p95_under_15ms: candidate_generation_us.p95 < 15_000,
+        session_inject_p95_under_15ms: session_inject_us.p95 < 15_000,
         startup_under_300ms: startup_load_us < 300_000,
         peak_memory_under_150mb: peak_memory_gate,
         packaged_size_under_50mb: packaged_lexicon_model_bytes < 50 * 1024 * 1024,
@@ -161,16 +168,18 @@ pub fn run_benchmarks(
         && gates.per_key_p50_under_1ms
         && gates.per_key_p95_under_5ms
         && gates.candidate_generation_p95_under_15ms
+        && gates.session_inject_p95_under_15ms
         && gates.startup_under_300ms
         && gates.peak_memory_under_150mb == Some(true)
         && gates.packaged_size_under_50mb;
 
     Ok(PerfReport {
-        schema_version: 1,
+        schema_version: 2,
         profile: if release_build { "release" } else { "debug" }.to_string(),
         samples: PerfSamples {
             per_key: per_key_samples.len(),
             candidate_generation: candidate_samples.len(),
+            session_inject: session_samples.len(),
         },
         lexicon: PerfLexicon {
             packaged_entries,
@@ -181,6 +190,7 @@ pub fn run_benchmarks(
         },
         per_key_us,
         candidate_generation_us,
+        session_inject_us,
         startup_load_us,
         peak_memory_bytes,
         packaged_lexicon_model_bytes,
@@ -229,6 +239,45 @@ fn benchmark_candidates(lexicon: &Lexicon, config: PerfConfig) -> Vec<u64> {
             elapsed_us(started)
         })
         .collect()
+}
+
+fn benchmark_session_inject(lexicon: &Lexicon, config: PerfConfig) -> Vec<u64> {
+    let keys = "paht1";
+    let engine_config = EngineConfig {
+        method: InputMethod::Vni,
+        tone_placement: TonePlacement::Modern,
+    };
+    for _ in 0..config.warmup_iterations {
+        let mut session = LabSession::new(engine_config, lexicon.clone());
+        for (seq, logical) in keys.chars().enumerate() {
+            black_box(session.inject(
+                InputKind::Key {
+                    logical,
+                    physical: None,
+                },
+                InputContext::default(),
+                i64::try_from(seq).unwrap_or(0),
+            ));
+        }
+    }
+    let mut samples = Vec::with_capacity(config.measured_iterations.saturating_mul(keys.len()));
+    for iteration in 0..config.measured_iterations {
+        let mut session = LabSession::new(engine_config, lexicon.clone());
+        for (index, logical) in keys.chars().enumerate() {
+            let seq = iteration.saturating_mul(keys.len()).saturating_add(index);
+            let started = Instant::now();
+            black_box(session.inject(
+                InputKind::Key {
+                    logical,
+                    physical: None,
+                },
+                InputContext::default(),
+                i64::try_from(seq).unwrap_or(0),
+            ));
+            samples.push(elapsed_us(started));
+        }
+    }
+    samples
 }
 
 fn key_event(seq: usize, logical: char) -> InputEvent {

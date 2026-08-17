@@ -7,6 +7,7 @@ use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{cursor, execute};
 use openvikey_core::types::{InputContext, InputKind};
 use std::io::{self, IsTerminal, Write};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use zeroize::Zeroizing;
@@ -81,31 +82,45 @@ pub fn render_line(session: &LabSession) -> String {
 }
 
 pub fn run_repl(
-    session: &mut LabSession,
+    session: &Arc<Mutex<LabSession>>,
     context: InputContext,
     model_saver: &DebouncedSaver,
     capture_saver: &DebouncedSaver,
 ) -> Result<(), ReplError> {
     let mut stdout = io::stdout();
     loop {
-        draw(&mut stdout, session)?;
+        {
+            let session = lock_session(session);
+            draw(&mut stdout, &session)?;
+        }
         let Event::Key(key) = crossterm::event::read()? else {
             continue;
         };
         let Some(action) = key_event_to_action(&key) else {
             continue;
         };
-        let at_ms = next_event_at_ms(session.last_at_ms(), wall_clock_ms());
-        match action {
-            ReplAction::Quit => break,
-            ReplAction::AcceptTop => session.accept_top(at_ms),
-            ReplAction::RejectTop => session.reject_top(at_ms),
-            ReplAction::UndoLast => session.undo_last(at_ms),
-            ReplAction::Input(kind) => {
-                session.inject(kind, context, at_ms);
+        if matches!(action, ReplAction::Quit) {
+            break;
+        }
+        {
+            let mut session = lock_session(session);
+            let at_ms = next_event_at_ms(session.last_at_ms(), wall_clock_ms());
+            match action {
+                ReplAction::Quit => {}
+                ReplAction::AcceptTop => session.accept_top(at_ms),
+                ReplAction::RejectTop => session.reject_top(at_ms),
+                ReplAction::UndoLast => session.undo_last(at_ms),
+                ReplAction::Input(kind) => {
+                    session.inject(kind, context, at_ms);
+                }
             }
         }
-        submit_savers(session, model_saver, capture_saver)?;
+        model_saver
+            .notify()
+            .map_err(|error| ReplError::Save(error.to_string()))?;
+        capture_saver
+            .notify()
+            .map_err(|error| ReplError::Save(error.to_string()))?;
     }
     model_saver
         .flush()
@@ -122,25 +137,8 @@ pub fn run_repl(
     Ok(())
 }
 
-fn submit_savers(
-    session: &LabSession,
-    model_saver: &DebouncedSaver,
-    capture_saver: &DebouncedSaver,
-) -> Result<(), ReplError> {
-    let payload = session
-        .model_payload()
-        .map_err(|error| ReplError::Save(error.to_string()))?;
-    model_saver
-        .submit(payload)
-        .map_err(|error| ReplError::Save(error.to_string()))?;
-    let log = session
-        .capture_log()
-        .to_payload()
-        .map_err(|error| ReplError::Save(error.to_string()))?;
-    capture_saver
-        .submit(log)
-        .map_err(|error| ReplError::Save(error.to_string()))?;
-    Ok(())
+fn lock_session(session: &Arc<Mutex<LabSession>>) -> std::sync::MutexGuard<'_, LabSession> {
+    session.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn draw(stdout: &mut io::Stdout, session: &LabSession) -> io::Result<()> {

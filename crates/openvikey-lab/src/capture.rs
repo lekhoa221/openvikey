@@ -15,6 +15,8 @@ use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
 
 pub const CAPTURE_VERSION: u32 = 1;
+/// Newest records kept in RAM and on disk. Older events stay in the model.
+pub const MAX_CAPTURE_RECORDS: usize = 20_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CaptureHeader {
@@ -71,6 +73,17 @@ fn record_seq(record: &CaptureRecord) -> u64 {
         CaptureRecord::AcceptTop { seq, .. }
         | CaptureRecord::RejectTop { seq, .. }
         | CaptureRecord::UndoLast { seq, .. } => *seq,
+    }
+}
+
+pub fn trim_capture_to(records: &mut Vec<CaptureRecord>, max: usize) {
+    if max == 0 {
+        records.clear();
+        return;
+    }
+    if records.len() > max {
+        let excess = records.len() - max;
+        records.drain(..excess);
     }
 }
 

@@ -5,6 +5,7 @@ use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
 use zeroize::Zeroizing;
 
 const SLOT_MAGIC: &[u8; 8] = b"OVKPASS1";
@@ -14,6 +15,7 @@ const DEK_LEN: usize = 32;
 const TAG_LEN: usize = 16;
 const PREFIX_LEN: usize = SLOT_MAGIC.len() + 12 + SALT_LEN + NONCE_LEN;
 const SLOT_LEN: usize = PREFIX_LEN + DEK_LEN + TAG_LEN;
+const KEK_CACHE_CAP: usize = 4;
 
 /// Persisted Argon2id work factors. Memory is expressed in KiB.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,11 +65,22 @@ impl Default for KdfConfig {
 }
 
 /// Passphrase-backed DEK wrapper. Debug output never exposes the passphrase.
+///
+/// Argon2id is cached per (salt, KDF config) for the process lifetime of this
+/// provider so repeated saves do not re-derive 64 MiB. Each `seal` still mints
+/// a fresh DEK and payload nonce.
 #[derive(Clone)]
 pub struct PassphraseProvider {
     passphrase: Zeroizing<Vec<u8>>,
     config: KdfConfig,
     allow_weak_for_tests: bool,
+    kek_cache: Arc<Mutex<Vec<CachedKek>>>,
+}
+
+struct CachedKek {
+    salt: [u8; SALT_LEN],
+    config: KdfConfig,
+    key: Zeroizing<[u8; 32]>,
 }
 
 impl PassphraseProvider {
@@ -77,6 +90,7 @@ impl PassphraseProvider {
             passphrase: Zeroizing::new(passphrase.as_ref().as_bytes().to_vec()),
             config,
             allow_weak_for_tests: false,
+            kek_cache: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -87,12 +101,49 @@ impl PassphraseProvider {
             passphrase: Zeroizing::new(passphrase.as_ref().as_bytes().to_vec()),
             config: KdfConfig::testing(),
             allow_weak_for_tests: true,
+            kek_cache: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     #[must_use]
     pub const fn config(&self) -> KdfConfig {
         self.config
+    }
+
+    fn lock_cache(&self) -> std::sync::MutexGuard<'_, Vec<CachedKek>> {
+        self.kek_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn kek_for_wrap(&self) -> Result<([u8; SALT_LEN], Zeroizing<[u8; 32]>), StoreError> {
+        let mut cache = self.lock_cache();
+        if let Some(entry) = cache.iter().find(|entry| entry.config == self.config) {
+            return Ok((entry.salt, entry.key.clone()));
+        }
+        let mut salt = [0_u8; SALT_LEN];
+        getrandom::getrandom(&mut salt)
+            .map_err(|error| StoreError::Crypto(format!("salt randomness: {error}")))?;
+        let key = derive_key(&self.passphrase, &salt, self.config)?;
+        remember_kek(&mut cache, salt, self.config, key.clone());
+        Ok((salt, key))
+    }
+
+    fn kek_for_salt(
+        &self,
+        salt: [u8; SALT_LEN],
+        config: KdfConfig,
+    ) -> Result<Zeroizing<[u8; 32]>, StoreError> {
+        let mut cache = self.lock_cache();
+        if let Some(entry) = cache
+            .iter()
+            .find(|entry| entry.salt == salt && entry.config == config)
+        {
+            return Ok(entry.key.clone());
+        }
+        let key = derive_key(&self.passphrase, &salt, config)?;
+        remember_kek(&mut cache, salt, config, key.clone());
+        Ok(key)
     }
 }
 
@@ -102,6 +153,7 @@ impl std::fmt::Debug for PassphraseProvider {
             .field("passphrase", &"[redacted]")
             .field("config", &self.config)
             .field("allow_weak_for_tests", &self.allow_weak_for_tests)
+            .field("kek_cache", &"[redacted]")
             .finish()
     }
 }
@@ -112,14 +164,11 @@ impl SecretProvider for PassphraseProvider {
             return Err(StoreError::CorruptHeader);
         }
         self.config.validate(self.allow_weak_for_tests)?;
-        let mut salt = [0_u8; SALT_LEN];
         let mut nonce = [0_u8; NONCE_LEN];
-        getrandom::getrandom(&mut salt)
-            .map_err(|error| StoreError::Crypto(format!("salt randomness: {error}")))?;
         getrandom::getrandom(&mut nonce)
             .map_err(|error| StoreError::Crypto(format!("slot nonce randomness: {error}")))?;
+        let (salt, key) = self.kek_for_wrap()?;
         let prefix = make_prefix(self.config, &salt, &nonce);
-        let key = derive_key(&self.passphrase, &salt, self.config)?;
         let cipher = XChaCha20Poly1305::new(Key::from_slice(&key[..]));
         let ciphertext = cipher
             .encrypt(
@@ -158,7 +207,7 @@ impl SecretProvider for PassphraseProvider {
             .try_into()
             .map_err(|_| StoreError::CorruptHeader)?;
         let nonce = &wrapped.bytes[salt_end..nonce_end];
-        let key = derive_key(&self.passphrase, &salt, config)?;
+        let key = self.kek_for_salt(salt, config)?;
         let cipher = XChaCha20Poly1305::new(Key::from_slice(&key[..]));
         let dek = cipher
             .decrypt(
@@ -174,6 +223,18 @@ impl SecretProvider for PassphraseProvider {
         }
         Ok(Dek::from_bytes(dek))
     }
+}
+
+fn remember_kek(
+    cache: &mut Vec<CachedKek>,
+    salt: [u8; SALT_LEN],
+    config: KdfConfig,
+    key: Zeroizing<[u8; 32]>,
+) {
+    if cache.len() >= KEK_CACHE_CAP {
+        cache.remove(0);
+    }
+    cache.push(CachedKek { salt, config, key });
 }
 
 fn make_prefix(config: KdfConfig, salt: &[u8; SALT_LEN], nonce: &[u8; NONCE_LEN]) -> Vec<u8> {

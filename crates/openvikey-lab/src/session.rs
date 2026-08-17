@@ -1,6 +1,9 @@
 //! Observable deterministic Engine → correction session used by the lab CLI.
 
-use crate::capture::{CAPTURE_VERSION, CaptureHeader, CaptureLog, CaptureRecord, sha256_hex};
+use crate::capture::{
+    CAPTURE_VERSION, CaptureHeader, CaptureLog, CaptureRecord, MAX_CAPTURE_RECORDS, sha256_hex,
+    trim_capture_to,
+};
 use crate::document::{CommittedUnit, DocumentBuffer};
 use openvikey_core::correction::{AutoEditContext, CorrectionSlice, run_learning_correction_slice};
 use openvikey_core::decision::{DecisionConfig, DecisionState};
@@ -161,7 +164,7 @@ impl LabSession {
         let allow_transform = event.context.allow_transform;
         let allow_learning = event.context.allow_learning;
         if self.capturing && allow_transform && allow_learning {
-            self.capture.push(CaptureRecord::Input {
+            self.record_capture(CaptureRecord::Input {
                 event: event.clone(),
             });
         }
@@ -238,7 +241,7 @@ impl LabSession {
         };
         let seq = self.take_seq();
         if self.capturing {
-            self.capture.push(CaptureRecord::AcceptTop { seq, at_ms });
+            self.record_capture(CaptureRecord::AcceptTop { seq, at_ms });
         }
         let key = self.top_rule_key(&top);
         let feedback = FeedbackEvent {
@@ -277,7 +280,7 @@ impl LabSession {
         };
         let seq = self.take_seq();
         if self.capturing {
-            self.capture.push(CaptureRecord::RejectTop { seq, at_ms });
+            self.record_capture(CaptureRecord::RejectTop { seq, at_ms });
         }
         let key = self.top_rule_key(&top);
         let feedback = FeedbackEvent {
@@ -306,7 +309,7 @@ impl LabSession {
         };
         let _ = self.take_seq();
         if self.capturing {
-            self.capture.push(CaptureRecord::UndoLast { seq, at_ms });
+            self.record_capture(CaptureRecord::UndoLast { seq, at_ms });
         }
         self.document
             .replace_last_token(outcome.inverse.replacement);
@@ -338,6 +341,12 @@ impl LabSession {
 
     pub fn restore_capture(&mut self, records: Vec<CaptureRecord>) {
         self.capture = records;
+        trim_capture_to(&mut self.capture, MAX_CAPTURE_RECORDS);
+    }
+
+    fn record_capture(&mut self, record: CaptureRecord) {
+        self.capture.push(record);
+        trim_capture_to(&mut self.capture, MAX_CAPTURE_RECORDS);
     }
 
     pub fn restore_last_at_ms(&mut self, last_at_ms: i64) {

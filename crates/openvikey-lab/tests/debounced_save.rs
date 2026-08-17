@@ -29,3 +29,38 @@ fn burst_is_coalesced_and_saved_on_worker_thread() {
         "burst must produce one write"
     );
 }
+
+#[test]
+fn lazy_snapshot_runs_on_worker_and_coalesces_notifies() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let caller_thread = thread::current().id();
+    let snapshots = Arc::new(AtomicUsize::new(0));
+    let (thread_tx, thread_rx) = mpsc::channel();
+    let (save_tx, save_rx) = mpsc::channel();
+    let saver = DebouncedSaver::spawn_lazy(
+        Duration::from_millis(50),
+        {
+            let snapshots = Arc::clone(&snapshots);
+            let thread_tx = thread_tx.clone();
+            move || {
+                snapshots.fetch_add(1, Ordering::SeqCst);
+                let _ = thread_tx.send(thread::current().id());
+                Ok(b"late-serialize".to_vec())
+            }
+        },
+        move |payload| save_tx.send(payload).map_err(|error| error.to_string()),
+    );
+    saver.notify().unwrap();
+    saver.notify().unwrap();
+    saver.notify().unwrap();
+    saver.flush().unwrap();
+    assert_eq!(snapshots.load(Ordering::SeqCst), 1);
+    let snapshot_thread = thread_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert_ne!(snapshot_thread, caller_thread);
+    assert_eq!(
+        save_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        b"late-serialize"
+    );
+}

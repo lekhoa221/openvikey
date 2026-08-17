@@ -854,3 +854,23 @@ fn missing_model_file_loads_defaults() {
         AdaptiveModel::default().to_json_payload().unwrap()
     );
 }
+
+#[test]
+fn capture_trim_keeps_the_newest_records() {
+    let mut records: Vec<openvikey_lab::capture::CaptureRecord> = (1..=5)
+        .map(|seq| openvikey_lab::capture::CaptureRecord::AcceptTop {
+            seq,
+            at_ms: i64::try_from(seq).unwrap_or(0),
+        })
+        .collect();
+    openvikey_lab::capture::trim_capture_to(&mut records, 3);
+    assert_eq!(records.len(), 3);
+    let seqs: Vec<u64> = records
+        .iter()
+        .map(|record| match record {
+            openvikey_lab::capture::CaptureRecord::AcceptTop { seq, .. } => *seq,
+            _ => 0,
+        })
+        .collect();
+    assert_eq!(seqs, vec![3, 4, 5]);
+}
