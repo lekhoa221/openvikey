@@ -1,7 +1,7 @@
 # OpenViKey v1 Headless Brain — Implementation Plan
 
 - **Ngày:** 2026-08-17
-- **Trạng thái:** In progress — M0–M3 + Wave 0 + Wave 1 + **Wave 2 (M6, 7A, M8)** xong. Wave 3 tiếp theo: 7B fuzzy + 7C diacritics.
+- **Trạng thái:** In progress — M0–M3 + Wave 0 + Wave 1 + Wave 2 + **Wave 3 (7B fuzzy, 7C diacritics)** xong. Wave 4 tiếp theo: M9 lab harness + M10 acceptance gates.
 - **Governing spec:** [`../specs/2026-08-17-openvikey-design.md`](../specs/2026-08-17-openvikey-design.md)
 - **Phạm vi:** chỉ v1 headless brain; không TSF, CGEventTap/InputMethodKit, OS keyring, sync/CRDT, GUI settings hay phrase-level diacritics.
 - **Cách làm:** TDD; mỗi checkpoint là một commit nhỏ, build xanh và không trộn refactor ngoài phạm vi. Phần còn lại chia **3 nhóm / 4 sóng** (§4.1), không chia 1 milestone = 1 nhóm.
@@ -253,7 +253,7 @@ Không giả lập 3 nhóm. Đi tuần tự:
 - [x] Wave 0 — khóa interface (+ vá golden M3 tuỳ chọn); ADR 0002
 - [x] Wave 1 — M4 (A), M5 (B) và closure review merge; verify sóng 1 xanh
 - [x] Wave 2 — M6 + 7A + M8 xanh
-- [ ] Wave 3 — 7B + 7C xanh
+- [x] Wave 3 — 7B + 7C xanh
 - [ ] Wave 4 — M9 + M10; G3/G4 có evidence; v1 complete
 
 ---
@@ -588,14 +588,14 @@ Mỗi generator là một commit độc lập; không gộp cả ba thành một
 - Green: rule-based reconstruction; no model access.
 - Commit: `feat(correction): add raw-key Telex and VNI fixes`
 
-### 7B. `fuzzy` — Wave 3 / Nhóm B
+### 7B. `fuzzy` — **DONE** (Wave 3 / Nhóm B)
 
 - Files: `generate/fuzzy.rs`, `tests/fuzzy.rs`
 - Red: weighted adjacency, transposition (`khọgn`), duplicate key, valid-syllable constraint, bounded candidate count.
 - Green: simplest weighted edit-distance that meets perf; do not port full SymSpell until benchmark requires it.
 - Commit: `feat(correction): add weighted fuzzy candidates`
 
-### 7C. `diacritics` — Wave 3 / Nhóm B
+### 7C. `diacritics` — **DONE** (Wave 3 / Nhóm B)
 
 - Files: `generate/diacritics.rs`, `tests/diacritics.rs`
 - Red: per-token top-k, left bigram context, stable ordering, ambiguous input suggestion-only, no phrase delayed edit.
@@ -775,7 +775,7 @@ Theo dõi theo **wave** ở §4.1; tick gate khi evidence đủ, không chỉ kh
 - [x] Wave 0 — khóa interface (+ vá golden M3 tuỳ chọn); ADR 0002
 - [x] Wave 1 — M4 + M5 + closure review (provenance/split seed, reproducible bigrams, correction action/rule identity)
 - [x] Wave 2 — M6 + 7A + M8
-- [ ] Wave 3 — 7B + 7C
+- [x] Wave 3 — 7B + 7C
 - [ ] Wave 4 — M9 + M10; v1 complete
 
 **Gate / acceptance (spec §3, §8, §11)**
@@ -783,7 +783,7 @@ Theo dõi theo **wave** ở §4.1; tick gate khi evidence đủ, không chỉ kh
 - [ ] G0 provenance mở cho mọi asset ship.
 - [x] G1 engine ADR được commit (Adopt/wrap `vi-rs`); compatibility gate xanh. Golden closure phủ NFC/NFD matching form, reset, Telex/VNI escape, VNI oà/òa, revision, full backspace prefixes, URL boundary và code/mixed passthrough qua explicit context policy; English heuristics vẫn không thuộc engine (ADR 0002).
 - [x] G2 semantic edit/undo contract property tests xanh.
-- [ ] Bốn generators có test độc lập.
+- [x] Bốn generators có test độc lập.
 - [x] Learning canonical promote/demote/convergence tests xanh.
 - [x] Encrypted store restart/recovery/rewrap tests xanh.
 - [ ] Lab CLI và reports tái lập được.
