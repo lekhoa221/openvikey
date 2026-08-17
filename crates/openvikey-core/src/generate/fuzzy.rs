@@ -52,16 +52,14 @@ impl Generator for FuzzyGenerator<'_> {
             .all(|ch| ch.is_ascii_alphabetic() || ch.is_ascii_digit());
         let mut matches = Vec::new();
 
-        for entry in self.lexicon.entries() {
+        for (entry, target_folded) in self
+            .lexicon
+            .entries_near_folded_length(input_folded.len(), 2)
+        {
             if !is_supported_lexicon_token(&entry.token_nfc) || entry.token_nfc == input_nfc {
                 continue;
             }
-            let target_folded = folded_ascii(&entry.token_nfc);
-            let length_delta = input_folded.len().abs_diff(target_folded.len());
-            if length_delta > 2 {
-                continue;
-            }
-            let mut distance = weighted_distance(&input_folded, &target_folded);
+            let mut distance = weighted_distance(&input_folded, target_folded);
             if distance == 0.0 {
                 if plain_unaccented && !has_vni_digits {
                     continue;
@@ -158,7 +156,13 @@ fn weighted_distance(input: &str, target: &str) -> f64 {
             } else {
                 1.0
             };
-            let mut best = (distance[source_index - 1][target_index] + 0.75)
+            let deletion_cost =
+                if source_index > 1 && source[source_index - 1] == source[source_index - 2] {
+                    0.30
+                } else {
+                    0.75
+                };
+            let mut best = (distance[source_index - 1][target_index] + deletion_cost)
                 .min(distance[source_index][target_index - 1] + 0.75)
                 .min(distance[source_index - 1][target_index - 1] + substitution);
             if source_index > 1

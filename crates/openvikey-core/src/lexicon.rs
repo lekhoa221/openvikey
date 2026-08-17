@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use unicode_normalization::UnicodeNormalization;
+use unicode_normalization::char::is_combining_mark;
 
 fn nfc(text: &str) -> String {
     text.nfc().collect()
@@ -34,11 +35,14 @@ pub struct LexiconArtifact {
 }
 
 /// Deterministic in-memory lexicon. Iteration order is sorted NFC.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Lexicon {
     entries: BTreeMap<String, LexiconEntry>,
     bigrams: BTreeMap<(String, String), f64>,
     source_manifest_hash: Option<String>,
+    folded_by_token: BTreeMap<String, String>,
+    tokens_by_folded_length: BTreeMap<usize, Vec<String>>,
+    tokens_by_folded_form: BTreeMap<String, Vec<String>>,
 }
 
 impl Lexicon {
@@ -53,7 +57,7 @@ impl Lexicon {
         bigrams: impl IntoIterator<Item = ((String, String), f64)>,
         source_manifest_hash: Option<&str>,
     ) -> Self {
-        let entries = entries
+        let entries: BTreeMap<String, LexiconEntry> = entries
             .into_iter()
             .map(|mut entry| {
                 entry.token_nfc = nfc(&entry.token_nfc);
@@ -64,10 +68,28 @@ impl Lexicon {
             .into_iter()
             .map(|((left, token), score)| ((nfc(&left), nfc(&token)), score))
             .collect();
+        let mut folded_by_token = BTreeMap::new();
+        let mut tokens_by_folded_length: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+        let mut tokens_by_folded_form: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for token in entries.keys() {
+            let folded = fold_for_index(token);
+            folded_by_token.insert(token.clone(), folded.clone());
+            tokens_by_folded_length
+                .entry(folded.len())
+                .or_default()
+                .push(token.clone());
+            tokens_by_folded_form
+                .entry(folded)
+                .or_default()
+                .push(token.clone());
+        }
         Self {
             entries,
             bigrams,
             source_manifest_hash: source_manifest_hash.map(str::to_string),
+            folded_by_token,
+            tokens_by_folded_length,
+            tokens_by_folded_form,
         }
     }
 
@@ -78,6 +100,34 @@ impl Lexicon {
 
     pub fn entries(&self) -> impl ExactSizeIterator<Item = &LexiconEntry> {
         self.entries.values()
+    }
+
+    pub(crate) fn entries_near_folded_length(
+        &self,
+        folded_length: usize,
+        max_delta: usize,
+    ) -> impl Iterator<Item = (&LexiconEntry, &str)> {
+        let minimum = folded_length.saturating_sub(max_delta);
+        let maximum = folded_length.saturating_add(max_delta);
+        self.tokens_by_folded_length
+            .range(minimum..=maximum)
+            .flat_map(|(_, tokens)| tokens)
+            .filter_map(|token| {
+                self.entries
+                    .get(token)
+                    .zip(self.folded_by_token.get(token).map(String::as_str))
+            })
+    }
+
+    pub(crate) fn entries_with_folded_form(
+        &self,
+        folded: &str,
+    ) -> impl Iterator<Item = &LexiconEntry> {
+        self.tokens_by_folded_form
+            .get(folded)
+            .into_iter()
+            .flatten()
+            .filter_map(|token| self.entries.get(token))
     }
 
     #[must_use]
@@ -127,4 +177,12 @@ impl Default for Lexicon {
     fn default() -> Self {
         Self::empty()
     }
+}
+
+fn fold_for_index(text: &str) -> String {
+    text.nfd()
+        .filter(|ch| !is_combining_mark(*ch))
+        .flat_map(char::to_lowercase)
+        .map(|ch| if ch == 'đ' { 'd' } else { ch })
+        .collect()
 }

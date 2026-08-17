@@ -6,6 +6,11 @@ const ONSETS: &[&str] = &[
     "k", "l", "m", "n", "p", "q", "r", "s", "t", "v", "x", "",
 ];
 const CODAS: &[&str] = &["", "c", "ch", "m", "n", "ng", "nh", "p", "t"];
+const NUCLEI: &[&str] = &[
+    "a", "ai", "ao", "au", "ay", "e", "eo", "eu", "i", "ia", "ie", "ieu", "iu", "o", "oa", "oai",
+    "oao", "oay", "oe", "oi", "oo", "u", "ua", "uai", "uay", "ue", "ui", "uo", "uoi", "uy", "uya",
+    "uye", "uyu", "y", "ye", "yeu",
+];
 
 pub(crate) fn folded_ascii(text: &str) -> String {
     text.nfd()
@@ -45,7 +50,10 @@ pub(crate) fn is_supported_lexicon_token(token: &str) -> bool {
     if is_vietnamese_syllable(&folded) {
         return true;
     }
-    // Explicit lexicon entries may be common Latin words in mixed Vietnamese text.
+    if !token.is_ascii() {
+        return false;
+    }
+    // Explicit ASCII lexicon entries may be common Latin words in mixed Vietnamese text.
     folded
         .chars()
         .any(|ch| matches!(ch, 'a' | 'e' | 'i' | 'o' | 'u'))
@@ -73,8 +81,9 @@ fn is_vietnamese_syllable(folded: &str) -> bool {
         {
             return false;
         }
+        let nucleus: String = chars[first_vowel..=last_vowel].iter().collect();
         let coda: String = chars[last_vowel + 1..].iter().collect();
-        CODAS.contains(&coda.as_str())
+        NUCLEI.contains(&nucleus.as_str()) && CODAS.contains(&coda.as_str())
     })
 }
 

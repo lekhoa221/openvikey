@@ -41,11 +41,9 @@ impl Generator for DiacriticsGenerator<'_> {
         let folded_input = folded_ascii(&input_nfc);
         let mut matching: Vec<_> = self
             .lexicon
-            .entries()
+            .entries_with_folded_form(&folded_input)
             .filter(|entry| {
-                entry.token_nfc != input_nfc
-                    && is_supported_lexicon_token(&entry.token_nfc)
-                    && folded_ascii(&entry.token_nfc) == folded_input
+                entry.token_nfc != input_nfc && is_supported_lexicon_token(&entry.token_nfc)
             })
             .collect();
         let Some(max_frequency) = matching.iter().map(|entry| entry.frequency).max() else {

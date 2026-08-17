@@ -52,6 +52,21 @@ fn weighted_transposition_adjacency_and_duplicate_key_find_words() {
     assert_eq!(generated(&generator, "taht")[0], "thật");
     assert_eq!(generated(&generator, "bam")[0], "bạn");
     assert_eq!(generated(&generator, "khôong")[0], "không");
+
+    let duplicate = generator.generate(
+        &CompositionSnapshot::new(1, "khôong".to_string(), "khôong".to_string()),
+        &LeftContext::default(),
+    )[0]
+    .base_score;
+    let ordinary_insertion = generator.generate(
+        &CompositionSnapshot::new(1, "khôg".to_string(), "khôg".to_string()),
+        &LeftContext::default(),
+    )[0]
+    .base_score;
+    assert!(
+        duplicate > ordinary_insertion,
+        "duplicate-key deletion must cost less than an ordinary insertion"
+    );
 }
 
 #[test]
@@ -124,6 +139,7 @@ fn candidates_are_valid_lexicon_syllables_stable_and_bounded() {
         ("bạn", 80),
         ("ban", 70),
         ("xyz", 1_000),
+        ("káe", 2_000),
     ]);
     let generator = FuzzyGenerator::new(&lexicon, 2);
     let first = generator.generate(
@@ -137,12 +153,36 @@ fn candidates_are_valid_lexicon_syllables_stable_and_bounded() {
 
     assert_eq!(first, second);
     assert_eq!(first.len(), 2);
+    assert_eq!(
+        first
+            .iter()
+            .map(|candidate| (
+                candidate.id,
+                candidate.text.as_str(),
+                candidate.evidence.as_str()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (3_000_000, "bạn", "fuzzy:weighted:bqn5->bạn"),
+            (3_000_001, "bàn", "fuzzy:weighted:bqn5->bàn"),
+        ]
+    );
     assert!(
         first
             .iter()
             .all(|candidate| candidate.source == CandidateSource::Fuzzy)
     );
-    assert!(first.iter().all(|candidate| candidate.text != "xyz"));
+    assert!(
+        first
+            .iter()
+            .all(|candidate| candidate.text != "xyz" && candidate.text != "káe")
+    );
+    assert!(
+        generated(&generator, "kae1")
+            .iter()
+            .all(|candidate| candidate != "káe"),
+        "accented outputs must satisfy Vietnamese syllable grammar"
+    );
 }
 
 #[test]
