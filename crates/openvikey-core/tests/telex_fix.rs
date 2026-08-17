@@ -1,6 +1,5 @@
 //! Milestone 7A: raw-key Telex/VNI modifier reconstruction.
 
-use openvikey_core::engine::{Engine, EngineConfig};
 use openvikey_core::generate::telex_fix::TelexFixGenerator;
 use openvikey_core::generate::{Generator, LeftContext};
 use openvikey_core::types::{CandidateSource, CompositionSnapshot, InputMethod, TonePlacement};
@@ -59,15 +58,8 @@ fn methods_are_separate_and_valid_input_is_unchanged() {
 }
 
 #[test]
-fn generator_matches_engine_tone_profile() {
+fn generator_respects_classic_tone_placement() {
     let generator = TelexFixGenerator::new(InputMethod::Vni, TonePlacement::Classic);
     let candidates = generator.generate(&snapshot("ho2a", "ho2a"), &LeftContext::default());
     assert_eq!(candidates[0].text, "hòa");
-
-    // Configuration is explicit and does not inspect hidden engine/model state.
-    let engine = Engine::new(EngineConfig {
-        method: InputMethod::Vni,
-        tone_placement: TonePlacement::Classic,
-    });
-    assert_eq!(engine.config().method, InputMethod::Vni);
 }

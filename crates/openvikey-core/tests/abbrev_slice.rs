@@ -194,7 +194,7 @@ impl Generator for DuplicateRuleGenerator {
 }
 
 #[test]
-fn correction_uses_caller_method_positive_mass_and_winning_rule() {
+fn read_only_correction_uses_caller_method_and_winning_rule_but_degrades_auto() {
     let slice = run_correction_slice(
         &snapshot("ko"),
         &LeftContext::default(),
@@ -207,7 +207,11 @@ fn correction_uses_caller_method_positive_mass_and_winning_rule() {
         &DecisionConfig::default(),
     );
 
-    assert_eq!(slice.decision, Some(DecisionState::Auto));
+    assert_eq!(slice.decision, Some(DecisionState::Suggest));
+    assert!(matches!(
+        slice.action,
+        Some(EngineAction::ShowSuggestions { .. })
+    ));
     assert_eq!(slice.candidates[0].source, CandidateSource::Abbreviation);
     assert_eq!(
         slice.candidates[0].evidence.split('+').next(),

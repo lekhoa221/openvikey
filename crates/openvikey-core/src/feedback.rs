@@ -11,6 +11,13 @@ pub struct UndoOutcome {
     pub feedback: FeedbackEvent,
 }
 
+#[derive(Debug, Clone)]
+struct PendingAutoSettlement {
+    key: RuleContextKey,
+    edit_id: u64,
+    remaining_events: u8,
+}
+
 /// Couples an adaptive model with a bounded semantic edit log.
 #[derive(Debug, Clone)]
 pub struct LearningSession {
@@ -19,6 +26,7 @@ pub struct LearningSession {
     max_undo_entries: usize,
     edit_rules: BTreeMap<u64, RuleContextKey>,
     edit_order: VecDeque<u64>,
+    pending_auto_settlements: Vec<PendingAutoSettlement>,
 }
 
 impl LearningSession {
@@ -31,6 +39,7 @@ impl LearningSession {
             max_undo_entries,
             edit_rules: BTreeMap::new(),
             edit_order: VecDeque::with_capacity(max_undo_entries),
+            pending_auto_settlements: Vec::with_capacity(max_undo_entries),
         }
     }
 
@@ -43,22 +52,77 @@ impl LearningSession {
         &mut self.model
     }
 
-    /// Records an auto edit in both the semantic undo log and the rule window.
+    /// Persists an operational decision transition when learning is allowed.
+    pub fn record_decision(
+        &mut self,
+        key: &RuleContextKey,
+        state: crate::decision::DecisionState,
+        allow_learning: bool,
+    ) {
+        self.model.record_decision(key, state, allow_learning);
+    }
+
+    /// Records an auto edit in the semantic undo log and, when allowed, the learning window.
     pub fn record_auto_edit(
         &mut self,
         key: RuleContextKey,
         action: ReplaceRangeAction,
         at_ms: i64,
+        allow_learning: bool,
     ) {
-        self.model.record_auto_emission(&key, action.edit_id, at_ms);
+        self.model
+            .record_auto_emission(&key, action.edit_id, at_ms, allow_learning);
         while self.edit_order.len() >= self.max_undo_entries {
             if let Some(expired) = self.edit_order.pop_front() {
                 self.edit_rules.remove(&expired);
+                self.pending_auto_settlements
+                    .retain(|pending| pending.edit_id != expired);
             }
         }
         self.edit_order.push_back(action.edit_id);
-        self.edit_rules.insert(action.edit_id, key);
+        self.edit_rules.insert(action.edit_id, key.clone());
+        self.pending_auto_settlements
+            .retain(|pending| pending.edit_id != action.edit_id);
+        if allow_learning {
+            self.pending_auto_settlements.push(PendingAutoSettlement {
+                key,
+                edit_id: action.edit_id,
+                remaining_events: 10,
+            });
+        }
         self.undo.record_edit(action);
+    }
+
+    /// Advances pending auto settlements by one subsequent input/edit event.
+    pub fn observe_input_or_edit(
+        &mut self,
+        first_feedback_seq: u64,
+        at_ms: i64,
+        allow_learning: bool,
+    ) -> Vec<FeedbackEvent> {
+        if !allow_learning {
+            return Vec::new();
+        }
+        for pending in &mut self.pending_auto_settlements {
+            pending.remaining_events = pending.remaining_events.saturating_sub(1);
+        }
+        let mut settled = Vec::new();
+        self.pending_auto_settlements.retain(|pending| {
+            if pending.remaining_events != 0 {
+                return true;
+            }
+            let event = FeedbackEvent {
+                seq: first_feedback_seq.saturating_add(settled.len() as u64),
+                at_ms,
+                kind: FeedbackKind::AutoSettled {
+                    edit_id: pending.edit_id,
+                },
+            };
+            self.model.apply_feedback(&pending.key, &event, true);
+            settled.push(event);
+            false
+        });
+        settled
     }
 
     /// Produces the exact inverse edit and, when allowed, negative evidence.
@@ -73,6 +137,8 @@ impl LearningSession {
         let key = self.edit_rules.remove(&inverse.edit_id)?;
         self.edit_order
             .retain(|edit_id| *edit_id != inverse.edit_id);
+        self.pending_auto_settlements
+            .retain(|pending| pending.edit_id != inverse.edit_id);
         let feedback = FeedbackEvent {
             seq,
             at_ms,
@@ -88,6 +154,7 @@ impl LearningSession {
         self.undo.invalidate_due_to_caret_break();
         self.edit_rules.clear();
         self.edit_order.clear();
+        self.pending_auto_settlements.clear();
     }
 }
 

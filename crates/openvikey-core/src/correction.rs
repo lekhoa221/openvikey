@@ -3,10 +3,15 @@
 //! Generators remain pure; this module owns model-aware ranking and decision.
 
 use crate::decision::{DecisionConfig, DecisionState, decide};
+use crate::feedback::LearningSession;
 use crate::generate::{Generator, LeftContext, collect_candidates};
 use crate::model::{ModelView, RuleContextKey};
 use crate::rank::{RankingContext, ScoreConfig, rank};
-use crate::types::{Candidate, CompositionSnapshot, EngineAction, InputContext, InputMethod};
+use crate::types::{
+    Candidate, CompositionSnapshot, EditRange, EngineAction, InputContext, InputMethod,
+    ReplaceRangeAction,
+};
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Result of one generate → rank → decision pass.
 #[derive(Debug, Clone, PartialEq)]
@@ -16,10 +21,52 @@ pub struct CorrectionSlice {
     pub action: Option<EngineAction>,
 }
 
-/// Runs one correction pass and honors the caller's input method and context.
+/// Caller-owned identity and semantic range for an auto replacement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoEditContext {
+    pub edit_id: u64,
+    pub range: EditRange,
+    pub delimiter: Option<char>,
+}
+
+/// Runs a read-only correction pass. Auto decisions safely degrade to suggestions
+/// because this seam has no caller-owned edit identity/range for a self-contained replace.
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub fn run_correction_slice(
+    snapshot: &CompositionSnapshot,
+    left_context: &LeftContext,
+    context: InputContext,
+    generators: &[&dyn Generator],
+    input_method: InputMethod,
+    model: &dyn ModelView,
+    evaluate_at_ms: i64,
+    score_config: &ScoreConfig,
+    decision_config: &DecisionConfig,
+) -> CorrectionSlice {
+    let mut slice = evaluate_correction_slice(
+        snapshot,
+        left_context,
+        context,
+        generators,
+        input_method,
+        model,
+        evaluate_at_ms,
+        score_config,
+        decision_config,
+    );
+    if slice.decision == Some(DecisionState::Auto) {
+        slice.decision = Some(DecisionState::Suggest);
+        slice.action = Some(EngineAction::ShowSuggestions {
+            revision: snapshot.revision,
+            candidates: slice.candidates.clone(),
+        });
+    }
+    slice
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_correction_slice(
     snapshot: &CompositionSnapshot,
     left_context: &LeftContext,
     context: InputContext,
@@ -64,7 +111,11 @@ pub fn run_correction_slice(
             top.final_score,
             model.confidence(&rule, evaluate_at_ms),
             model.positive_mass(&rule, evaluate_at_ms),
-            top.source.max_action(),
+            if model.auto_allowed(&rule, evaluate_at_ms) {
+                top.source.max_action()
+            } else {
+                crate::decision::ActionCap::Suggest
+            },
             decision_config,
         )
     });
@@ -80,6 +131,83 @@ pub fn run_correction_slice(
         candidates,
         decision,
         action,
+    }
+}
+
+/// Runs correction against an adaptive session and records state/undo atomically in memory.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn run_learning_correction_slice(
+    snapshot: &CompositionSnapshot,
+    left_context: &LeftContext,
+    context: InputContext,
+    generators: &[&dyn Generator],
+    input_method: InputMethod,
+    session: &mut LearningSession,
+    evaluate_at_ms: i64,
+    score_config: &ScoreConfig,
+    decision_config: &DecisionConfig,
+    auto_edit: Option<AutoEditContext>,
+) -> CorrectionSlice {
+    let mut slice = evaluate_correction_slice(
+        snapshot,
+        left_context,
+        context,
+        generators,
+        input_method,
+        session.model(),
+        evaluate_at_ms,
+        score_config,
+        decision_config,
+    );
+    let Some(top) = slice.candidates.first() else {
+        return slice;
+    };
+    let rule = rule_key(snapshot, left_context, input_method, top);
+
+    if slice.decision == Some(DecisionState::Auto) {
+        let valid_auto_edit = auto_edit.filter(|edit| {
+            edit.range.revision == snapshot.revision
+                && edit.range.length_grapheme == snapshot.rendered.graphemes(true).count()
+        });
+        if let Some(edit) = valid_auto_edit {
+            let action = ReplaceRangeAction {
+                edit_id: edit.edit_id,
+                range: edit.range,
+                original: snapshot.rendered.clone(),
+                replacement: top.text.clone(),
+                delimiter: edit.delimiter,
+            };
+            session.record_decision(&rule, DecisionState::Auto, context.allow_learning);
+            session.record_auto_edit(rule, action.clone(), evaluate_at_ms, context.allow_learning);
+            slice.action = Some(EngineAction::ReplaceRange(action));
+        } else {
+            slice.decision = Some(DecisionState::Suggest);
+            slice.action = Some(EngineAction::ShowSuggestions {
+                revision: snapshot.revision,
+                candidates: slice.candidates.clone(),
+            });
+            session.record_decision(&rule, DecisionState::Suggest, context.allow_learning);
+        }
+    } else if let Some(state) = slice.decision {
+        session.record_decision(&rule, state, context.allow_learning);
+    }
+    slice
+}
+
+fn rule_key(
+    snapshot: &CompositionSnapshot,
+    left_context: &LeftContext,
+    input_method: InputMethod,
+    candidate: &Candidate,
+) -> RuleContextKey {
+    RuleContextKey {
+        input_method,
+        source: candidate.source,
+        original_nfc: snapshot.normalized.clone(),
+        candidate_nfc: candidate.text.clone(),
+        left_token_nfc: left_context.prev_token_nfc.clone(),
+        source_rule_id: primary_rule_id(&candidate.evidence).to_string(),
     }
 }
 

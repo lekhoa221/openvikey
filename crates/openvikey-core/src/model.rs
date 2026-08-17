@@ -27,6 +27,10 @@ pub trait ModelView {
     fn confidence(&self, key: &RuleContextKey, evaluate_at_ms: i64) -> f64;
     fn positive_mass(&self, key: &RuleContextKey, evaluate_at_ms: i64) -> f64;
     fn state(&self, key: &RuleContextKey, evaluate_at_ms: i64) -> DecisionState;
+
+    fn auto_allowed(&self, _key: &RuleContextKey, _evaluate_at_ms: i64) -> bool {
+        true
+    }
 }
 
 /// Versioned adaptive-model limits.
@@ -71,6 +75,8 @@ struct RuleEntry {
     handled_feedback_seqs: BTreeSet<u64>,
     settled_auto_ids: BTreeSet<u64>,
     settled_suggestion_ids: BTreeSet<u64>,
+    #[serde(default)]
+    auto_demoted_at_seq: Option<u64>,
 }
 
 impl RuleEntry {
@@ -83,6 +89,7 @@ impl RuleEntry {
             handled_feedback_seqs: BTreeSet::new(),
             settled_auto_ids: BTreeSet::new(),
             settled_suggestion_ids: BTreeSet::new(),
+            auto_demoted_at_seq: None,
         }
     }
 }
@@ -141,6 +148,7 @@ impl AdaptiveModel {
                 }
                 if entry.recent_auto.iter().filter(|item| item.undone).count() >= 2 {
                     entry.state = DecisionState::Suggest;
+                    entry.auto_demoted_at_seq.get_or_insert(event.seq);
                 }
                 (0.0, 1.5)
             }
@@ -180,8 +188,44 @@ impl AdaptiveModel {
         trim_set(&mut entry.settled_suggestion_ids, max_events);
     }
 
+    /// Persists one operational state transition when learning is allowed.
+    pub fn record_decision(
+        &mut self,
+        key: &RuleContextKey,
+        state: DecisionState,
+        allow_learning: bool,
+    ) {
+        if !allow_learning {
+            return;
+        }
+        if state == DecisionState::Ignore && self.entry(key).is_none() {
+            return;
+        }
+        let state = if state == DecisionState::Auto
+            && key.source.max_action() != crate::decision::ActionCap::Auto
+        {
+            DecisionState::Suggest
+        } else {
+            state
+        };
+        let entry = self.entry_mut(key);
+        entry.state = state;
+        if state == DecisionState::Auto {
+            entry.auto_demoted_at_seq = None;
+        }
+    }
+
     /// Records one auto emission and bounds the per-rule undo window.
-    pub fn record_auto_emission(&mut self, key: &RuleContextKey, edit_id: u64, at_ms: i64) {
+    pub fn record_auto_emission(
+        &mut self,
+        key: &RuleContextKey,
+        edit_id: u64,
+        at_ms: i64,
+        allow_learning: bool,
+    ) {
+        if !allow_learning || key.source.max_action() != crate::decision::ActionCap::Auto {
+            return;
+        }
         let undo_window = self.config.auto_undo_window.max(1);
         let entry = self.entry_mut(key);
         if entry.recent_auto.iter().any(|item| item.edit_id == edit_id) {
@@ -196,7 +240,6 @@ impl AdaptiveModel {
             let excess = entry.recent_auto.len() - undo_window;
             entry.recent_auto.drain(..excess);
         }
-        entry.state = DecisionState::Auto;
     }
 
     #[must_use]
@@ -265,6 +308,25 @@ impl ModelView for AdaptiveModel {
     fn state(&self, key: &RuleContextKey, _evaluate_at_ms: i64) -> DecisionState {
         self.entry(key)
             .map_or(DecisionState::Ignore, |entry| entry.state)
+    }
+
+    fn auto_allowed(&self, key: &RuleContextKey, evaluate_at_ms: i64) -> bool {
+        let Some(entry) = self.entry(key) else {
+            return true;
+        };
+        let Some(demoted_at_seq) = entry.auto_demoted_at_seq else {
+            return true;
+        };
+        let positive_since_demotion = entry
+            .evidence
+            .iter()
+            .filter(|event| event.seq > demoted_at_seq)
+            .map(|event| {
+                event.positive_add.max(0.0)
+                    * decay_factor(event.at_ms, evaluate_at_ms, self.config.half_life_ms.max(1))
+            })
+            .sum::<f64>();
+        positive_since_demotion >= 18.0
     }
 }
 
