@@ -1,6 +1,7 @@
-//! Synchronous typing host (no OS hook): session + inject command recording.
+//! Synchronous typing host: session + inject (record and/or SendInput).
 
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use openvikey_core::engine::EngineConfig;
 use openvikey_core::lexicon::{Lexicon, LexiconEntry};
@@ -10,13 +11,15 @@ use openvikey_core::types::{
 };
 use openvikey_session::session::{LabSession, SessionCursors};
 
+use crate::classify::profile_for_exe;
+use crate::inject::{CommandInjector, InjectProfile};
 use crate::policy::{decide, HostHotkey, HostState, KeyDecision, Mode, RawKey};
 use crate::sync::{
     commands_from_accept, commands_from_caret_break, commands_from_typed, commands_from_undo,
     InjectCommand,
 };
 
-/// In-process host used by unit tests and (later) the LL hook callback.
+/// In-process host used by unit tests and the LL hook callback.
 #[allow(clippy::struct_excessive_bools)]
 pub struct TypingHost {
     pub session: LabSession,
@@ -29,11 +32,14 @@ pub struct TypingHost {
     pub caps_lock: bool,
     pub alt: bool,
     pub meta: bool,
-    pub is_sending: bool,
+    /// Shared with [`crate::inject::SendingGuard`] so policy sees in-flight SendInput.
+    pub sending: Arc<AtomicBool>,
+    pub profile: InjectProfile,
     /// Commands applied during this host's lifetime (tests assert on these).
     pub recorded: Vec<InjectCommand>,
     /// Call-stack ordering markers (`inject` before `enter` on CommitAndPass).
     pub stack_trace: Vec<String>,
+    injector: Option<Box<dyn CommandInjector>>,
 }
 
 impl TypingHost {
@@ -72,7 +78,8 @@ impl TypingHost {
         Self::new_with_session(session)
     }
 
-    fn new_with_session(session: LabSession) -> Self {
+    #[must_use]
+    pub fn new_with_session(session: LabSession) -> Self {
         Self {
             session,
             sent: String::new(),
@@ -84,10 +91,18 @@ impl TypingHost {
             caps_lock: false,
             alt: false,
             meta: false,
-            is_sending: false,
+            sending: Arc::new(AtomicBool::new(false)),
+            profile: InjectProfile::Win32,
             recorded: Vec::new(),
             stack_trace: Vec::new(),
+            injector: None,
         }
+    }
+
+    /// Attach a live / test injector; shares its `sending` flag with policy.
+    pub fn set_injector(&mut self, injector: Box<dyn CommandInjector>) {
+        self.sending = Arc::clone(injector.sending_flag());
+        self.injector = Some(injector);
     }
 
     /// Focus change: caret-break forgets `sent` without backspacing into the new app.
@@ -98,14 +113,13 @@ impl TypingHost {
             self.sent = sent;
             self.last_injected_token.clear();
             self.last_injected_hwnd = 0;
-            let _ = self.session.inject(
-                InputKind::CursorMoved,
-                InputContext::default(),
-                at_ms,
-            );
+            let _ = self
+                .session
+                .inject(InputKind::CursorMoved, InputContext::default(), at_ms);
             self.hwnd = hwnd;
         }
         self.foreground_exe = exe;
+        self.profile = profile_for_exe(&self.foreground_exe);
     }
 
     pub fn handle_hotkey(&mut self, hotkey: HostHotkey, at_ms: i64) {
@@ -122,12 +136,17 @@ impl TypingHost {
         }
     }
 
+    /// Mouse / focus caret-break without going through keyboard policy.
+    pub fn notify_caret_break(&mut self, at_ms: i64) {
+        self.apply_caret_break(at_ms);
+    }
+
     /// Synchronous key handling: inject runs on this stack before the decision is returned.
     pub fn handle_key(&mut self, raw: RawKey, at_ms: i64) -> KeyDecision {
         let state = HostState {
             mode: self.mode,
             foreground_exe: self.foreground_exe.clone(),
-            is_sending: self.is_sending,
+            is_sending: self.sending.load(Ordering::SeqCst),
             caps_lock: self.caps_lock,
             alt: self.alt,
             meta: self.meta,
@@ -190,9 +209,7 @@ impl TypingHost {
     }
 
     fn apply_typed(&mut self, kind: InputKind, at_ms: i64) {
-        let obs = self
-            .session
-            .inject(kind, InputContext::default(), at_ms);
+        let obs = self.session.inject(kind, InputContext::default(), at_ms);
         let (cmds, sent) = commands_from_typed(&obs, &self.sent);
         self.apply_commands(&cmds);
         if obs
@@ -227,6 +244,9 @@ impl TypingHost {
             self.stack_trace.push("inject".into());
         }
         self.recorded.extend(cmds.iter().cloned());
+        if let Some(injector) = self.injector.as_mut() {
+            let _ = injector.apply_commands(cmds, self.profile);
+        }
     }
 }
 

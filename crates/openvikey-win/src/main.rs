@@ -1,6 +1,7 @@
 //! OpenViKey Windows hook host coordinator.
 
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use clap::{Parser, ValueEnum};
@@ -15,6 +16,9 @@ use openvikey_session::capture::{
 use openvikey_session::persistence::DebouncedSaver;
 use openvikey_session::session::{LabSession, SessionCursors};
 use openvikey_win::focus::{FocusCache, FocusHook};
+use openvikey_win::host::TypingHost;
+use openvikey_win::inject::{InjectProfile, ProfilingInjector, SendInputSender};
+use openvikey_win::ll::{bind_runtime, keyboard_ll_proc, mouse_ll_proc};
 use openvikey_win::passphrase::read_hidden_passphrase;
 use openvikey_win::persist::{default_store_paths, HostShutdown};
 
@@ -74,7 +78,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let artifact: LexiconArtifact = serde_json::from_slice(&std::fs::read(&cli.lexicon)?)?;
     let lexicon = Lexicon::from_artifact(artifact);
     let (model, log) = load_personal_store(&model_path, &capture_path, &provider)?;
-    let session = LabSession::new_with_model(
+    let mut session = LabSession::new_with_model(
         EngineConfig {
             method: cli.method.into(),
             tone_placement: TonePlacement::Modern,
@@ -86,26 +90,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             next_edit_id: log.header.next_edit_id,
         },
     );
-    let mut session = session;
     session.restore_capture(log.records);
     session.restore_last_at_ms(log.header.last_at_ms);
-    let session = Arc::new(Mutex::new(session));
+
+    let sending = Arc::new(AtomicBool::new(false));
+    let mut typing = TypingHost::new_with_session(session);
+    typing.set_injector(Box::new(ProfilingInjector {
+        profile: InjectProfile::Win32,
+        sender: SendInputSender,
+        sending: Arc::clone(&sending),
+    }));
+    let host = Arc::new(Mutex::new(typing));
+    let focus = Arc::new(FocusCache::new());
+    bind_runtime(Arc::clone(&host), Arc::clone(&focus));
 
     let model_saver = DebouncedSaver::spawn_encrypted(model_path.clone(), provider.clone(), {
-        let session = Arc::clone(&session);
+        let host = Arc::clone(&host);
         move || {
-            let guard = session.lock().unwrap_or_else(PoisonError::into_inner);
-            let snap = guard.save_snapshot();
+            let guard = host.lock().unwrap_or_else(PoisonError::into_inner);
+            let snap = guard.session.save_snapshot();
             snap.model
                 .to_json_payload()
                 .map_err(|error| error.to_string())
         }
     });
     let capture_saver = DebouncedSaver::spawn_encrypted(capture_path.clone(), provider, {
-        let session = Arc::clone(&session);
+        let host = Arc::clone(&host);
         move || {
-            let guard = session.lock().unwrap_or_else(PoisonError::into_inner);
-            let snap = guard.save_snapshot();
+            let guard = host.lock().unwrap_or_else(PoisonError::into_inner);
+            let snap = guard.session.save_snapshot();
             let model_payload = snap
                 .model
                 .to_json_payload()
@@ -125,7 +138,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let shutdown = Arc::new(HostShutdown::new());
-    let focus = Arc::new(FocusCache::new());
 
     #[cfg(windows)]
     let _hooks = install_hooks(Arc::clone(&focus))?;
@@ -193,33 +205,6 @@ fn install_hooks(focus: Arc<FocusCache>) -> windows::core::Result<InstalledHooks
         mouse,
         _focus: focus_hook,
     })
-}
-
-#[cfg(windows)]
-unsafe extern "system" fn keyboard_ll_proc(
-    code: i32,
-    wparam: windows::Win32::Foundation::WPARAM,
-    lparam: windows::Win32::Foundation::LPARAM,
-) -> windows::Win32::Foundation::LRESULT {
-    use windows::Win32::UI::WindowsAndMessaging::{CallNextHookEx, HC_ACTION};
-    if code == i32::try_from(HC_ACTION).unwrap_or(0) {
-        // Coordinator stub: full TypingHost wiring is on the hook path modules.
-        let _ = (wparam, lparam);
-    }
-    unsafe { CallNextHookEx(None, code, wparam, lparam) }
-}
-
-#[cfg(windows)]
-unsafe extern "system" fn mouse_ll_proc(
-    code: i32,
-    wparam: windows::Win32::Foundation::WPARAM,
-    lparam: windows::Win32::Foundation::LPARAM,
-) -> windows::Win32::Foundation::LRESULT {
-    use windows::Win32::UI::WindowsAndMessaging::{CallNextHookEx, HC_ACTION};
-    if code == i32::try_from(HC_ACTION).unwrap_or(0) {
-        let _ = (wparam, lparam);
-    }
-    unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }
 
 fn run_message_loop(shutdown: &HostShutdown) {

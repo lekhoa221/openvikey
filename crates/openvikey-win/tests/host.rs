@@ -292,3 +292,35 @@ fn eat_and_inject_kind_is_forwarded() {
         })
     );
 }
+
+#[test]
+fn apply_commands_drives_injector_sender() {
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    use openvikey_win::inject::{InjectError, InjectProfile, InputSender, ProfilingInjector, SynthesizedEvent};
+
+    struct CountingSender {
+        events: Arc<AtomicUsize>,
+    }
+    impl InputSender for CountingSender {
+        fn send(&mut self, events: &[SynthesizedEvent]) -> Result<u32, InjectError> {
+            self.events
+                .fetch_add(events.len(), AtomicOrdering::SeqCst);
+            Ok(u32::try_from(events.len()).expect("batch len fits u32"))
+        }
+    }
+
+    let events = Arc::new(AtomicUsize::new(0));
+    let sending = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut host = TypingHost::new_telex_fixture();
+    host.set_injector(Box::new(ProfilingInjector {
+        profile: InjectProfile::Win32,
+        sender: CountingSender {
+            events: Arc::clone(&events),
+        },
+        sending: Arc::clone(&sending),
+    }));
+    host.handle_key(key(0x58), 1); // x → Replace inject
+    assert!(events.load(AtomicOrdering::SeqCst) > 0);
+    assert!(!sending.load(AtomicOrdering::SeqCst));
+}

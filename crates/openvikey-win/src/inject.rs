@@ -3,6 +3,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use crate::policy::OVK_EXTRA;
+use crate::sync::InjectCommand;
+
 /// Virtual-key code for Backspace.
 const VK_BACK: u16 = 0x08;
 /// `KEYEVENTF_KEYUP`
@@ -153,7 +156,7 @@ impl<S: InputSender> ProfilingInjector<S> {
 
 /// Map synthesized events to `(wVk_or_wScan, dwFlags)` INPUT intents (down+up pairs).
 ///
-/// Backspace → VK_BACK down/up. Utf16 → UNICODE down/up. No real `SendInput` FFI here.
+/// Backspace → VK_BACK down/up. Utf16 → UNICODE down/up.
 #[must_use]
 pub fn to_win32_events(events: &[SynthesizedEvent]) -> Vec<(u16, u32)> {
     let mut out = Vec::with_capacity(events.len().saturating_mul(2));
@@ -170,4 +173,114 @@ pub fn to_win32_events(events: &[SynthesizedEvent]) -> Vec<(u16, u32)> {
         }
     }
     out
+}
+
+/// Apply [`InjectCommand`]s through a profiled injector (live or test sender).
+pub trait CommandInjector: Send {
+    /// # Errors
+    ///
+    /// Returns [`InjectError`] when a batch is only partially accepted.
+    fn apply_commands(
+        &mut self,
+        cmds: &[InjectCommand],
+        profile: InjectProfile,
+    ) -> Result<(), InjectError>;
+
+    fn sending_flag(&self) -> &Arc<AtomicBool>;
+}
+
+impl<S: InputSender + Send> CommandInjector for ProfilingInjector<S> {
+    fn apply_commands(
+        &mut self,
+        cmds: &[InjectCommand],
+        profile: InjectProfile,
+    ) -> Result<(), InjectError> {
+        self.profile = profile;
+        for cmd in cmds {
+            match cmd {
+                InjectCommand::Replace {
+                    backspace_graphemes,
+                    text_nfc,
+                } => self.replace(*backspace_graphemes, text_nfc)?,
+                InjectCommand::AppendDelimiter { delimiter } => {
+                    self.append_delimiter(*delimiter)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn sending_flag(&self) -> &Arc<AtomicBool> {
+        &self.sending
+    }
+}
+
+/// Win32 `SendInput` transport; stamps [`OVK_EXTRA`] on every event.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SendInputSender;
+
+impl InputSender for SendInputSender {
+    fn send(&mut self, events: &[SynthesizedEvent]) -> Result<u32, InjectError> {
+        #[cfg(windows)]
+        {
+            send_input_win32(events)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = events;
+            Err(InjectError::Partial {
+                sent: 0,
+                expected: events.len(),
+            })
+        }
+    }
+}
+
+#[cfg(windows)]
+fn send_input_win32(events: &[SynthesizedEvent]) -> Result<u32, InjectError> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, VIRTUAL_KEY,
+    };
+
+    let intents = to_win32_events(events);
+    if intents.is_empty() {
+        return Ok(0);
+    }
+    let inputs: Vec<INPUT> = intents
+        .iter()
+        .map(|&(code, flags)| {
+            let unicode = flags & KEYEVENTF_UNICODE != 0;
+            INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 {
+                    ki: KEYBDINPUT {
+                        wVk: if unicode {
+                            VIRTUAL_KEY(0)
+                        } else {
+                            VIRTUAL_KEY(code)
+                        },
+                        wScan: if unicode { code } else { 0 },
+                        dwFlags: KEYBD_EVENT_FLAGS(flags),
+                        time: 0,
+                        dwExtraInfo: OVK_EXTRA,
+                    },
+                },
+            }
+        })
+        .collect();
+    let sent = unsafe {
+        SendInput(
+            &inputs,
+            i32::try_from(std::mem::size_of::<INPUT>()).unwrap_or(i32::MAX),
+        )
+    };
+    // `SendInput` counts INPUT structs; each synthesized event is a down+up pair.
+    let expected_inputs = u32::try_from(intents.len()).unwrap_or(u32::MAX);
+    if sent != expected_inputs {
+        return Err(InjectError::Partial {
+            sent: sent / 2,
+            expected: events.len(),
+        });
+    }
+    Ok(u32::try_from(events.len()).unwrap_or(u32::MAX))
 }

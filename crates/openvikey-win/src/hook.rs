@@ -7,6 +7,9 @@
 //!
 //! Session acquisition for step 2 lives in `host.rs` (`handle_key_locked`), not here.
 
+use std::sync::Mutex;
+
+use crate::host::{handle_key_locked, TypingHost};
 use crate::policy::{KeyDecision, RawKey};
 
 /// `LLKHF_UP` — transition state is key-up when set.
@@ -23,6 +26,12 @@ pub fn ll_return(decision: &KeyDecision) -> isize {
         KeyDecision::Pass | KeyDecision::CommitAndPass { .. } | KeyDecision::CaretBreakAndPass => 0,
         _ => 1,
     }
+}
+
+/// Testable LL path: `handle_key_locked` then [`ll_return`] (no live hook).
+#[must_use]
+pub fn dispatch_ll(host: &Mutex<TypingHost>, raw: RawKey, at_ms: i64) -> isize {
+    ll_return(&handle_key_locked(host, raw, at_ms))
 }
 
 /// Build [`RawKey`] from LL keyboard fields (`vkCode`, `flags`, `dwExtraInfo`).
