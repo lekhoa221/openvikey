@@ -52,6 +52,8 @@ enum Commands {
     ProvenanceVerify {
         #[arg(short, long, default_value = "data/provenance.toml")]
         manifest: PathBuf,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Corpus split, hash, build, and evaluation commands
     #[command(subcommand)]
@@ -156,7 +158,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             io::stdout().write_all(&run_script_jsonl(&input)?.to_pretty_json()?)?;
         }
         Commands::Model(ModelCmd::Dump { encrypted_model }) => dump_model(&encrypted_model)?,
-        Commands::ProvenanceVerify { manifest } => verify_provenance(&manifest)?,
+        Commands::ProvenanceVerify { manifest, out } => {
+            verify_provenance(&manifest, out.as_deref())?;
+        }
         Commands::Corpus(CorpusCmd::Verify { manifest, mode }) => {
             let mode = EvaluationMode::parse_cli(&mode)?;
             let root = workspace_root_for_data_manifest(&manifest)?;
@@ -252,10 +256,24 @@ fn dump_model(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn verify_provenance(manifest: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn verify_provenance(
+    manifest: &Path,
+    out: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let manifest_data = provenance::ProvenanceManifest::from_file(manifest)?;
     let workspace_root = workspace_root_for_data_manifest(manifest)?;
     manifest_data.verify_artifacts(workspace_root)?;
+    if let Some(out) = out {
+        let report = serde_json::json!({
+            "schema_version": 1,
+            "manifest_sha256": provenance::sha256_file(manifest)?,
+            "records_checked": manifest_data.records.len(),
+            "artifacts_verified": true,
+        });
+        let mut bytes = serde_json::to_vec_pretty(&report)?;
+        bytes.push(b'\n');
+        write_output(out, &bytes)?;
+    }
     println!(
         "Provenance valid: {} records checked.",
         manifest_data.records.len()

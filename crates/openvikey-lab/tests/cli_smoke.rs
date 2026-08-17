@@ -105,6 +105,23 @@ fn sensitive_context_flags_emit_no_candidates() {
 
 #[test]
 fn script_and_corpus_reports_are_reproducible_json() {
+    let provenance_path = artifact("provenance-report.json");
+    let provenance_manifest = workspace_root().join("data/provenance.toml");
+    let provenance = Command::new(binary())
+        .args([
+            "provenance-verify",
+            "--manifest",
+            provenance_manifest.to_str().unwrap(),
+            "--out",
+            provenance_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(provenance.status.success());
+    let provenance_report: Value =
+        serde_json::from_slice(&fs::read(provenance_path).unwrap()).unwrap();
+    assert_eq!(provenance_report["artifacts_verified"], true);
+
     let script_path = artifact("learning.jsonl");
     fs::write(
         &script_path,
