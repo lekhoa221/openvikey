@@ -1,0 +1,7 @@
+# OpenViKey Corpus Manifest
+version = "1.0.0"
+
+[splits]
+train = []
+calibration = []
+held_out = []

@@ -1,0 +1,53 @@
+# OpenViKey Asset & Dependency Provenance Registry
+
+[[records]]
+id = "vi-rs"
+kind = "code_dependency"
+source_url = "https://github.com/ZeroX-DG/vi-rs"
+revision = "192e246d37e83094a1228e798b160f3cee14c879"
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+code_license = "MIT"
+data_license = "None"
+redistribution = "allowed"
+purpose = "Candidate engine backend (Milestone 2 compatibility spike)"
+split_role = "none"
+status = "candidate"
+
+[[records]]
+id = "underthesea"
+kind = "reference_data"
+source_url = "https://github.com/undertheseanlp/underthesea"
+revision = "0fd222c1d892604949c5bad434967211bff82f9b"
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+code_license = "Apache-2.0"
+data_license = "Unverified"
+redistribution = "prohibited"
+purpose = "NLP reference and dictionary study (blocked for binary shipping)"
+split_role = "none"
+status = "blocked"
+
+[[records]]
+id = "restore_vietnamese_diacritics"
+kind = "reference_model"
+source_url = "https://github.com/duongntbk/restore_vietnamese_diacritics"
+revision = "7985e9d1dc92f09b012c70db4b2414c5a438391c"
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+code_license = "MIT"
+data_license = "Unverified"
+redistribution = "prohibited"
+purpose = "Diacritic restoration model study (blocked for binary shipping)"
+split_role = "none"
+status = "blocked"
+
+[[records]]
+id = "openvikey-fixtures"
+kind = "project_fixtures"
+source_url = "https://github.com/lekhoa221/openvikey"
+revision = "HEAD"
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+code_license = "MIT"
+data_license = "MIT"
+redistribution = "allowed"
+purpose = "Project authored test fixtures for unit and golden tests"
+split_role = "test"
+status = "approved"
