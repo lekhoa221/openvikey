@@ -1,6 +1,7 @@
 //! OpenViKey Lab CLI harness.
 
 use clap::{Parser, Subcommand};
+use openvikey_lab::corpus::{self, EvaluationMode};
 use openvikey_lab::provenance;
 use std::path::PathBuf;
 
@@ -24,6 +25,21 @@ enum Commands {
         #[arg(short, long, default_value = "data/provenance.toml")]
         manifest: PathBuf,
     },
+    /// Corpus split, hash, and license gates
+    #[command(subcommand)]
+    Corpus(CorpusCmd),
+}
+
+#[derive(Subcommand, Debug)]
+enum CorpusCmd {
+    /// Verify a pinned corpus manifest
+    Verify {
+        #[arg(long, default_value = "data/corpus-manifest.toml")]
+        manifest: PathBuf,
+        /// `unit` allows authored fixtures; `release` enforces spec sample floors
+        #[arg(long, default_value = "unit")]
+        mode: String,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -40,6 +56,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!(
                 "Provenance valid: {} records checked.",
                 manifest_data.records.len()
+            );
+        }
+        Commands::Corpus(CorpusCmd::Verify { manifest, mode }) => {
+            let mode = EvaluationMode::parse_cli(&mode)?;
+            let workspace_root = manifest
+                .parent()
+                .and_then(std::path::Path::parent)
+                .ok_or("corpus manifest must live at <workspace>/data/corpus-manifest.toml")?;
+            let corpus = corpus::load_and_verify(&manifest, workspace_root, mode)?;
+            println!(
+                "Corpus valid ({mode:?}): train={} calibration={} held_out={}",
+                corpus.items_in("train").len(),
+                corpus.items_in("calibration").len(),
+                corpus.items_in("held_out").len()
             );
         }
     }

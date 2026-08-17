@@ -1,7 +1,28 @@
-# OpenViKey Corpus Manifest
 version = "1.0.0"
+provenance = "data/provenance.toml"
 
-[splits]
-train = []
-calibration = []
-held_out = []
+[evaluation]
+min_correct_tokens_release = 50000
+min_error_cases_release = 1000
+min_per_error_type_release = 200
+
+[[assets]]
+id = "authored-train"
+path = "data/fixtures/corpus/train.jsonl"
+sha256 = "067ea7335121d8af8e2552e0d59d461f6992322a37eff7a9bebdcdccc8f5dff8"
+split_role = "train"
+provenance_id = "openvikey-fixtures-corpus-train"
+
+[[assets]]
+id = "authored-calibration"
+path = "data/fixtures/corpus/calibration.jsonl"
+sha256 = "dfc5b525b9dbdd5692ecb792ba5834cc79a415483c06d56d86bfee6523c36c9f"
+split_role = "calibration"
+provenance_id = "openvikey-fixtures-corpus-calibration"
+
+[[assets]]
+id = "authored-held-out"
+path = "data/fixtures/corpus/held_out.jsonl"
+sha256 = "4660c2a0aac63d21c80cb89c01a2eda9a3a73af4745eabe31e70ccdf005c9d65"
+split_role = "held_out"
+provenance_id = "openvikey-fixtures-corpus-held-out"

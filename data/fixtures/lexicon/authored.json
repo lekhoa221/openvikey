@@ -1,0 +1,20 @@
+{
+  "source_manifest_hash": "0bb08c172887f88078451820740bd6f063b0156ce3c1c46915b72b0c41f15ebd",
+  "entries": [
+    {
+      "token_nfc": "không",
+      "frequency": 1
+    },
+    {
+      "token_nfc": "nam",
+      "frequency": 1
+    }
+  ],
+  "bigrams": [
+    {
+      "left_nfc": "xin",
+      "token_nfc": "chào",
+      "score": 0.8
+    }
+  ]
+}

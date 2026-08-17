@@ -1,0 +1,3 @@
+{"id":"hold-transpose-khogn","label":"error","error_type":"transpose","input":"khọgn","gold":"không"}
+{"id":"hold-correct-xin","label":"correct","input":"xin","gold":"xin"}
+{"id":"hold-diac-khong","label":"error","error_type":"missing_diacritic","input":"khong","gold":"không"}
