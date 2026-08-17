@@ -1,7 +1,7 @@
 # OpenViKey v1 Headless Brain — Implementation Plan
 
 - **Ngày:** 2026-08-17
-- **Trạng thái:** In progress — M0–M3 + Wave 0 + **Wave 1 (M4, M5 + closure review)** xong. Wave 2 tiếp theo: M6 + 7A + M8.
+- **Trạng thái:** In progress — M0–M3 + Wave 0 + Wave 1 + **Wave 2 (M6, 7A, M8)** xong. Wave 3 tiếp theo: 7B fuzzy + 7C diacritics.
 - **Governing spec:** [`../specs/2026-08-17-openvikey-design.md`](../specs/2026-08-17-openvikey-design.md)
 - **Phạm vi:** chỉ v1 headless brain; không TSF, CGEventTap/InputMethodKit, OS keyring, sync/CRDT, GUI settings hay phrase-level diacritics.
 - **Cách làm:** TDD; mỗi checkpoint là một commit nhỏ, build xanh và không trộn refactor ngoài phạm vi. Phần còn lại chia **3 nhóm / 4 sóng** (§4.1), không chia 1 milestone = 1 nhóm.
@@ -127,7 +127,7 @@ Chia theo **sóng phụ thuộc + quyền sở hữu file**. Không mở hai nh�
 | M2 `vi-rs` compatibility → **Adopt/wrap** (ADR 0001) | `a890af0` | G1 | `vi_rs_compatibility` |
 | M3 engine Telex/VNI vertical slice | `139713e` + follow-up `cc41295` | engine slice | `golden_engine` |
 
-Ghi chú M3: `golden_engine` xanh theo lệnh verify, nhưng ma trận §3.1 còn thiếu NFC/NFD, escape/reset đủ bộ, URL/code/mixed, VNI `oà`/`òa`, `InsertText`/revision đơn điệu. Vá tuỳ chọn ở Wave 0 hoặc gắn 7A — không chặn Wave 1.
+Ghi chú M3: các gap golden ban đầu đã được đóng ở Wave 0/Wave 1 closure: NFC/NFD matching form, reset/escape Telex+VNI, URL boundary, code/mixed theo explicit context policy, VNI `oà`/`òa`, `InsertText`, revision và full backspace prefixes.
 
 ### Ba nhóm
 
@@ -252,7 +252,7 @@ Không giả lập 3 nhóm. Đi tuần tự:
 - [x] Baseline M0–M3 xanh trên `main`
 - [x] Wave 0 — khóa interface (+ vá golden M3 tuỳ chọn); ADR 0002
 - [x] Wave 1 — M4 (A), M5 (B) và closure review merge; verify sóng 1 xanh
-- [ ] Wave 2 — M6 + 7A + M8 xanh
+- [x] Wave 2 — M6 + 7A + M8 xanh
 - [ ] Wave 3 — 7B + 7C xanh
 - [ ] Wave 4 — M9 + M10; G3/G4 có evidence; v1 complete
 
@@ -400,7 +400,7 @@ cargo test -p openvikey-core --test vi_rs_compatibility -- --nocapture
 
 ---
 
-## 8. Milestone 3 — Telex/VNI engine vertical slice — **DONE** (golden §3.1 còn gap, vá Wave 0 hoặc 7A)
+## 8. Milestone 3 — Telex/VNI engine vertical slice — **DONE** (golden gaps closed by Wave 1 closure)
 
 ### Goal
 
@@ -531,7 +531,7 @@ cargo test -p openvikey-core --test abbrev_slice
 
 ---
 
-## 11. Milestone 6 — Adaptive model, feedback, promotion/demotion & undo — Wave 2 / Nhóm B
+## 11. Milestone 6 — Adaptive model, feedback, promotion/demotion & undo — **DONE** (Wave 2 / Nhóm B)
 
 ### Goal
 
@@ -579,7 +579,7 @@ cargo test -p openvikey-core --test undo_properties
 
 Mỗi generator là một commit độc lập; không gộp cả ba thành một patch lớn. 7A thuộc Wave 2; 7B và 7C thuộc Wave 3 (cần lexicon của M4).
 
-### 7A. `telex_fix` — Wave 2 / Nhóm B
+### 7A. `telex_fix` — **DONE** (Wave 2 / Nhóm B)
 
 - Files: `generate/telex_fix.rs`, `tests/telex_fix.rs`
 - Red: raw-key misplacement fixtures như `ch2ao`, VNI/Telex separation, no-change valid input.
@@ -610,7 +610,7 @@ cargo test -p openvikey-core --test diacritics
 
 ---
 
-## 13. Milestone 8 — Encrypted model store — Wave 2 / Nhóm C
+## 13. Milestone 8 — Encrypted model store — **DONE** (Wave 2 / Nhóm C)
 
 ### Goal
 
@@ -770,7 +770,7 @@ Theo dõi theo **wave** ở §4.1; tick gate khi evidence đủ, không chỉ kh
 - [x] Baseline M0–M3 xanh trên `main`
 - [x] Wave 0 — khóa interface (+ vá golden M3 tuỳ chọn); ADR 0002
 - [x] Wave 1 — M4 + M5 + closure review (provenance/split seed, reproducible bigrams, correction action/rule identity)
-- [ ] Wave 2 — M6 + 7A + M8
+- [x] Wave 2 — M6 + 7A + M8
 - [ ] Wave 3 — 7B + 7C
 - [ ] Wave 4 — M9 + M10; v1 complete
 
@@ -780,8 +780,8 @@ Theo dõi theo **wave** ở §4.1; tick gate khi evidence đủ, không chỉ kh
 - [x] G1 engine ADR được commit (Adopt/wrap `vi-rs`); compatibility gate xanh. Golden closure phủ NFC/NFD matching form, reset, Telex/VNI escape, VNI oà/òa, revision, full backspace prefixes, URL boundary và code/mixed passthrough qua explicit context policy; English heuristics vẫn không thuộc engine (ADR 0002).
 - [x] G2 semantic edit/undo contract property tests xanh.
 - [ ] Bốn generators có test độc lập.
-- [ ] Learning canonical promote/demote/convergence tests xanh.
-- [ ] Encrypted store restart/recovery/rewrap tests xanh.
+- [x] Learning canonical promote/demote/convergence tests xanh.
+- [x] Encrypted store restart/recovery/rewrap tests xanh.
 - [ ] Lab CLI và reports tái lập được.
 - [ ] G3 corpus quality gates xanh với đúng minimum sample.
 - [ ] G4 security/performance gates xanh.
