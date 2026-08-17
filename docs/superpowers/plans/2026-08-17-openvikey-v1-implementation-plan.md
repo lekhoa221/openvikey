@@ -562,6 +562,8 @@ Chứng minh điểm khác biệt F6 bằng state machine tất định, không 
 
 Implement event records + query-time decay. Không mutate toàn bộ count theo timer; không background decay task. Bound undo log theo số entry cấu hình để tránh tăng vô hạn.
 
+Closure review: adaptive correction phát self-contained `ReplaceRange` và nối cùng action vào semantic undo; read-only seam degrade Auto→Suggest khi thiếu edit payload. Persist transition để hysteresis hoạt động qua nhiều call; 2/10 undo chặn re-promote bất kể confidence cho tới khi có 18 decayed positive mass mới. `allow_learning` gate toàn bộ model mutation nhưng không làm mất semantic undo. `AutoSettled` chỉ phát một lần sau 10 event tiếp theo; undo/caret break huỷ pending settle. Test Diacritics chạy qua decision pipeline tại promotion mass.
+
 ### Verify
 
 ```powershell
@@ -641,6 +643,8 @@ Persistence qua restart bằng passphrase, crash-safe và không block input pat
 4. Serialize decrypted model bằng versioned human-readable JSON; envelope là binary.
 5. Core store API đồng bộ và nhỏ; lab sở hữu debounce worker/background I/O. Không đưa async runtime vào core chỉ để save.
 6. Zeroize passphrase/DEK buffers khi khả thi; không log secret/plaintext model.
+
+Closure review: production provider reject mọi Argon2id config dưới OWASP floor; weak profile chỉ qua explicit test constructor. `WrappedKey` redact `Debug` và zeroize buffer. Windows không còn delete-before-rename crash window; cùng-volume replacement dùng atomic `rename`, vẫn giữ synced `.bak` để recovery.
 
 ### Verify
 

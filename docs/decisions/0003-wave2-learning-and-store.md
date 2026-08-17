@@ -26,3 +26,15 @@ Wave 2 must add adaptive evidence, undo, raw-key correction, and restart-safe en
 - M9 can persist `AdaptiveModel::to_json_payload()` without the store importing model types.
 - OS keyring wrappers remain deferred; `SecretProvider` can add them without changing the envelope payload.
 - Lab remains responsible for debounce/background scheduling; core file APIs are synchronous and must stay off the typing path.
+
+## Review closure amendment
+
+Wave 2 closure review tightened the operational contract:
+
+- Read-only correction degrades an otherwise-auto decision to `Suggest` when no semantic edit payload exists. Adaptive correction accepts caller-owned `edit_id`/`EditRange`, validates the snapshot revision and grapheme length, emits `ReplaceRange`, and records the same action in `LearningSession` for exact inverse undo.
+- `InputContext.allow_learning` gates decision persistence, auto-emission history, settlement scheduling, and feedback mutation. It does not disable the semantic undo log for an allowed transform.
+- Two recent auto undos create an auto-promotion block independent of aggregate confidence. Re-promotion requires 18 decayed positive mass accumulated after demotion.
+- `LearningSession` emits `AutoSettled` exactly once after ten subsequent allowed input/edit events; undo or caret invalidation cancels the pending settlement.
+- Diacritics source caps are enforced both by decision and model mutation seams. Operational decision transitions are persisted to preserve hysteresis across correction calls.
+- Normal passphrase providers reject persisted or configured Argon2id parameters below the OWASP floor (`19 MiB / t=2 / p=1`). Weak parameters require the explicit test provider constructor.
+- Wrapped-key debug output is redacted and buffers zeroize on drop. File replacement never performs a Windows delete-before-rename step.
