@@ -13,7 +13,7 @@ use openvikey_lab::capture::{
     replay_with_model, sha256_hex,
 };
 use openvikey_lab::document::{CommittedUnit, DocumentBuffer};
-use openvikey_lab::session::{LabSession, SessionCursors};
+use openvikey_lab::session::{AcceptVisual, LabSession, SessionCursors, SessionSaveSnapshot};
 use sha2::{Digest, Sha256};
 
 fn empty_lexicon() -> Lexicon {
@@ -326,9 +326,32 @@ fn accept_top_writes_expansion_into_document_and_adds_mass() {
         InputContext::default(),
         1,
     );
-    session.accept_top(2);
+    let visual = session.accept_top(2);
+    assert_eq!(
+        visual,
+        Some(AcceptVisual {
+            candidate_nfc: "không".into(),
+            was_composing: true,
+        })
+    );
     assert!(session.document_text().starts_with("không"));
     assert!(session.model().positive_mass(&ko_rule(), 2) >= 1.0);
+}
+
+#[test]
+fn save_snapshot_does_not_call_to_json() {
+    let session = telex_session();
+    let snap = session.save_snapshot();
+    assert!(matches!(
+        snap,
+        SessionSaveSnapshot {
+            capture_records: _,
+            cursors: _,
+            last_at_ms: _,
+            ..
+        }
+    ));
+    let _ = snap.model.to_json_payload().unwrap();
 }
 
 #[test]
@@ -370,7 +393,7 @@ fn auto_commit_is_undoable_with_stored_snapshot_revision() {
         session.document_text()
     );
     let mass_after_auto = session.model().positive_mass(&rule, 30);
-    session.undo_last(31);
+    let _ = session.undo_last(31);
     assert!(session.model().negative_mass(&rule, 31) >= 1.5);
     assert!(session.model().positive_mass(&rule, 31) <= mass_after_auto);
 }
@@ -483,7 +506,7 @@ fn restart_restores_cursor_so_new_feedback_is_not_deduped() {
         101,
     );
     let before_accept = second.model().positive_mass(&ko_rule(), 102);
-    second.accept_top(102);
+    let _ = second.accept_top(102);
     assert!(second.model().positive_mass(&ko_rule(), 102) >= before_accept + 0.9);
 }
 
@@ -526,7 +549,7 @@ fn replay_includes_accept_top_commands() {
         InputContext::default(),
         1,
     );
-    live.accept_top(2);
+    let _ = live.accept_top(2);
     let replayed = replay(
         EngineConfig::default(),
         empty_lexicon(),
@@ -564,7 +587,7 @@ fn undo_last_does_not_replace_a_later_committed_token() {
     let before_undo = session.document_text();
     assert!(before_undo.contains("ab"));
     let mass_before = session.model().negative_mass(&rule, 42);
-    session.undo_last(43);
+    let _ = session.undo_last(43);
     assert_eq!(session.document_text(), before_undo);
     assert!((session.model().negative_mass(&rule, 43) - mass_before).abs() < 0.001);
 }
@@ -667,7 +690,7 @@ fn replay_includes_undo_last_commands() {
     };
     let mut live = LabSession::new_with_model(vni_config(), phat_lexicon(), seed.clone(), cursors);
     type_paht1_commit(&mut live, 20);
-    live.undo_last(31);
+    let _ = live.undo_last(31);
     let replayed = replay_with_model(
         vni_config(),
         phat_lexicon(),
@@ -827,7 +850,7 @@ fn mismatched_primaries_recover_matching_backup_pair() {
     openvikey_core::store::ModelStore::save(&mut log_store, &first_log, &provider).unwrap();
     let mut second = telex_session();
     commit_ko(&mut second);
-    second.accept_top(10);
+    let _ = second.accept_top(10);
     openvikey_core::store::ModelStore::save(
         &mut log_store,
         &second.capture_log().to_payload().unwrap(),

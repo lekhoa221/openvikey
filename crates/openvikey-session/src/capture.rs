@@ -174,13 +174,13 @@ pub fn replay_with_model(
                 session.process_event(event);
             }
             CaptureRecord::AcceptTop { at_ms, .. } => {
-                session.accept_top(*at_ms);
+                let _ = session.accept_top(*at_ms);
             }
             CaptureRecord::RejectTop { at_ms, .. } => {
                 session.reject_top(*at_ms);
             }
             CaptureRecord::UndoLast { at_ms, .. } => {
-                session.undo_last(*at_ms);
+                let _ = session.undo_last(*at_ms);
             }
         }
     }

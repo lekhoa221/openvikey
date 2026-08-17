@@ -49,6 +49,25 @@ pub struct SessionObservation {
     pub action: Option<EngineAction>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptVisual {
+    pub candidate_nfc: String,
+    pub was_composing: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UndoVisual {
+    pub show_nfc: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionSaveSnapshot {
+    pub model: AdaptiveModel,
+    pub capture_records: Vec<CaptureRecord>,
+    pub cursors: SessionCursors,
+    pub last_at_ms: i64,
+}
+
 pub struct LabSession {
     engine: Engine,
     lexicon: Lexicon,
@@ -232,13 +251,10 @@ impl LabSession {
         observation
     }
 
-    pub fn accept_top(&mut self, at_ms: i64) {
-        let Some(slice) = self.last_slice.clone() else {
-            return;
-        };
-        let Some(top) = slice.candidates.first().cloned() else {
-            return;
-        };
+    pub fn accept_top(&mut self, at_ms: i64) -> Option<AcceptVisual> {
+        let slice = self.last_slice.clone()?;
+        let top = slice.candidates.first().cloned()?;
+        let was_composing = !self.engine.snapshot().is_empty();
         let seq = self.take_seq();
         if self.capturing {
             self.record_capture(CaptureRecord::AcceptTop { seq, at_ms });
@@ -255,9 +271,8 @@ impl LabSession {
             .model_mut()
             .apply_feedback(&key, &feedback, true);
         self.clear_auto_anchor();
-        if self.engine.snapshot().is_empty() {
-            self.document.replace_last_token(top.text);
-        } else {
+        let candidate_nfc = top.text.clone();
+        if was_composing {
             self.reset_engine(at_ms);
             self.document.push_commit(CommittedUnit::new(
                 top.text,
@@ -267,8 +282,14 @@ impl LabSession {
                 self.last_method,
                 slice.candidates,
             ));
+        } else {
+            self.document.replace_last_token(top.text);
         }
         self.sync_left_context();
+        Some(AcceptVisual {
+            candidate_nfc,
+            was_composing,
+        })
     }
 
     pub fn reject_top(&mut self, at_ms: i64) {
@@ -296,25 +317,38 @@ impl LabSession {
         let _ = slice;
     }
 
-    pub fn undo_last(&mut self, at_ms: i64) {
-        let Some(revision) = self.last_auto_revision else {
-            return;
-        };
+    pub fn undo_last(&mut self, at_ms: i64) -> Option<UndoVisual> {
+        let revision = self.last_auto_revision?;
         if !self.auto_token_is_last() {
-            return;
+            return None;
         }
         let seq = self.next_seq;
-        let Some(outcome) = self.learning.undo(revision, seq, at_ms, true) else {
-            return;
-        };
+        let outcome = self.learning.undo(revision, seq, at_ms, true)?;
         let _ = self.take_seq();
         if self.capturing {
             self.record_capture(CaptureRecord::UndoLast { seq, at_ms });
         }
+        let show_nfc = outcome.inverse.replacement.clone();
         self.document
             .replace_last_token(outcome.inverse.replacement);
         self.clear_auto_anchor();
         self.sync_left_context();
+        Some(UndoVisual { show_nfc })
+    }
+
+    #[must_use]
+    pub fn clone_model(&self) -> AdaptiveModel {
+        self.model().clone()
+    }
+
+    #[must_use]
+    pub fn save_snapshot(&self) -> SessionSaveSnapshot {
+        SessionSaveSnapshot {
+            model: self.model().clone(),
+            capture_records: self.capture.clone(),
+            cursors: self.cursors(),
+            last_at_ms: self.last_at_ms,
+        }
     }
 
     #[must_use]

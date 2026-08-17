@@ -107,9 +107,13 @@ pub fn run_repl(
             let at_ms = next_event_at_ms(session.last_at_ms(), wall_clock_ms());
             match action {
                 ReplAction::Quit => {}
-                ReplAction::AcceptTop => session.accept_top(at_ms),
+                ReplAction::AcceptTop => {
+                    let _ = session.accept_top(at_ms);
+                }
                 ReplAction::RejectTop => session.reject_top(at_ms),
-                ReplAction::UndoLast => session.undo_last(at_ms),
+                ReplAction::UndoLast => {
+                    let _ = session.undo_last(at_ms);
+                }
                 ReplAction::Input(kind) => {
                     session.inject(kind, context, at_ms);
                 }

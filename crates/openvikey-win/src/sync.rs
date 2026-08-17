@@ -1,5 +1,5 @@
 use openvikey_core::types::EngineAction;
-use openvikey_session::session::SessionObservation;
+use openvikey_session::session::{AcceptVisual, SessionObservation, UndoVisual};
 use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,4 +74,40 @@ pub fn commands_from_typed(
         }
     }
     (cmds, sent)
+}
+
+pub fn commands_from_accept(
+    visual: &AcceptVisual,
+    sent_nfc: &str,
+    last_injected_token: &str,
+) -> (Vec<InjectCommand>, String, String) {
+    if visual.was_composing {
+        (
+            vec![
+                InjectCommand::Replace {
+                    backspace_graphemes: grapheme_len(sent_nfc),
+                    text_nfc: visual.candidate_nfc.clone(),
+                },
+                InjectCommand::AppendDelimiter { delimiter: ' ' },
+            ],
+            String::new(),
+            visual.candidate_nfc.clone(),
+        )
+    } else {
+        (
+            vec![InjectCommand::Replace {
+                backspace_graphemes: grapheme_len(last_injected_token),
+                text_nfc: visual.candidate_nfc.clone(),
+            }],
+            String::new(),
+            visual.candidate_nfc.clone(),
+        )
+    }
+}
+
+pub fn commands_from_undo(visual: &UndoVisual, last_injected_token: &str) -> Vec<InjectCommand> {
+    vec![InjectCommand::Replace {
+        backspace_graphemes: grapheme_len(last_injected_token),
+        text_nfc: visual.show_nfc.clone(),
+    }]
 }
