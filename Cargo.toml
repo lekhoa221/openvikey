@@ -4,6 +4,7 @@ members = [
     "crates/openvikey-core",
     "crates/openvikey-lab",
     "crates/openvikey-session",
+    "crates/openvikey-win",
 ]
 
 [workspace.package]
@@ -30,6 +31,18 @@ argon2 = "0.5"
 chacha20poly1305 = "0.10"
 getrandom = "0.2"
 zeroize = { version = "1.8", features = ["derive"] }
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_Threading",
+    "Win32_System_ProcessStatus",
+    "Win32_UI_Accessibility",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
