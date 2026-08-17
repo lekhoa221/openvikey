@@ -361,6 +361,7 @@ dependencies = [
  "thiserror",
  "toml",
  "unicode-normalization",
+ "zeroize",
 ]
 
 [[package]]
