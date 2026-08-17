@@ -1,17 +1,30 @@
 //! Normalize, dedupe, and order candidates. Personal rerank reads `ModelView` only.
 
 use crate::generate::abbrev::ABBREV_SEED_SHA256;
-use crate::model::ModelView;
-use crate::types::Candidate;
+use crate::model::{ModelView, RuleContextKey};
+use crate::types::{Candidate, InputMethod};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use unicode_normalization::UnicodeNormalization;
 
+pub const SCORE_CONFIG_V1_HASH: &str =
+    "1380a346aa0fb8455773ef0228c0eabd7af46365c16f88beb1b94cca69cda522";
+
 /// Versioned score calibration. Fit only on the calibration split (M9/M10).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScoreConfig {
     pub version: u32,
     pub hash: String,
+    pub calibration_source_hash: String,
+    pub personal_weight: f64,
+}
+
+/// Context required to map a candidate to its personal learning key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RankingContext {
+    pub input_method: InputMethod,
+    pub original_nfc: String,
+    pub left_token_nfc: Option<String>,
 }
 
 impl ScoreConfig {
@@ -19,7 +32,9 @@ impl ScoreConfig {
     pub fn abbrev_v1() -> Self {
         Self {
             version: 1,
-            hash: ABBREV_SEED_SHA256.to_string(),
+            hash: SCORE_CONFIG_V1_HASH.to_string(),
+            calibration_source_hash: ABBREV_SEED_SHA256.to_string(),
+            personal_weight: 0.2,
         }
     }
 }
@@ -40,8 +55,8 @@ pub fn rank(
     model: &dyn ModelView,
     evaluate_at_ms: i64,
     config: &ScoreConfig,
+    context: Option<&RankingContext>,
 ) -> Vec<Candidate> {
-    let _ = (model, evaluate_at_ms, config);
     let mut merged: BTreeMap<String, Candidate> = BTreeMap::new();
     for candidate in candidates {
         let key = nfc(&candidate.text);
@@ -57,7 +72,21 @@ pub fn rank(
 
     let mut ranked: Vec<Candidate> = merged.into_values().collect();
     for candidate in &mut ranked {
-        candidate.final_score = candidate.base_score.clamp(0.0, 1.0);
+        let base = candidate.base_score.clamp(0.0, 1.0);
+        candidate.final_score = if let Some(context) = context {
+            let key = RuleContextKey {
+                input_method: context.input_method,
+                source: candidate.source,
+                original_nfc: context.original_nfc.clone(),
+                candidate_nfc: candidate.text.clone(),
+                left_token_nfc: context.left_token_nfc.clone(),
+                source_rule_id: primary_rule_id(&candidate.evidence).to_string(),
+            };
+            let personal_delta = model.confidence(&key, evaluate_at_ms) - 0.5;
+            (base + config.personal_weight * personal_delta).clamp(0.0, 1.0)
+        } else {
+            base
+        };
     }
     ranked.sort_by(|a, b| {
         b.final_score

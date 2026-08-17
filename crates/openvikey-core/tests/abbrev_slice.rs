@@ -5,7 +5,7 @@ use openvikey_core::decision::{ActionCap, DecisionConfig, DecisionState, decide}
 use openvikey_core::generate::abbrev::{ABBREV_SEED_JSONL, ABBREV_SEED_SHA256, AbbrevGenerator};
 use openvikey_core::generate::{Generator, LeftContext};
 use openvikey_core::model::{EmptyModel, ModelView, RuleContextKey};
-use openvikey_core::rank::{ScoreConfig, rank};
+use openvikey_core::rank::{SCORE_CONFIG_V1_HASH, ScoreConfig, rank};
 use openvikey_core::types::{
     Candidate, CandidateSource, CompositionSnapshot, EngineAction, InputContext, InputMethod,
 };
@@ -39,7 +39,13 @@ fn rank_dedupes_same_nfc_output_from_two_evidence_paths() {
         base_score: 0.55,
         final_score: 0.0,
     });
-    let ranked = rank(cands, &EmptyModel::new(), 0, &ScoreConfig::abbrev_v1());
+    let ranked = rank(
+        cands,
+        &EmptyModel::new(),
+        0,
+        &ScoreConfig::abbrev_v1(),
+        None,
+    );
     assert_eq!(ranked.len(), 1);
     assert_eq!(ranked[0].text, "không");
     assert_eq!(ranked[0].id, winner_id);
@@ -69,7 +75,13 @@ fn rank_tie_breaks_by_lexical_nfc_and_score_dominates() {
             final_score: 0.0,
         },
     ];
-    let ranked = rank(cands, &EmptyModel::new(), 0, &ScoreConfig::abbrev_v1());
+    let ranked = rank(
+        cands,
+        &EmptyModel::new(),
+        0,
+        &ScoreConfig::abbrev_v1(),
+        None,
+    );
     assert_eq!(ranked[0].text, "òa");
     assert_eq!(ranked[1].text, "ệa");
 
@@ -91,7 +103,13 @@ fn rank_tie_breaks_by_lexical_nfc_and_score_dominates() {
             final_score: 0.0,
         },
     ];
-    let ranked = rank(scored, &EmptyModel::new(), 0, &ScoreConfig::abbrev_v1());
+    let ranked = rank(
+        scored,
+        &EmptyModel::new(),
+        0,
+        &ScoreConfig::abbrev_v1(),
+        None,
+    );
     assert_eq!(ranked[0].text, "ệa");
 }
 
@@ -343,5 +361,13 @@ fn seed_fixture_is_the_only_abbrev_table() {
     assert_eq!(ABBREV_SEED_JSONL, EXPECTED_SEED);
     let actual_hash = hex::encode(Sha256::digest(ABBREV_SEED_JSONL.as_bytes()));
     assert_eq!(actual_hash, ABBREV_SEED_SHA256);
-    assert_eq!(ScoreConfig::abbrev_v1().hash, actual_hash);
+    let config = ScoreConfig::abbrev_v1();
+    assert_eq!(config.calibration_source_hash, actual_hash);
+    assert_eq!(config.hash, SCORE_CONFIG_V1_HASH);
+    let canonical =
+        format!("version=1\nabbrev_seed_sha256={ABBREV_SEED_SHA256}\npersonal_weight=0.2\n");
+    assert_eq!(
+        hex::encode(Sha256::digest(canonical.as_bytes())),
+        SCORE_CONFIG_V1_HASH
+    );
 }

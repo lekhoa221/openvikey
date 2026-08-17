@@ -5,6 +5,7 @@
 pub mod correction;
 pub mod decision;
 pub mod engine;
+pub mod feedback;
 pub mod generate;
 pub mod lexicon;
 pub mod model;

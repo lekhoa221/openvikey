@@ -5,7 +5,7 @@
 use crate::decision::{DecisionConfig, DecisionState, decide};
 use crate::generate::{Generator, LeftContext, collect_candidates};
 use crate::model::{ModelView, RuleContextKey};
-use crate::rank::{ScoreConfig, rank};
+use crate::rank::{RankingContext, ScoreConfig, rank};
 use crate::types::{Candidate, CompositionSnapshot, EngineAction, InputContext, InputMethod};
 
 /// Result of one generate → rank → decision pass.
@@ -39,7 +39,17 @@ pub fn run_correction_slice(
         };
     }
 
-    let candidates = rank(raw, model, evaluate_at_ms, score_config);
+    let candidates = rank(
+        raw,
+        model,
+        evaluate_at_ms,
+        score_config,
+        Some(&RankingContext {
+            input_method,
+            original_nfc: snapshot.normalized.clone(),
+            left_token_nfc: left_context.prev_token_nfc.clone(),
+        }),
+    );
     let decision = candidates.first().map(|top| {
         let rule = RuleContextKey {
             input_method,
