@@ -1,7 +1,7 @@
 # OpenViKey v1 Headless Brain — Implementation Plan
 
 - **Ngày:** 2026-08-17
-- **Trạng thái:** In progress — M0–M3 + Wave 0 + Wave 1 + Wave 2 + **Wave 3 (7B fuzzy, 7C diacritics)** xong. Wave 4 tiếp theo: M9 lab harness + M10 acceptance gates.
+- **Trạng thái:** In progress — M0–M3 + Wave 0–3 + **M9 lab harness** xong. M10 tooling/perf evidence đã triển khai; release closure còn bị chặn bởi corpus authored chưa đạt sample floors G3 (1/50.000 correct token, 2/1.000 error case).
 - **Governing spec:** [`../specs/2026-08-17-openvikey-design.md`](../specs/2026-08-17-openvikey-design.md)
 - **Phạm vi:** chỉ v1 headless brain; không TSF, CGEventTap/InputMethodKit, OS keyring, sync/CRDT, GUI settings hay phrase-level diacritics.
 - **Cách làm:** TDD; mỗi checkpoint là một commit nhỏ, build xanh và không trộn refactor ngoài phạm vi. Phần còn lại chia **3 nhóm / 4 sóng** (§4.1), không chia 1 milestone = 1 nhóm.
@@ -659,7 +659,7 @@ cargo test -p openvikey-core --test store_recovery
 
 ---
 
-## 14. Milestone 9 — Lab CLI & corpus evaluation — Wave 4 / Nhóm C (evaluate/report: Nhóm A)
+## 14. Milestone 9 — **DONE** — Lab CLI & corpus evaluation — Wave 4 / Nhóm C (evaluate/report: Nhóm A)
 
 ### Goal
 
@@ -707,7 +707,7 @@ cargo run -p openvikey-lab -- --help
 
 ---
 
-## 15. Milestone 10 — Quality, security & performance closure — Wave 4 / Nhóm C + A
+## 15. Milestone 10 — **IMPLEMENTED; RELEASE DATA BLOCKED** — Quality, security & performance closure — Wave 4 / Nhóm C + A
 
 ### Goal
 
@@ -744,9 +744,18 @@ target/evidence/
 
 Không commit `target/evidence`; release note ghi hash và cách reproduce. Nếu metric fail, calibrate chỉ trên calibration split, freeze config version mới, rồi chạy lại held-out đúng một lần cho candidate release.
 
+### Wave 4 implementation evidence
+
+- CLI đủ `type`, `script run`, `model dump`, `corpus verify/evaluate` và `perf`; JSON không chứa timing tái lập byte-identical, timing chỉ nằm trong perf report.
+- Corpus runner nối raw key qua `Engine` rồi mới generate/rank/decide; test live VNI phủ `paht1 → phát` và left-context qua boundary.
+- Fuzzy/diacritics dùng folded-length/form index thay vì scan toàn bộ lexicon. Release stress 6.000 entry trên máy review: candidate-generation P95 **8.131 ms**, per-key P95 **4 µs**, startup load **5.820 ms**, peak working set **12.357.632 byte**; `target/perf-wave4.json` không commit.
+- Save worker chạy background với production debounce 2s; burst test xác nhận chỉ ghi payload cuối và không chạy trên typing thread.
+- Password/terminal/denylist flags đều mô phỏng `false/false`; model dump không ghi stdout trước khi passphrase authentication thành công.
+- Unit authored evaluation đạt suggestion top-1/top-3 2/2 nhưng **không phải release evidence**. Release mode fail closed vì chỉ có 1 correct token và 2 error case; không fabricate data để tick G3.
+
 ### Commit checkpoint
 
-`test: close OpenViKey v1 acceptance gates`
+`test: close OpenViKey v1 acceptance gates` chỉ được tạo sau khi corpus release thật đạt floors và held-out gates.
 
 ---
 
@@ -786,7 +795,7 @@ Theo dõi theo **wave** ở §4.1; tick gate khi evidence đủ, không chỉ kh
 - [x] Bốn generators có test độc lập.
 - [x] Learning canonical promote/demote/convergence tests xanh.
 - [x] Encrypted store restart/recovery/rewrap tests xanh.
-- [ ] Lab CLI và reports tái lập được.
+- [x] Lab CLI và reports tái lập được.
 - [ ] G3 corpus quality gates xanh với đúng minimum sample.
 - [ ] G4 security/performance gates xanh.
 - [ ] README/spec/provenance phản ánh đúng implementation cuối.
