@@ -657,12 +657,10 @@ impl LabSession {
 
     /// Cheap pre-inject checkpoint (no `AbbrevGenerator` / lexicon).
     ///
-    /// Clones [`LearningSession`] only when `kind` can commit or mine (Boundary / Backspace),
-    /// so letter composition keys avoid cloning the adaptive model.
+    /// Always clones [`LearningSession`]: letter keys still run `record_decision` /
+    /// pending auto-settlement observation, so `InjectError` must restore model state.
     #[must_use]
-    pub fn checkpoint_for_inject(&self, kind: &InputKind) -> SessionInjectCheckpoint {
-        let learning = matches!(kind, InputKind::Boundary { .. } | InputKind::Backspace)
-            .then(|| self.learning.clone());
+    pub fn checkpoint_for_inject(&self, _kind: &InputKind) -> SessionInjectCheckpoint {
         SessionInjectCheckpoint {
             engine: self.engine.clone(),
             document: self.document.clone(),
@@ -679,7 +677,7 @@ impl LabSession {
             last_auto_token: self.last_auto_token.clone(),
             last_at_ms: self.last_at_ms,
             capture: self.capture.clone(),
-            learning,
+            learning: self.learning.clone(),
         }
     }
 
@@ -700,9 +698,7 @@ impl LabSession {
         self.last_auto_token = checkpoint.last_auto_token;
         self.last_at_ms = checkpoint.last_at_ms;
         self.capture = checkpoint.capture;
-        if let Some(learning) = checkpoint.learning {
-            self.learning = learning;
-        }
+        self.learning = checkpoint.learning;
     }
 }
 
@@ -723,7 +719,7 @@ pub struct SessionInjectCheckpoint {
     last_auto_token: Option<String>,
     last_at_ms: i64,
     capture: Vec<CaptureRecord>,
-    learning: Option<LearningSession>,
+    learning: LearningSession,
 }
 
 /// Unicode punctuation the engine's ASCII boundary table does not treat as commit.

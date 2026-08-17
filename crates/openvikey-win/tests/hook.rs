@@ -97,6 +97,47 @@ fn dispatch_ll_letter_passes_when_inject_fails() {
 }
 
 #[test]
+fn dispatch_ll_letter_inject_fail_restores_learning_model() {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
+    use openvikey_win::inject::{
+        InjectError, InjectProfile, InputSender, ProfilingInjector, SynthesizedEvent,
+    };
+
+    struct FailSender;
+    impl InputSender for FailSender {
+        fn send(&mut self, events: &[SynthesizedEvent]) -> Result<u32, InjectError> {
+            Err(InjectError::Partial {
+                sent: 0,
+                expected: events.len(),
+            })
+        }
+    }
+
+    let mut typing = TypingHost::new_telex_fixture();
+    // Non-empty composition / Suggest path: "k" then failing "o" would record_decision for "ko"→"không".
+    typing.handle_key(key(0x4B), 1);
+    let before_composition = typing.session.composition_text();
+    let before_model = typing.session.clone_model();
+    assert!(!before_composition.is_empty());
+    typing.set_injector(Box::new(ProfilingInjector {
+        profile: InjectProfile::Win32,
+        sender: FailSender,
+        sending: Arc::new(AtomicBool::new(false)),
+    }));
+    let host = Mutex::new(typing);
+    assert_eq!(dispatch_ll(&host, key(0x4F), 2), 0);
+    let guard = host.lock().unwrap();
+    assert_eq!(guard.session.composition_text(), before_composition);
+    assert_eq!(
+        guard.session.clone_model(),
+        before_model,
+        "learning/model must match pre-key state on letter InjectError"
+    );
+}
+
+#[test]
 fn dispatch_ll_enter_eats_but_rolls_back_session_on_inject_fail() {
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
