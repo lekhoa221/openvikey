@@ -1,7 +1,7 @@
 # OpenViKey v1 Headless Brain — Implementation Plan
 
 - **Ngày:** 2026-08-17
-- **Trạng thái:** In progress — M0–M3 + Wave 0 + **Wave 1 (M4, M5)** xong. Wave 2 tiếp theo: M6 + 7A + M8.
+- **Trạng thái:** In progress — M0–M3 + Wave 0 + **Wave 1 (M4, M5 + closure review)** xong. Wave 2 tiếp theo: M6 + 7A + M8.
 - **Governing spec:** [`../specs/2026-08-17-openvikey-design.md`](../specs/2026-08-17-openvikey-design.md)
 - **Phạm vi:** chỉ v1 headless brain; không TSF, CGEventTap/InputMethodKit, OS keyring, sync/CRDT, GUI settings hay phrase-level diacritics.
 - **Cách làm:** TDD; mỗi checkpoint là một commit nhỏ, build xanh và không trộn refactor ngoài phạm vi. Phần còn lại chia **3 nhóm / 4 sóng** (§4.1), không chia 1 milestone = 1 nhóm.
@@ -251,7 +251,7 @@ Không giả lập 3 nhóm. Đi tuần tự:
 
 - [x] Baseline M0–M3 xanh trên `main`
 - [x] Wave 0 — khóa interface (+ vá golden M3 tuỳ chọn); ADR 0002
-- [x] Wave 1 — M4 (A) và M5 (B) merge, verify sóng 1 xanh
+- [x] Wave 1 — M4 (A), M5 (B) và closure review merge; verify sóng 1 xanh
 - [ ] Wave 2 — M6 + 7A + M8 xanh
 - [ ] Wave 3 — 7B + 7C xanh
 - [ ] Wave 4 — M9 + M10; G3/G4 có evidence; v1 complete
@@ -479,6 +479,7 @@ Có data path tái lập được trước khi viết fuzzy/diacritics; mở G0 
 
 ```powershell
 cargo run -p openvikey-lab -- corpus verify --manifest data/corpus-manifest.toml
+cargo run -p openvikey-lab -- corpus build-lexicon --manifest data/corpus-manifest.toml --out target/lexicon.json
 cargo test -p openvikey-lab --test corpus_manifest
 ```
 
@@ -510,7 +511,9 @@ Dùng generator đơn giản nhất để nối `generate → rank → decision 
 3. Stable lexical NFC tie-break.
 4. Cold-start abbreviation mơ hồ chỉ suggestion.
 5. `ignore→suggest` ở 0.70; `suggest→ignore` dưới 0.60.
-6. `allow_transform=false` không generate/rank/decide.
+6. Suggestion phát `ShowSuggestions{revision,candidates}`.
+7. Rule-context giữ input method do caller truyền và source rule thắng sau dedupe.
+8. `allow_transform=false` không generate/rank/decide.
 
 ### Green
 
@@ -766,7 +769,7 @@ Theo dõi theo **wave** ở §4.1; tick gate khi evidence đủ, không chỉ kh
 
 - [x] Baseline M0–M3 xanh trên `main`
 - [x] Wave 0 — khóa interface (+ vá golden M3 tuỳ chọn); ADR 0002
-- [x] Wave 1 — M4 + M5
+- [x] Wave 1 — M4 + M5 + closure review (provenance/split seed, reproducible bigrams, correction action/rule identity)
 - [ ] Wave 2 — M6 + 7A + M8
 - [ ] Wave 3 — 7B + 7C
 - [ ] Wave 4 — M9 + M10; v1 complete
@@ -774,7 +777,7 @@ Theo dõi theo **wave** ở §4.1; tick gate khi evidence đủ, không chỉ kh
 **Gate / acceptance (spec §3, §8, §11)**
 
 - [ ] G0 provenance mở cho mọi asset ship.
-- [x] G1 engine ADR được commit (Adopt/wrap `vi-rs`); compatibility gate xanh. Wave 0 bổ sung escape/VNI oà/òa/NFC/revision/URL-boundary; mixed English heuristics vẫn không thuộc engine (ADR 0002).
+- [x] G1 engine ADR được commit (Adopt/wrap `vi-rs`); compatibility gate xanh. Golden closure phủ NFC/NFD matching form, reset, Telex/VNI escape, VNI oà/òa, revision, full backspace prefixes, URL boundary và code/mixed passthrough qua explicit context policy; English heuristics vẫn không thuộc engine (ADR 0002).
 - [x] G2 semantic edit/undo contract property tests xanh.
 - [ ] Bốn generators có test độc lập.
 - [ ] Learning canonical promote/demote/convergence tests xanh.

@@ -27,14 +27,15 @@ Engine policy locked here:
 |---|---|---|---|
 | Lexicon | `lexicon.rs` | `from_entries` / `lookup` / `bigram` / `source_manifest_hash` | M4 artifact from manifest |
 | Generator | `generate/mod.rs` | `generate(&CompositionSnapshot, &LeftContext) -> Vec<Candidate>` | M5 abbrev, M7 others |
+| Correction pipeline | `correction.rs` | generate → rank → model-aware decision/action | M5 suggestion, M6 auto/undo |
 | Decision | `decision.rs` | `DecisionState`, `ActionCap`, `DecisionConfig` defaults | M5/M6 state machine |
-| Model view | `model.rs` | `ModelView::{confidence,state}`; `EmptyModel` JSON `{version,entries}` | M6 event-backed Beta |
+| Model view | `model.rs` | `ModelView::{confidence,positive_mass,state}`; `EmptyModel` JSON `{version,entries}` | M6 event-backed Beta |
 | Store | `store/mod.rs` | `SecretProvider`, `ModelStore` on `&[u8]`; `StoreError` kinds | M8 envelope crypto |
 | Metrics | `openvikey-lab/src/metrics.rs` | `auto_precision`, `correct_token_fpr`, `wilson_interval` | M4/M9 corpus evaluate |
 
 Invariants callers may rely on:
 
-1. **Generators never receive a model.** Rank/decision read `ModelView`.
+1. **Generators never receive a model.** `correction.rs` orchestrates model-aware rank/decision; `generate/mod.rs` remains pure.
 2. **Diacritics `max_action` is `Suggest`.** Other sources may reach `Auto`.
 3. **Empty model** is Beta(1,1) prior (`confidence = 0.5`) and `DecisionState::Ignore`. `apply_feedback` is a no-op until M6.
 4. **Store persists bytes**, never `EmptyModel` / Beta types. Decode is the caller's job.
@@ -49,3 +50,7 @@ No production lexicon file, no abbrev ranking, no Argon2/XChaCha, no lab `corpus
 ## 5. Consequences
 
 Wave 1 may start: group A implements M4 behind `Lexicon` + metrics; group B implements M5 behind `Generator` + `DecisionConfig` + `EmptyModel`.
+
+## 6. Wave 1 closure amendment
+
+Review before Wave 2 exposed two missing pieces in the locked seam. The model view now exposes query-time `positive_mass`, required by the already-locked 18-accept promotion rule. Model-aware orchestration moved from `generate/mod.rs` to `correction.rs`; it receives `InputMethod` from the caller, preserves the winning source rule through dedupe, and emits `ShowSuggestions`. No `types.rs` or engine contract changed.

@@ -8,3 +8,5 @@
 {"name": "vni_d9_cap", "method": "vni", "tone": "modern", "input": "D9", "expected": "Đ"}
 {"name": "vni_tone_modern_oa", "method": "vni", "tone": "modern", "input": "oa2", "expected": "oà"}
 {"name": "vni_tone_classic_oa", "method": "vni", "tone": "classic", "input": "oa2", "expected": "òa"}
+{"name": "vni_escape_repeated_tone", "method": "vni", "tone": "modern", "input": "a11", "expected": "a1"}
+{"name": "vni_zero_strips_tone", "method": "vni", "tone": "modern", "input": "ha20", "expected": "ha"}

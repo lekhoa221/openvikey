@@ -1,6 +1,10 @@
 {
-  "source_manifest_hash": "0bb08c172887f88078451820740bd6f063b0156ce3c1c46915b72b0c41f15ebd",
+  "source_manifest_hash": "ec38329a11beaee0c61dd6418b02c5a40d06509afc3effa291bfad05161a790e",
   "entries": [
+    {
+      "token_nfc": "chào",
+      "frequency": 1
+    },
     {
       "token_nfc": "không",
       "frequency": 1
@@ -8,13 +12,17 @@
     {
       "token_nfc": "nam",
       "frequency": 1
+    },
+    {
+      "token_nfc": "xin",
+      "frequency": 1
     }
   ],
   "bigrams": [
     {
       "left_nfc": "xin",
       "token_nfc": "chào",
-      "score": 0.8
+      "score": 1.0
     }
   ]
 }

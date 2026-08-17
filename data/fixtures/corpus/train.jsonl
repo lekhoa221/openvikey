@@ -1,2 +1,3 @@
 {"id":"train-abbrev-ko","label":"error","error_type":"abbrev","input":"ko","gold":"không"}
 {"id":"train-correct-nam","label":"correct","input":"nam","gold":"nam"}
+{"id":"train-correct-xin-chao","label":"correct","input":"xin chào","gold":"xin chào"}

@@ -235,8 +235,10 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 name = "openvikey-core"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "serde",
  "serde_json",
+ "sha2",
  "unicode-normalization",
  "unicode-segmentation",
  "vi",
@@ -254,6 +256,7 @@ dependencies = [
  "sha2",
  "thiserror",
  "toml",
+ "unicode-normalization",
 ]
 
 [[package]]

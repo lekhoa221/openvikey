@@ -64,6 +64,17 @@ fn test_provenance_rejects_missing_or_invalid_hash() {
 }
 
 #[test]
+fn test_provenance_rejects_moving_head_revision() {
+    let mut invalid = sample_record(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ProvenanceStatus::Approved,
+    );
+    invalid.revision = "HEAD".to_string();
+    invalid.artifact = Some("data/example.jsonl".to_string());
+    assert!(invalid.validate().is_err());
+}
+
+#[test]
 fn test_provenance_rejects_approved_with_prohibited_redistribution() {
     let mut invalid = sample_record(
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -145,4 +156,13 @@ fn test_project_provenance_file_and_artifact_hashes() {
             .iter()
             .any(|r| r.id == "openvikey-fixtures-vni")
     );
+    assert!(
+        manifest
+            .records
+            .iter()
+            .any(|r| r.id == "openvikey-abbrev-seed")
+    );
+    assert!(manifest.records.iter().all(|record| {
+        record.status != ProvenanceStatus::Approved || !record.revision.eq_ignore_ascii_case("HEAD")
+    }));
 }

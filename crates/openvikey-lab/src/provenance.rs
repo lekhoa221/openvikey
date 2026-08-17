@@ -62,6 +62,13 @@ impl ProvenanceRecord {
                 self.id
             ));
         }
+        let revision = self.revision.trim();
+        if revision.is_empty()
+            || revision.eq_ignore_ascii_case("unknown")
+            || revision.eq_ignore_ascii_case("HEAD")
+        {
+            return Err(format!("revision must be pinned for record '{}'", self.id));
+        }
         let hash_trimmed = self.sha256.trim();
         if hash_trimmed.is_empty() {
             return Err(format!(

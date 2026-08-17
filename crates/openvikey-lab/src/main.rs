@@ -40,6 +40,13 @@ enum CorpusCmd {
         #[arg(long, default_value = "unit")]
         mode: String,
     },
+    /// Reproducibly build a lexicon/bigram artifact from the train split
+    BuildLexicon {
+        #[arg(long, default_value = "data/corpus-manifest.toml")]
+        manifest: PathBuf,
+        #[arg(long, default_value = "data/fixtures/lexicon/authored.json")]
+        out: PathBuf,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -71,6 +78,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 corpus.items_in("calibration").len(),
                 corpus.items_in("held_out").len()
             );
+        }
+        Commands::Corpus(CorpusCmd::BuildLexicon { manifest, out }) => {
+            let workspace_root = manifest
+                .parent()
+                .and_then(std::path::Path::parent)
+                .ok_or("corpus manifest must live at <workspace>/data/corpus-manifest.toml")?;
+            let verified =
+                corpus::load_and_verify(&manifest, workspace_root, EvaluationMode::Unit)?;
+            let lexicon = corpus::build_lexicon(&verified, &manifest)?;
+            corpus::write_lexicon_artifact(&lexicon, &out)?;
+            println!("Lexicon artifact written to: {}", out.display());
         }
     }
     Ok(())

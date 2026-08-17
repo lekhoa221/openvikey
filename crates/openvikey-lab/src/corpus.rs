@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use thiserror::Error;
+use unicode_normalization::UnicodeNormalization;
 
 /// Spec §3.2 release floors. Unit mode does not enforce these.
 pub const RELEASE_MIN_CORRECT_TOKENS: u64 = 50_000;
@@ -89,6 +90,7 @@ pub struct CorpusItem {
 struct ManifestFile {
     version: String,
     provenance: String,
+    split_seed: u64,
     #[serde(default)]
     evaluation: EvaluationThresholds,
     #[serde(default)]
@@ -158,6 +160,11 @@ pub fn load_and_verify(
 ) -> Result<VerifiedCorpus, CorpusError> {
     let raw = std::fs::read_to_string(manifest_path)?;
     let file: ManifestFile = toml::from_str(&raw)?;
+    if file.split_seed == 0 {
+        return Err(CorpusError::Validation(
+            "split_seed must be non-zero for a frozen corpus".to_string(),
+        ));
+    }
     let provenance = ProvenanceManifest::from_file(workspace_root.join(&file.provenance))
         .map_err(|err| CorpusError::Validation(err.to_string()))?;
 
@@ -225,21 +232,53 @@ pub fn build_lexicon(
 ) -> Result<Lexicon, CorpusError> {
     let source_manifest_hash = sha256_file(manifest_path)?;
     let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+    let mut bigram_counts: BTreeMap<(String, String), u32> = BTreeMap::new();
+    let mut left_totals: BTreeMap<String, u32> = BTreeMap::new();
+
     for item in corpus.items_in("train") {
-        *counts.entry(item.gold.clone()).or_insert(0) += 1;
+        let tokens: Vec<String> = item
+            .gold
+            .split_whitespace()
+            .map(|token| token.nfc().collect())
+            .collect();
+        for token in &tokens {
+            *counts.entry(token.clone()).or_insert(0) += 1;
+        }
+        for pair in tokens.windows(2) {
+            let left = pair[0].clone();
+            let token = pair[1].clone();
+            *bigram_counts.entry((left.clone(), token)).or_insert(0) += 1;
+            *left_totals.entry(left).or_insert(0) += 1;
+        }
     }
+
     let entries = counts
         .into_iter()
         .map(|(token_nfc, frequency)| LexiconEntry {
             token_nfc,
             frequency,
-        })
-        .collect::<Vec<_>>();
+        });
+    let bigrams = bigram_counts.into_iter().map(|((left, token), count)| {
+        let total = left_totals.get(&left).copied().unwrap_or(count);
+        ((left, token), f64::from(count) / f64::from(total))
+    });
     Ok(Lexicon::from_entries(
         entries,
-        [],
+        bigrams,
         Some(&source_manifest_hash),
     ))
+}
+
+/// Writes a byte-deterministic, human-readable lexicon artifact.
+pub fn write_lexicon_artifact(lexicon: &Lexicon, path: &Path) -> Result<(), CorpusError> {
+    let mut bytes =
+        serde_json::to_vec_pretty(&lexicon.to_artifact()).map_err(|source| CorpusError::Json {
+            path: path.display().to_string(),
+            source,
+        })?;
+    bytes.push(b'\n');
+    std::fs::write(path, bytes)?;
+    Ok(())
 }
 
 fn find_record<'a>(

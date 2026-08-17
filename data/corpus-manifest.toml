@@ -1,5 +1,6 @@
 version = "1.0.0"
 provenance = "data/provenance.toml"
+split_seed = 20260817
 
 [evaluation]
 min_correct_tokens_release = 50000
@@ -9,7 +10,7 @@ min_per_error_type_release = 200
 [[assets]]
 id = "authored-train"
 path = "data/fixtures/corpus/train.jsonl"
-sha256 = "067ea7335121d8af8e2552e0d59d461f6992322a37eff7a9bebdcdccc8f5dff8"
+sha256 = "4a0e26f56ebd88a2a791726e3cd4d05ed8adea6351783bcfeee7db21fb52b935"
 split_role = "train"
 provenance_id = "openvikey-fixtures-corpus-train"
 

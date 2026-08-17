@@ -15,7 +15,9 @@ unicode-segmentation = { workspace = true }
 vi = { git = "https://github.com/ZeroX-DG/vi-rs", rev = "192e246d37e83094a1228e798b160f3cee14c879" }
 
 [dev-dependencies]
+hex = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 
 [lints]
 workspace = true

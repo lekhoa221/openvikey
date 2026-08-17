@@ -1,11 +1,15 @@
 //! Milestone 5: abbreviation generate → rank → decision.
 
+use openvikey_core::correction::run_correction_slice;
 use openvikey_core::decision::{ActionCap, DecisionConfig, DecisionState, decide};
 use openvikey_core::generate::abbrev::{ABBREV_SEED_JSONL, ABBREV_SEED_SHA256, AbbrevGenerator};
-use openvikey_core::generate::{Generator, LeftContext, run_correction_slice};
-use openvikey_core::model::EmptyModel;
+use openvikey_core::generate::{Generator, LeftContext};
+use openvikey_core::model::{EmptyModel, ModelView, RuleContextKey};
 use openvikey_core::rank::{ScoreConfig, rank};
-use openvikey_core::types::{Candidate, CandidateSource, CompositionSnapshot, InputContext};
+use openvikey_core::types::{
+    Candidate, CandidateSource, CompositionSnapshot, EngineAction, InputContext, InputMethod,
+};
+use sha2::{Digest, Sha256};
 
 fn snapshot(text: &str) -> CompositionSnapshot {
     CompositionSnapshot::new(1, text.to_string(), text.to_string())
@@ -99,6 +103,7 @@ fn cold_start_abbrev_is_suggestion_only() {
         &LeftContext::default(),
         InputContext::default(),
         &[&generator],
+        InputMethod::Telex,
         &EmptyModel::new(),
         0,
         &ScoreConfig::abbrev_v1(),
@@ -106,6 +111,90 @@ fn cold_start_abbrev_is_suggestion_only() {
     );
     assert_eq!(slice.decision, Some(DecisionState::Suggest));
     assert_ne!(slice.decision, Some(DecisionState::Auto));
+    assert_eq!(
+        slice.action,
+        Some(EngineAction::ShowSuggestions {
+            revision: 1,
+            candidates: slice.candidates.clone(),
+        })
+    );
+}
+
+struct PromotedVniModel;
+
+impl ModelView for PromotedVniModel {
+    fn confidence(&self, key: &RuleContextKey, _evaluate_at_ms: i64) -> f64 {
+        assert_eq!(key.input_method, InputMethod::Vni);
+        assert_eq!(key.source_rule_id, "strong:rule");
+        0.95
+    }
+
+    fn positive_mass(&self, key: &RuleContextKey, _evaluate_at_ms: i64) -> f64 {
+        assert_eq!(key.input_method, InputMethod::Vni);
+        assert_eq!(key.source_rule_id, "strong:rule");
+        18.0
+    }
+
+    fn state(&self, key: &RuleContextKey, _evaluate_at_ms: i64) -> DecisionState {
+        assert_eq!(key.input_method, InputMethod::Vni);
+        assert_eq!(key.source_rule_id, "strong:rule");
+        DecisionState::Suggest
+    }
+}
+
+struct DuplicateRuleGenerator;
+
+impl Generator for DuplicateRuleGenerator {
+    fn source(&self) -> CandidateSource {
+        CandidateSource::Abbreviation
+    }
+
+    fn generate(
+        &self,
+        _snapshot: &CompositionSnapshot,
+        _left_context: &LeftContext,
+    ) -> Vec<Candidate> {
+        vec![
+            Candidate {
+                id: 1,
+                text: "không".to_string(),
+                source: CandidateSource::Abbreviation,
+                evidence: "strong:rule".to_string(),
+                base_score: 0.95,
+                final_score: 0.0,
+            },
+            Candidate {
+                id: 2,
+                text: "không".to_string(),
+                source: CandidateSource::Fuzzy,
+                evidence: "alt:weak".to_string(),
+                base_score: 0.80,
+                final_score: 0.0,
+            },
+        ]
+    }
+}
+
+#[test]
+fn correction_uses_caller_method_positive_mass_and_winning_rule() {
+    let slice = run_correction_slice(
+        &snapshot("ko"),
+        &LeftContext::default(),
+        InputContext::default(),
+        &[&DuplicateRuleGenerator],
+        InputMethod::Vni,
+        &PromotedVniModel,
+        0,
+        &ScoreConfig::abbrev_v1(),
+        &DecisionConfig::default(),
+    );
+
+    assert_eq!(slice.decision, Some(DecisionState::Auto));
+    assert_eq!(slice.candidates[0].source, CandidateSource::Abbreviation);
+    assert_eq!(
+        slice.candidates[0].evidence.split('+').next(),
+        Some("strong:rule")
+    );
 }
 
 #[test]
@@ -218,6 +307,7 @@ fn allow_transform_false_skips_generate_rank_and_decide() {
         &LeftContext::default(),
         context,
         &[&generator],
+        InputMethod::Telex,
         &EmptyModel::new(),
         0,
         &ScoreConfig::abbrev_v1(),
@@ -229,9 +319,10 @@ fn allow_transform_false_skips_generate_rank_and_decide() {
 
 #[test]
 fn seed_fixture_is_the_only_abbrev_table() {
+    const EXPECTED_SEED: &str = include_str!("fixtures/abbrev_seed.jsonl");
     let generator = AbbrevGenerator::from_seed();
     let mut seen = 0_u32;
-    for line in ABBREV_SEED_JSONL.lines() {
+    for line in EXPECTED_SEED.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -249,5 +340,8 @@ fn seed_fixture_is_the_only_abbrev_table() {
         seen += 1;
     }
     assert_eq!(seen, 2);
-    assert_eq!(ScoreConfig::abbrev_v1().hash, ABBREV_SEED_SHA256);
+    assert_eq!(ABBREV_SEED_JSONL, EXPECTED_SEED);
+    let actual_hash = hex::encode(Sha256::digest(ABBREV_SEED_JSONL.as_bytes()));
+    assert_eq!(actual_hash, ABBREV_SEED_SHA256);
+    assert_eq!(ScoreConfig::abbrev_v1().hash, actual_hash);
 }

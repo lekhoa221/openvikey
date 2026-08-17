@@ -4,6 +4,7 @@ use openvikey_core::lexicon::{Lexicon, LexiconArtifact};
 use openvikey_lab::corpus::{
     EvaluationMode, RELEASE_MIN_CORRECT_TOKENS, RELEASE_MIN_ERROR_CASES,
     RELEASE_MIN_PER_ERROR_TYPE, VerifiedCorpus, build_lexicon, load_and_verify,
+    write_lexicon_artifact,
 };
 use openvikey_lab::metrics::{auto_precision, correct_token_fpr, wilson_interval};
 use openvikey_lab::provenance::sha256_file;
@@ -53,7 +54,7 @@ fn approved_record(id: &str, artifact: &str, sha256: &str, split_role: &str) -> 
 id = "{id}"
 kind = "project_fixtures"
 source_url = "https://github.com/lekhoa221/openvikey"
-revision = "HEAD"
+revision = "1111111111111111111111111111111111111111"
 sha256 = "{sha256}"
 code_license = "MIT"
 data_license = "MIT"
@@ -115,6 +116,7 @@ fn write_tree(
         r#"
 version = "1.0.0"
 provenance = "data/provenance.toml"
+split_seed = 20260817
 
 [evaluation]
 min_correct_tokens_release = {RELEASE_MIN_CORRECT_TOKENS}
@@ -163,6 +165,18 @@ fn tiny_valid(root: &Path) -> PathBuf {
 }
 
 #[test]
+fn rejects_manifest_without_split_seed() {
+    let root = scratch_dir();
+    let manifest = tiny_valid(&root);
+    let text = fs::read_to_string(&manifest).unwrap();
+    fs::write(&manifest, text.replace("split_seed = 20260817\n", "")).unwrap();
+
+    let err = load_and_verify(&manifest, &root, EvaluationMode::Unit)
+        .expect_err("a frozen corpus manifest must record its split seed");
+    assert!(err.to_string().to_ascii_lowercase().contains("split"));
+}
+
+#[test]
 fn rejects_blocked_status_even_when_licenses_look_permissive() {
     let root = scratch_dir();
     let manifest = write_tree(
@@ -193,7 +207,11 @@ fn rejects_unknown_revision() {
         &[item("ca-1", "error", Some("tone"), "ch2ao", "chào")],
         &[item("ho-1", "correct", None, "xin", "xin")],
         Some(|prov| {
-            *prov = prov.replacen("revision = \"HEAD\"", "revision = \"unknown\"", 1);
+            *prov = prov.replacen(
+                "revision = \"1111111111111111111111111111111111111111\"",
+                "revision = \"unknown\"",
+                1,
+            );
         }),
         false,
     );
@@ -249,7 +267,7 @@ fn rejects_unknown_or_unverified_data_license() {
 }
 
 #[test]
-fn rejects_missing_revision_hash_or_redistribution() {
+fn rejects_unknown_redistribution() {
     let root = scratch_dir();
     let manifest = write_tree(
         &root,
@@ -366,7 +384,7 @@ fn workspace_release_mode_rejects_tiny_authored_corpus() {
 }
 
 #[test]
-fn committed_lexicon_artifact_parses_and_pins_manifest_hash() {
+fn committed_lexicon_artifact_is_reproducible_from_train() {
     let root = workspace_root();
     let manifest = root.join("data/corpus-manifest.toml");
     let bytes = fs::read(root.join("data/fixtures/lexicon/authored.json")).unwrap();
@@ -375,10 +393,22 @@ fn committed_lexicon_artifact_parses_and_pins_manifest_hash() {
         artifact.source_manifest_hash,
         sha256_file(&manifest).unwrap()
     );
+
+    let corpus = load_and_verify(&manifest, &root, EvaluationMode::Unit).unwrap();
+    let rebuilt_lexicon = build_lexicon(&corpus, &manifest).unwrap();
+    let rebuilt = rebuilt_lexicon.to_artifact();
+    assert_eq!(artifact, rebuilt);
+
+    let first_out = std::env::temp_dir().join("openvikey-authored-lexicon-1.json");
+    let second_out = std::env::temp_dir().join("openvikey-authored-lexicon-2.json");
+    write_lexicon_artifact(&rebuilt_lexicon, &first_out).unwrap();
+    write_lexicon_artifact(&rebuilt_lexicon, &second_out).unwrap();
+    assert_eq!(fs::read(first_out).unwrap(), fs::read(second_out).unwrap());
+
     let lexicon = Lexicon::from_artifact(artifact);
     assert!(lexicon.contains("không"));
     assert!(lexicon.contains("nam"));
-    assert!(lexicon.bigram("xin", "chào").is_some());
+    assert_eq!(lexicon.bigram("xin", "chào"), Some(1.0));
 }
 
 #[test]
@@ -396,6 +426,31 @@ fn lexicon_lookup_normalizes_nfd_to_nfc() {
     );
     assert!(lexicon.contains(nfc));
     assert!(lexicon.lookup(nfd).is_some());
+}
+
+#[test]
+fn lexicon_builder_derives_unigram_and_bigram_frequencies() {
+    let root = scratch_dir();
+    let manifest = write_tree(
+        &root,
+        &[
+            item("tr-1", "correct", None, "xin chào", "xin chào"),
+            item("tr-2", "correct", None, "xin chào", "xin chào"),
+            item("tr-3", "correct", None, "xin bạn", "xin bạn"),
+        ],
+        &[item("ca-1", "error", Some("tone"), "ch2ao", "chào")],
+        &[item("ho-1", "correct", None, "nam", "nam")],
+        None,
+        false,
+    );
+    let corpus = load_and_verify(&manifest, &root, EvaluationMode::Unit).unwrap();
+    let lexicon = build_lexicon(&corpus, &manifest).unwrap();
+
+    assert_eq!(lexicon.lookup("xin").map(|entry| entry.frequency), Some(3));
+    assert_eq!(lexicon.lookup("chào").map(|entry| entry.frequency), Some(2));
+    assert_eq!(lexicon.lookup("bạn").map(|entry| entry.frequency), Some(1));
+    assert!((lexicon.bigram("xin", "chào").unwrap() - 2.0 / 3.0).abs() < 1e-12);
+    assert!((lexicon.bigram("xin", "bạn").unwrap() - 1.0 / 3.0).abs() < 1e-12);
 }
 
 #[test]

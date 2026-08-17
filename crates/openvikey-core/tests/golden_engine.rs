@@ -211,9 +211,21 @@ fn test_backspace_at_various_positions() {
     engine.process(&bs);
     assert_eq!(engine.rendered(), "đươn");
 
-    // Backspace 3 (pops 'n') -> "đuơ"
-    engine.process(&bs);
-    assert_eq!(engine.rendered(), "đuơ");
+    // Remaining prefixes are pinned through the empty composition.
+    let remaining = [
+        ("đuơ", "dduow"),
+        ("đuo", "dduo"),
+        ("đu", "ddu"),
+        ("đ", "dd"),
+        ("d", "d"),
+        ("", ""),
+    ];
+    for (expected_rendered, expected_raw) in remaining {
+        engine.process(&bs);
+        assert_eq!(engine.rendered(), expected_rendered);
+        assert_eq!(engine.raw_keys().iter().collect::<String>(), expected_raw);
+    }
+    assert!(engine.is_empty());
 }
 
 fn key_event(seq: u64, ch: char) -> InputEvent {
@@ -242,6 +254,44 @@ fn test_composed_snapshot_normalized_is_nfc() {
     assert_eq!(
         snapshot.normalized,
         snapshot.rendered.nfc().collect::<String>()
+    );
+}
+
+#[test]
+fn test_nfd_key_input_has_nfc_matching_form() {
+    let mut engine = Engine::new(EngineConfig::default());
+    let nfd: String = "é".nfd().collect();
+    for (idx, ch) in nfd.chars().enumerate() {
+        engine.process(&key_event(idx as u64, ch));
+    }
+
+    let snapshot = engine.snapshot();
+    assert_eq!(snapshot.raw_keys, nfd);
+    assert_eq!(snapshot.normalized, "é");
+}
+
+#[test]
+fn test_reset_clears_composition_and_advances_revision() {
+    let mut engine = Engine::new(EngineConfig::default());
+    engine.process(&key_event(1, 'a'));
+    let before_reset = engine.revision();
+
+    let actions = engine.process(&InputEvent {
+        seq: 2,
+        at_ms: 20,
+        kind: InputKind::Reset,
+        modifiers: Modifiers::empty(),
+        is_repeat: false,
+        context: InputContext::default(),
+    });
+
+    assert!(engine.is_empty());
+    assert_eq!(
+        actions,
+        vec![EngineAction::UpdateComposition {
+            revision: before_reset + 1,
+            text: String::new(),
+        }]
     );
 }
 
@@ -287,6 +337,42 @@ fn test_punctuation_commits_url_pieces_not_one_token() {
         commits.iter().any(|(_, delim)| *delim == Some('/')),
         "'/' is a boundary; URL is not one composing token: {commits:?}"
     );
+}
+
+#[test]
+fn test_code_and_mixed_text_passthrough_when_policy_disables_transform() {
+    let mut engine = Engine::new(EngineConfig::default());
+    let context = InputContext {
+        allow_transform: false,
+        allow_learning: false,
+    };
+    let input = "case foo->bar a1b2";
+    let mut output = String::new();
+    for (idx, ch) in input.chars().enumerate() {
+        let actions = engine.process(&InputEvent {
+            seq: idx as u64,
+            at_ms: i64::try_from(idx).unwrap_or(i64::MAX),
+            kind: InputKind::Key {
+                logical: ch,
+                physical: None,
+            },
+            modifiers: Modifiers::empty(),
+            is_repeat: false,
+            context,
+        });
+        for action in actions {
+            if let EngineAction::Commit {
+                text, delimiter, ..
+            } = action
+            {
+                output.push_str(&text);
+                if let Some(delimiter) = delimiter {
+                    output.push(delimiter);
+                }
+            }
+        }
+    }
+    assert_eq!(output, input);
 }
 
 #[test]

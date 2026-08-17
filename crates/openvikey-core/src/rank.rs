@@ -68,22 +68,41 @@ pub fn rank(
 }
 
 fn merge_same_text(existing: &mut Candidate, incoming: &Candidate) {
+    let existing_rule = primary_rule_id(&existing.evidence);
+    let incoming_rule = primary_rule_id(&incoming.evidence);
+    let score_order = incoming.base_score.total_cmp(&existing.base_score);
+    let incoming_wins =
+        score_order.is_gt() || (score_order.is_eq() && incoming_rule < existing_rule);
+    let winning_rule = if incoming_wins {
+        incoming_rule.to_string()
+    } else {
+        existing_rule.to_string()
+    };
+
     let mut parts: BTreeSet<String> = existing
         .evidence
         .split('+')
+        .chain(incoming.evidence.split('+'))
         .filter(|part| !part.is_empty())
         .map(str::to_string)
         .collect();
-    for part in incoming.evidence.split('+').filter(|part| !part.is_empty()) {
-        parts.insert(part.to_string());
-    }
-    if incoming.base_score > existing.base_score {
+    parts.remove(&winning_rule);
+
+    if incoming_wins {
         existing.base_score = incoming.base_score;
         existing.id = incoming.id;
         existing.source = incoming.source;
         existing.text = nfc(&incoming.text);
     }
-    existing.evidence = parts.into_iter().collect::<Vec<_>>().join("+");
+
+    existing.evidence = std::iter::once(winning_rule)
+        .chain(parts)
+        .collect::<Vec<_>>()
+        .join("+");
+}
+
+fn primary_rule_id(evidence: &str) -> &str {
+    evidence.split('+').next().unwrap_or("")
 }
 
 fn nfc(text: &str) -> String {

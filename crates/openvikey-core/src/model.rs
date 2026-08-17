@@ -22,6 +22,7 @@ pub struct RuleContextKey {
 /// Read-only query surface used by rank/decision. Time is injected.
 pub trait ModelView {
     fn confidence(&self, key: &RuleContextKey, evaluate_at_ms: i64) -> f64;
+    fn positive_mass(&self, key: &RuleContextKey, evaluate_at_ms: i64) -> f64;
     fn state(&self, key: &RuleContextKey, evaluate_at_ms: i64) -> DecisionState;
 }
 
@@ -59,6 +60,10 @@ impl ModelView for EmptyModel {
     fn confidence(&self, _key: &RuleContextKey, _evaluate_at_ms: i64) -> f64 {
         // Beta(1,1) ⇒ (1)/(1+1) = 0.5
         0.5
+    }
+
+    fn positive_mass(&self, _key: &RuleContextKey, _evaluate_at_ms: i64) -> f64 {
+        0.0
     }
 
     fn state(&self, _key: &RuleContextKey, _evaluate_at_ms: i64) -> DecisionState {
