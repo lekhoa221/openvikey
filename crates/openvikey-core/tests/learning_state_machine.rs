@@ -493,25 +493,49 @@ fn settled_signals_are_recorded_exactly_once() {
 }
 
 #[test]
-fn same_events_and_time_serialize_identically() {
-    let rule = key("ko", "không");
-    let events = [
+fn independent_rule_event_streams_converge_across_interleavings() {
+    let first = key("ko", "không");
+    let second = key("ntn", "như thế nào");
+    let first_events = [
         feedback(1, 10, FeedbackKind::Accept { candidate_id: 1 }),
-        feedback(2, 20, FeedbackKind::AutoSettled { edit_id: 7 }),
-        feedback(3, 30, FeedbackKind::ExplicitReject { candidate_id: 1 }),
+        feedback(3, 30, FeedbackKind::AutoSettled { edit_id: 7 }),
     ];
-    let mut a = AdaptiveModel::default();
-    let mut b = AdaptiveModel::default();
-    for event in &events {
-        a.apply_feedback(&rule, event, true);
-        b.apply_feedback(&rule, event, true);
+    let second_events = [
+        feedback(2, 20, FeedbackKind::ExplicitReject { candidate_id: 2 }),
+        feedback(4, 40, FeedbackKind::Accept { candidate_id: 2 }),
+    ];
+    let mut forward = AdaptiveModel::default();
+    for event in &first_events {
+        forward.apply_feedback(&first, event, true);
+    }
+    for event in &second_events {
+        forward.apply_feedback(&second, event, true);
+    }
+    let mut reverse = AdaptiveModel::default();
+    for event in &second_events {
+        reverse.apply_feedback(&second, event, true);
+    }
+    for event in &first_events {
+        reverse.apply_feedback(&first, event, true);
     }
 
-    assert_eq!(a.confidence(&rule, 40), b.confidence(&rule, 40));
-    assert_eq!(a.to_json_payload().unwrap(), b.to_json_payload().unwrap());
+    for evaluate_at_ms in [-1, 40, DAY_MS] {
+        assert_eq!(
+            forward.confidence(&first, evaluate_at_ms),
+            reverse.confidence(&first, evaluate_at_ms)
+        );
+        assert_eq!(
+            forward.confidence(&second, evaluate_at_ms),
+            reverse.confidence(&second, evaluate_at_ms)
+        );
+    }
     assert_eq!(
-        AdaptiveModel::from_json_payload(&a.to_json_payload().unwrap()).unwrap(),
-        a
+        forward.to_json_payload().unwrap(),
+        reverse.to_json_payload().unwrap()
+    );
+    assert_eq!(
+        AdaptiveModel::from_json_payload(&forward.to_json_payload().unwrap()).unwrap(),
+        forward
     );
 }
 
