@@ -97,6 +97,7 @@ impl TypingHost {
             self.apply_commands(&cmds);
             self.sent = sent;
             self.last_injected_token.clear();
+            self.last_injected_hwnd = 0;
             let _ = self.session.inject(
                 InputKind::CursorMoved,
                 InputContext::default(),
@@ -160,7 +161,9 @@ impl TypingHost {
 
     fn accept_top(&mut self, at_ms: i64) {
         let composing = !self.sent.is_empty() || !self.session.composition_text().is_empty();
-        if !composing && self.hwnd != self.last_injected_hwnd {
+        if !composing
+            && (self.hwnd != self.last_injected_hwnd || self.last_injected_token.is_empty())
+        {
             return;
         }
         let Some(visual) = self.session.accept_top(at_ms) else {
@@ -175,7 +178,7 @@ impl TypingHost {
     }
 
     fn undo_last(&mut self, at_ms: i64) {
-        if self.hwnd != self.last_injected_hwnd {
+        if self.hwnd != self.last_injected_hwnd || self.last_injected_token.is_empty() {
             return;
         }
         let Some(visual) = self.session.undo_last(at_ms) else {

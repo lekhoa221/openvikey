@@ -112,6 +112,77 @@ fn accept_after_commit_other_hwnd_is_noop_visual() {
 }
 
 #[test]
+fn leave_and_return_same_hwnd_does_not_accept_or_undo_without_token() {
+    let mut host = TypingHost::new_telex_fixture();
+    let original_hwnd = host.hwnd;
+    for vk in [0x4Bu16, 0x4F, 0x20] {
+        // k o space → commit "ko"
+        host.handle_key(key(vk), 1);
+    }
+    assert_eq!(host.last_injected_token, "ko");
+    assert_eq!(host.last_injected_hwnd, original_hwnd);
+    let document_after_commit = host.session.document_text();
+
+    host.set_hwnd(2, "Cursor.exe".into(), 2);
+    assert!(host.last_injected_token.is_empty());
+    host.set_hwnd(original_hwnd, "notepad.exe".into(), 3);
+    assert_eq!(host.hwnd, original_hwnd);
+    assert!(host.last_injected_token.is_empty());
+
+    host.recorded.clear();
+    host.handle_hotkey(HostHotkey::AcceptTop, 4);
+    assert!(host.recorded.is_empty());
+    assert_eq!(host.session.document_text(), document_after_commit);
+
+    host.handle_hotkey(HostHotkey::UndoLast, 5);
+    assert!(host.recorded.is_empty());
+    assert_eq!(host.session.document_text(), document_after_commit);
+}
+
+#[test]
+fn post_commit_accept_and_undo_require_non_empty_token() {
+    // HWND still matches last_injected_hwnd, but token was cleared (focus caret-break hole).
+    let mut host = TypingHost::new_telex_fixture();
+    for vk in [0x4Bu16, 0x4F, 0x20] {
+        host.handle_key(key(vk), 1);
+    }
+    assert_eq!(host.hwnd, host.last_injected_hwnd);
+    let document_after_commit = host.session.document_text();
+    host.last_injected_token.clear();
+    host.recorded.clear();
+
+    host.handle_hotkey(HostHotkey::AcceptTop, 2);
+    assert!(
+        host.recorded.is_empty(),
+        "empty last_injected_token must not inject accept: {:?}",
+        host.recorded
+    );
+    assert_eq!(host.session.document_text(), document_after_commit);
+
+    let mut auto = TypingHost::new_vni_auto_fixture();
+    for (i, ch) in ['p', 'a', 'h', 't', '1'].into_iter().enumerate() {
+        let vk = if ch == '1' {
+            0x31
+        } else {
+            u16::from(ch.to_ascii_uppercase() as u8)
+        };
+        auto.handle_key(key(vk), i64::try_from(i).unwrap_or(0));
+    }
+    auto.handle_key(key(0x20), 10);
+    assert_eq!(auto.hwnd, auto.last_injected_hwnd);
+    let auto_doc = auto.session.document_text();
+    auto.last_injected_token.clear();
+    auto.recorded.clear();
+    auto.handle_hotkey(HostHotkey::UndoLast, 11);
+    assert!(
+        auto.recorded.is_empty(),
+        "empty last_injected_token must not inject undo: {:?}",
+        auto.recorded
+    );
+    assert_eq!(auto.session.document_text(), auto_doc);
+}
+
+#[test]
 fn undo_replaces_last_injected() {
     let mut host = TypingHost::new_vni_auto_fixture();
     for (i, ch) in ['p', 'a', 'h', 't', '1'].into_iter().enumerate() {
