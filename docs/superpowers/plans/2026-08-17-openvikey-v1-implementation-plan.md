@@ -748,7 +748,7 @@ Không commit `target/evidence`; release note ghi hash và cách reproduce. Nế
 
 - CLI đủ `type`, `script run`, `model dump`, `corpus verify/evaluate` và `perf`; JSON không chứa timing tái lập byte-identical, timing chỉ nằm trong perf report.
 - Corpus runner nối raw key qua `Engine` rồi mới generate/rank/decide; test live VNI phủ `paht1 → phát` và left-context qua boundary.
-- Fuzzy/diacritics dùng folded-length/form index thay vì scan toàn bộ lexicon. Release stress 6.000 entry trên máy review: candidate-generation P95 **8.131 ms**, per-key P95 **4 µs**, startup load **5.820 ms**, peak working set **12.357.632 byte**; `target/perf-wave4.json` không commit.
+- Fuzzy/diacritics dùng folded-length/form index thay vì scan toàn bộ lexicon. Release stress 6.000 entry trên máy review: candidate-generation P95 **10.770 ms**, per-key P95 **5 µs**, startup load **7.750 ms**, peak working set **11.980.800 byte**; `target/evidence/perf.json` không commit.
 - Save worker chạy background với production debounce 2s; burst test xác nhận chỉ ghi payload cuối và không chạy trên typing thread.
 - Password/terminal/denylist flags đều mô phỏng `false/false`; model dump không ghi stdout trước khi passphrase authentication thành công.
 - Unit authored evaluation đạt suggestion top-1/top-3 2/2 nhưng **không phải release evidence**. Release mode fail closed vì chỉ có 1 correct token và 2 error case; không fabricate data để tick G3.
