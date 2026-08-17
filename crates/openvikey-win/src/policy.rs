@@ -4,7 +4,7 @@ use openvikey_core::engine::backend::is_boundary_char;
 use openvikey_core::types::InputKind;
 
 /// Marker stamped on our own `SendInput` events so the hook must Pass them.
-pub const OVK_EXTRA: usize = 0x4F564B31;
+pub const OVK_EXTRA: usize = 0x4F56_4B31;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -13,6 +13,7 @@ pub enum Mode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct HostState {
     pub mode: Mode,
     pub foreground_exe: String,
@@ -23,6 +24,7 @@ pub struct HostState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct RawKey {
     pub vk: u16,
     pub down: bool,
@@ -146,10 +148,10 @@ pub fn decide(raw: &RawKey, state: &HostState) -> KeyDecision {
     }
 
     // 12. ASCII punctuation that is a boundary
-    if let Some(ch) = map_punctuation(raw) {
-        if is_boundary_char(ch) {
-            return KeyDecision::EatAndInject(InputKind::Boundary { delimiter: ch });
-        }
+    if let Some(ch) = map_punctuation(raw)
+        && is_boundary_char(ch)
+    {
+        return KeyDecision::EatAndInject(InputKind::Boundary { delimiter: ch });
     }
 
     KeyDecision::Pass
