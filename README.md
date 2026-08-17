@@ -26,20 +26,19 @@ Không hai người gõ giống nhau — như nét chữ tay. OpenViKey xây m�
 
 ## Lộ trình
 
-- **v1 — "chứng minh bộ não":** engine + 4 loại sửa + vòng tự học trong CLI harness. Lab `session` học từ gõ thật (mã hoá local). **Chưa** phải IME hệ thống.
-- **GĐ2 — Windows host (hybrid, ADR 0007):** không còn "TSF-only". Ba pha: **2a** hook + inject Electron (Cursor/Notepad); **2b** TSF đọc ngữ cảnh/mật khẩu; **2c** TSF nhập chính theo app. Spec: [`docs/superpowers/specs/2026-08-18-openvikey-gd2-windows-host-design.md`](docs/superpowers/specs/2026-08-18-openvikey-gd2-windows-host-design.md). Master plan: [`docs/superpowers/plans/2026-08-18-openvikey-gd2-master-plan.md`](docs/superpowers/plans/2026-08-18-openvikey-gd2-master-plan.md).
-- **GĐ3 — macOS:** spike InputMethodKit vs CGEventTap, tái dùng core.
+- **v1 (đang làm) — "chứng minh bộ não":** engine + 4 loại sửa + vòng tự học chạy trong CLI harness thử nghiệm, **chưa** hook hệ thống. Mục tiêu: chứng minh phần khó nhất trước.
+- **v2 — Windows:** tích hợp toàn hệ thống qua TSF (Text Services Framework).
+- **v3 — macOS:** spike InputMethodKit (`IMKInputController`) so với CGEventTap rồi chọn adapter, tái dùng chung core.
 
 ## Kiến trúc (tóm tắt)
 
 - `openvikey-core` (Rust thuần, không phụ thuộc OS): `types`, `engine`, `lexicon`, `generate`, `rank`, `model`, `decision`, `feedback`, `store`.
-- `openvikey-lab`: harness để *nhìn bộ não hoạt động* + test-runner. `session` **không** gõ vào app khác.
-- `openvikey-session` / `openvikey-win`: GĐ2a (kế hoạch; chưa ship) — reducer dùng chung + hook Windows.
-- *(sau)* TSF DLL (GĐ2b/2c), `openvikey-mac`.
+- `openvikey-lab`: harness v1 để *nhìn bộ não hoạt động* + test-runner đo độ chính xác.
+- *(sau)* `openvikey-win` (TSF), `openvikey-mac` (InputMethodKit/CGEventTap — chờ spike) — lớp mỏng bọc core.
 
 Thiết kế chi tiết: [`docs/superpowers/specs/2026-08-17-openvikey-design.md`](docs/superpowers/specs/2026-08-17-openvikey-design.md).
 
-Kế hoạch v1: [`docs/superpowers/plans/2026-08-17-openvikey-v1-implementation-plan.md`](docs/superpowers/plans/2026-08-17-openvikey-v1-implementation-plan.md).
+Kế hoạch triển khai v1: [`docs/superpowers/plans/2026-08-17-openvikey-v1-implementation-plan.md`](docs/superpowers/plans/2026-08-17-openvikey-v1-implementation-plan.md).
 
 ## Lab CLI (harness, not a system IME)
 
