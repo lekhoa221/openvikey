@@ -1,6 +1,6 @@
 //! Foreground HWND/exe cache filled by a WinEvent thread; hook path only reads.
 
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::classify::profile_for_exe;
 use crate::inject::InjectProfile;
@@ -80,7 +80,30 @@ impl Default for FocusCache {
     }
 }
 
-static FOREGROUND_CACHE: OnceLock<Arc<FocusCache>> = OnceLock::new();
+static CALLBACK_CACHE: Mutex<Option<Arc<FocusCache>>> = Mutex::new(None);
+
+/// Bind the winevent callback target after a successful hook install.
+pub fn bind_callback_cache(cache: Arc<FocusCache>) {
+    if let Ok(mut guard) = CALLBACK_CACHE.lock() {
+        *guard = Some(cache);
+    }
+}
+
+/// Clear the winevent callback target on hook uninstall.
+pub fn unbind_callback_cache() {
+    if let Ok(mut guard) = CALLBACK_CACHE.lock() {
+        *guard = None;
+    }
+}
+
+/// Current winevent callback target (diagnostics and tests).
+#[must_use]
+pub fn peek_callback_cache() -> Option<Arc<FocusCache>> {
+    CALLBACK_CACHE
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(Arc::clone))
+}
 
 /// Installed WinEvent hook; unhooks on drop.
 pub struct FocusHook {
@@ -95,7 +118,6 @@ impl FocusHook {
     ///
     /// Calls Win32 hook APIs. Caller must keep `cache` alive for the hook lifetime.
     pub unsafe fn install(cache: Arc<FocusCache>) -> Result<Self> {
-        let _ = FOREGROUND_CACHE.set(Arc::clone(&cache));
         let hook = unsafe {
             SetWinEventHook(
                 EVENT_SYSTEM_FOREGROUND,
@@ -110,6 +132,7 @@ impl FocusHook {
         if hook.is_invalid() {
             return Err(windows::core::Error::new(E_FAIL, "SetWinEventHook failed"));
         }
+        bind_callback_cache(Arc::clone(&cache));
         Ok(Self {
             hook,
             _cache: cache,
@@ -119,6 +142,7 @@ impl FocusHook {
 
 impl Drop for FocusHook {
     fn drop(&mut self) {
+        unbind_callback_cache();
         unsafe {
             let _ = UnhookWinEvent(self.hook);
         }
@@ -137,7 +161,7 @@ unsafe extern "system" fn foreground_callback(
     if event != EVENT_SYSTEM_FOREGROUND {
         return;
     }
-    let Some(cache) = FOREGROUND_CACHE.get() else {
+    let Some(cache) = peek_callback_cache() else {
         return;
     };
     let exe = exe_for_hwnd(hwnd);
