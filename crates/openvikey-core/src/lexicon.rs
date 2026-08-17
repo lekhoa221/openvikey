@@ -76,6 +76,10 @@ impl Lexicon {
         self.entries.get(&nfc(token_nfc))
     }
 
+    pub fn entries(&self) -> impl ExactSizeIterator<Item = &LexiconEntry> {
+        self.entries.values()
+    }
+
     #[must_use]
     pub fn contains(&self, token_nfc: &str) -> bool {
         self.entries.contains_key(&nfc(token_nfc))

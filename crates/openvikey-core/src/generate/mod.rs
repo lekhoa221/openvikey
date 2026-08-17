@@ -5,7 +5,9 @@
 //! (abbrev / telex_fix / fuzzy / diacritics) arrive in M5 and M7.
 
 pub mod abbrev;
+pub mod fuzzy;
 pub mod telex_fix;
+mod vietnamese;
 
 use crate::types::{Candidate, CandidateSource, CompositionSnapshot, InputContext};
 
