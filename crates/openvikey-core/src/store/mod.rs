@@ -1,11 +1,15 @@
-//! Opaque model persistence seam.
+//! Opaque model persistence and encrypted-store seams.
 //!
-//! Wave 0 locks `SecretProvider` and a byte-oriented `ModelStore`.
-//! Envelope encryption (XChaCha20-Poly1305, Argon2id, rewrap) is Milestone 8.
-//! This module must not import Beta / `EmptyModel` types.
+//! Store implementations persist serialized bytes and never depend on model/Beta types.
+
+pub mod envelope;
+pub mod file;
+pub mod passphrase;
+
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Data-encryption key material. Callers must not log this.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct Dek(Vec<u8>);
 
 impl Dek {
@@ -26,14 +30,31 @@ impl std::fmt::Debug for Dek {
     }
 }
 
-/// How a DEK was wrapped. M8 adds a passphrase slot; Wave 0 only has in-memory.
+/// How a DEK was wrapped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WrapperKind {
     InMemory,
     Passphrase,
 }
 
-/// Wrapped DEK. Opaque to the store payload.
+impl WrapperKind {
+    pub(crate) const fn as_byte(self) -> u8 {
+        match self {
+            Self::InMemory => 1,
+            Self::Passphrase => 2,
+        }
+    }
+
+    pub(crate) fn from_byte(value: u8) -> Result<Self, StoreError> {
+        match value {
+            1 => Ok(Self::InMemory),
+            2 => Ok(Self::Passphrase),
+            _ => Err(StoreError::UnsupportedVersion),
+        }
+    }
+}
+
+/// Wrapped DEK. Opaque to the encrypted payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WrappedKey {
     pub kind: WrapperKind,
@@ -52,7 +73,7 @@ pub trait ModelStore {
     fn load(&self, provider: &dyn SecretProvider) -> Result<Vec<u8>, StoreError>;
 }
 
-/// Distinct recovery failures. M8 fills these from the envelope parser.
+/// Distinct envelope, authentication, recovery, and I/O failures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreError {
     WrongPassphrase,
@@ -60,6 +81,9 @@ pub enum StoreError {
     CorruptCiphertext,
     UnsupportedVersion,
     Empty,
+    Crypto(String),
+    Kdf(String),
+    Io(String),
 }
 
 impl std::fmt::Display for StoreError {
@@ -70,11 +94,20 @@ impl std::fmt::Display for StoreError {
             Self::CorruptCiphertext => write!(f, "corrupt store ciphertext"),
             Self::UnsupportedVersion => write!(f, "unsupported store version"),
             Self::Empty => write!(f, "store is empty"),
+            Self::Crypto(message) => write!(f, "cryptographic failure: {message}"),
+            Self::Kdf(message) => write!(f, "key derivation failure: {message}"),
+            Self::Io(message) => write!(f, "store I/O failure: {message}"),
         }
     }
 }
 
 impl std::error::Error for StoreError {}
+
+impl From<std::io::Error> for StoreError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error.to_string())
+    }
+}
 
 /// Deterministic test adapter. Identity wrap; never used in production lab.
 #[derive(Debug, Default, Clone)]
@@ -103,7 +136,7 @@ impl SecretProvider for InMemorySecretProvider {
     }
 }
 
-/// Process-local payload holder. Does not encrypt; M8 replaces this path.
+/// Process-local payload holder used by fast seam tests.
 #[derive(Debug, Default)]
 pub struct InMemoryStore {
     payload: Option<Vec<u8>>,
