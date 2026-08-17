@@ -1,8 +1,13 @@
 //! Provenance tracking and license verification for assets and external dependencies.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use thiserror::Error;
+
+/// SHA-256 digest of an empty string (dummy placeholder), forbidden in production provenance.
+pub const EMPTY_STRING_SHA256: &str =
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 #[derive(Debug, Error)]
 pub enum ProvenanceError {
@@ -50,9 +55,22 @@ impl ProvenanceRecord {
                 self.id
             ));
         }
-        if self.sha256.trim().is_empty() {
+        let hash_trimmed = self.sha256.trim();
+        if hash_trimmed.is_empty() {
             return Err(format!(
                 "sha256 hash must be provided for record '{}'",
+                self.id
+            ));
+        }
+        if hash_trimmed.len() != 64 || hex::decode(hash_trimmed).is_err() {
+            return Err(format!(
+                "sha256 must be a valid 64-character hex string for record '{}'",
+                self.id
+            ));
+        }
+        if hash_trimmed.eq_ignore_ascii_case(EMPTY_STRING_SHA256) {
+            return Err(format!(
+                "record '{}' contains dummy empty-string sha256 hash",
                 self.id
             ));
         }
@@ -62,6 +80,24 @@ impl ProvenanceRecord {
             return Err(format!(
                 "record '{}' marked approved but redistribution is prohibited",
                 self.id
+            ));
+        }
+        Ok(())
+    }
+
+    /// Verifies the SHA-256 of a local file against this record.
+    pub fn verify_file<P: AsRef<Path>>(&self, path: P) -> Result<(), String> {
+        self.validate()?;
+        let path_ref = path.as_ref();
+        let bytes = std::fs::read(path_ref)
+            .map_err(|e| format!("Failed to read file '{}': {e}", path_ref.display()))?;
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let actual_hash = hex::encode(hasher.finalize());
+        if !actual_hash.eq_ignore_ascii_case(&self.sha256) {
+            return Err(format!(
+                "Hash mismatch for '{}': expected {}, got {actual_hash}",
+                self.id, self.sha256
             ));
         }
         Ok(())

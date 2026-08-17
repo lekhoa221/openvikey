@@ -3,7 +3,11 @@
 {"name": "telex_duong", "method": "telex", "tone": "modern", "input": "dduowngf", "expected": "đường"}
 {"name": "telex_tone_modern_hoa", "method": "telex", "tone": "modern", "input": "hoas", "expected": "hoá"}
 {"name": "telex_tone_classic_hoa", "method": "telex", "tone": "classic", "input": "hoas", "expected": "hóa"}
+{"name": "telex_tone_modern_oa", "method": "telex", "tone": "modern", "input": "oaf", "expected": "oà"}
+{"name": "telex_tone_classic_oa", "method": "telex", "tone": "classic", "input": "oaf", "expected": "òa"}
 {"name": "telex_casing_capital", "method": "telex", "tone": "modern", "input": "Vieetj", "expected": "Việt"}
 {"name": "telex_casing_allcaps", "method": "telex", "tone": "modern", "input": "VIEETJ", "expected": "VIỆT"}
 {"name": "telex_casing_d_cap", "method": "telex", "tone": "modern", "input": "Dd", "expected": "Đ"}
 {"name": "telex_passthrough_english", "method": "telex", "tone": "modern", "input": "simple", "expected": "simple"}
+{"name": "telex_escape_tone", "method": "telex", "tone": "modern", "input": "vieetjj", "expected": "viêtj"}
+{"name": "telex_passthrough_url", "method": "telex", "tone": "modern", "input": "https", "expected": "https"}

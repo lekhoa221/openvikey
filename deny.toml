@@ -18,7 +18,7 @@ deny = []
 
 [sources]
 unknown-registry = "warn"
-unknown-git = "warn"
+unknown-git = "deny"
 allow-git = [
     "https://github.com/ZeroX-DG/vi-rs",
 ]

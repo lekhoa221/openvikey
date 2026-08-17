@@ -16,8 +16,8 @@ pub enum InputMethod {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum TonePlacement {
     #[default]
-    Modern, // e.g. òa, úy
-    Classic, // e.g. oà, uý
+    Modern, // e.g. oà, uý, hoá (new accent style)
+    Classic, // e.g. òa, úy, hóa (old accent style)
 }
 
 /// Operational context flags accompanying an input event.
@@ -269,14 +269,18 @@ impl UndoTracker {
         self.is_valid = false;
     }
 
-    /// Pops the most recent valid edit and generates the inverse action.
-    pub fn pop_undo(&mut self, current_revision: u64) -> Option<ReplaceRangeAction> {
+    /// Pops the most recent valid edit if the expected revision matches and generates the inverse action.
+    pub fn pop_undo(&mut self, expected_revision: u64) -> Option<ReplaceRangeAction> {
         if !self.is_valid {
+            return None;
+        }
+        let last = self.entries.back()?;
+        if last.range.revision != expected_revision {
             return None;
         }
         self.entries
             .pop_back()
-            .map(|action| action.to_inverse(current_revision))
+            .map(|action| action.to_inverse(expected_revision.wrapping_add(1)))
     }
 
     pub fn is_empty(&self) -> bool {
