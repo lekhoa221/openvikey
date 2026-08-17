@@ -7,6 +7,7 @@ pub mod engine;
 pub mod generate;
 pub mod lexicon;
 pub mod model;
+pub mod rank;
 pub mod store;
 pub mod types;
 

@@ -146,6 +146,7 @@ fn decision_config_defaults_match_spec() {
     assert!((config.suggest_off - 0.60).abs() < f64::EPSILON);
     assert!((config.auto_score - 0.90).abs() < f64::EPSILON);
     assert!((config.auto_confidence - 0.95).abs() < f64::EPSILON);
+    assert!((config.auto_off_confidence - 0.85).abs() < f64::EPSILON);
     assert!((config.promote_positive_mass - 18.0).abs() < f64::EPSILON);
     assert!(config.suggest_off < config.suggest_on);
 }

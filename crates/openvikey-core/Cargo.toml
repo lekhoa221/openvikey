@@ -9,6 +9,7 @@ description = "Deterministic core engine, candidate ranking, and adaptive learni
 
 [dependencies]
 serde = { workspace = true }
+serde_json = { workspace = true }
 unicode-normalization = { workspace = true }
 unicode-segmentation = { workspace = true }
 vi = { git = "https://github.com/ZeroX-DG/vi-rs", rev = "192e246d37e83094a1228e798b160f3cee14c879" }

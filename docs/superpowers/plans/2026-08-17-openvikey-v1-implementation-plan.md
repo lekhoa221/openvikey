@@ -1,7 +1,7 @@
 # OpenViKey v1 Headless Brain — Implementation Plan
 
 - **Ngày:** 2026-08-17
-- **Trạng thái:** In progress — M0–M3 + **Wave 0** xong (ADR 0002). Wave 1 tiếp theo: M4 ∥ M5.
+- **Trạng thái:** In progress — M0–M3 + Wave 0 + **Wave 1 (M4, M5)** xong. Wave 2 tiếp theo: M6 + 7A + M8.
 - **Governing spec:** [`../specs/2026-08-17-openvikey-design.md`](../specs/2026-08-17-openvikey-design.md)
 - **Phạm vi:** chỉ v1 headless brain; không TSF, CGEventTap/InputMethodKit, OS keyring, sync/CRDT, GUI settings hay phrase-level diacritics.
 - **Cách làm:** TDD; mỗi checkpoint là một commit nhỏ, build xanh và không trộn refactor ngoài phạm vi. Phần còn lại chia **3 nhóm / 4 sóng** (§4.1), không chia 1 milestone = 1 nhóm.
@@ -251,7 +251,7 @@ Không giả lập 3 nhóm. Đi tuần tự:
 
 - [x] Baseline M0–M3 xanh trên `main`
 - [x] Wave 0 — khóa interface (+ vá golden M3 tuỳ chọn); ADR 0002
-- [ ] Wave 1 — M4 (A) và M5 (B) merge, verify sóng 1 xanh
+- [x] Wave 1 — M4 (A) và M5 (B) merge, verify sóng 1 xanh
 - [ ] Wave 2 — M6 + 7A + M8 xanh
 - [ ] Wave 3 — 7B + 7C xanh
 - [ ] Wave 4 — M9 + M10; G3/G4 có evidence; v1 complete
@@ -766,7 +766,7 @@ Theo dõi theo **wave** ở §4.1; tick gate khi evidence đủ, không chỉ kh
 
 - [x] Baseline M0–M3 xanh trên `main`
 - [x] Wave 0 — khóa interface (+ vá golden M3 tuỳ chọn); ADR 0002
-- [ ] Wave 1 — M4 + M5
+- [x] Wave 1 — M4 + M5
 - [ ] Wave 2 — M6 + 7A + M8
 - [ ] Wave 3 — 7B + 7C
 - [ ] Wave 4 — M9 + M10; v1 complete

@@ -30,6 +30,7 @@ pub struct DecisionConfig {
     pub suggest_off: f64,
     pub auto_score: f64,
     pub auto_confidence: f64,
+    pub auto_off_confidence: f64,
     pub promote_positive_mass: f64,
 }
 
@@ -41,6 +42,7 @@ impl Default for DecisionConfig {
             suggest_off: 0.60,
             auto_score: 0.90,
             auto_confidence: 0.95,
+            auto_off_confidence: 0.85,
             promote_positive_mass: 18.0,
         }
     }
@@ -53,6 +55,51 @@ impl CandidateSource {
         match self {
             Self::Diacritics => ActionCap::Suggest,
             Self::TelexFix | Self::Fuzzy | Self::Abbreviation => ActionCap::Auto,
+        }
+    }
+}
+
+/// Ignore ↔ suggest hysteresis and suggest → auto promotion.
+#[must_use]
+pub fn decide(
+    previous: DecisionState,
+    final_score: f64,
+    confidence: f64,
+    positive_mass: f64,
+    cap: ActionCap,
+    config: &DecisionConfig,
+) -> DecisionState {
+    let can_auto = cap == ActionCap::Auto
+        && final_score >= config.auto_score
+        && confidence >= config.auto_confidence
+        && positive_mass >= config.promote_positive_mass;
+
+    match previous {
+        DecisionState::Ignore => {
+            if final_score >= config.suggest_on {
+                DecisionState::Suggest
+            } else {
+                DecisionState::Ignore
+            }
+        }
+        DecisionState::Suggest => {
+            if final_score < config.suggest_off {
+                DecisionState::Ignore
+            } else if can_auto {
+                DecisionState::Auto
+            } else {
+                DecisionState::Suggest
+            }
+        }
+        DecisionState::Auto => {
+            if cap != ActionCap::Auto
+                || confidence < config.auto_off_confidence
+                || final_score < config.auto_score
+            {
+                DecisionState::Suggest
+            } else {
+                DecisionState::Auto
+            }
         }
     }
 }
