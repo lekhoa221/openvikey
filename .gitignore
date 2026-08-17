@@ -1,0 +1,25 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Local personal model / user data — MUST never be committed
+*.ovk
+*.ovkmodel
+/data/personal/
+*.model.enc
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors / IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# Build / logs
+*.log
+/dist/
