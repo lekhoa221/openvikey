@@ -17,7 +17,7 @@ mod hwnd_overlay {
         CreateWindowExW, DefWindowProcW, DestroyWindow, HCURSOR, HICON, RegisterClassW,
         SetWindowPos,
         SetWindowTextW, ShowWindow, CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, SW_HIDE,
-        SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_SHOWWINDOW, WS_EX_NOACTIVATE,
+        SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOSIZE, SWP_SHOWWINDOW, WS_EX_NOACTIVATE,
         WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WNDCLASSW,
     };
 
@@ -122,7 +122,7 @@ mod hwnd_overlay {
                     y,
                     0,
                     0,
-                    SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                    SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOSIZE,
                 );
                 let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
             }

@@ -21,8 +21,10 @@ mod shell_tray {
     use windows::core::Result;
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::Shell::{
-        Shell_NotifyIconW, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, NIF_TIP,
+        Shell_NotifyIconW, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, NIF_ICON,
+        NIF_MESSAGE, NIF_TIP,
     };
+    use windows::Win32::UI::WindowsAndMessaging::{LoadIconW, IDI_APPLICATION};
 
     use crate::policy::Mode;
 
@@ -41,11 +43,15 @@ mod shell_tray {
         ///
         /// Win32 shell notification APIs.
         pub unsafe fn install(hwnd: HWND, mode: Mode) -> Result<Self> {
+            let hicon = unsafe { LoadIconW(None, IDI_APPLICATION)? };
             let mut data = NOTIFYICONDATAW {
+                cbSize: u32::try_from(std::mem::size_of::<NOTIFYICONDATAW>())
+                    .unwrap_or(u32::MAX),
                 uID: 1,
                 hWnd: hwnd,
-                uFlags: NIF_TIP,
+                uFlags: NIF_MESSAGE | NIF_ICON,
                 uCallbackMessage: WM_TRAYICON,
+                hIcon: hicon,
                 ..Default::default()
             };
             set_tip(&mut data, mode);
