@@ -26,19 +26,20 @@ Không hai người gõ giống nhau — như nét chữ tay. OpenViKey xây m�
 
 ## Lộ trình
 
-- **v1 (đang làm) — "chứng minh bộ não":** engine + 4 loại sửa + vòng tự học chạy trong CLI harness thử nghiệm, **chưa** hook hệ thống. Mục tiêu: chứng minh phần khó nhất trước.
-- **v2 — Windows:** tích hợp toàn hệ thống qua TSF (Text Services Framework).
-- **v3 — macOS:** spike InputMethodKit (`IMKInputController`) so với CGEventTap rồi chọn adapter, tái dùng chung core.
+- **v1 — "chứng minh bộ não":** engine + 4 loại sửa + vòng tự học trong CLI harness. Lab `session` học từ gõ thật (mã hoá local). **Chưa** phải IME hệ thống.
+- **GĐ2 — Windows host (hybrid, ADR 0007):** không còn "TSF-only". Ba pha: **2a** hook + inject Electron (Cursor/Notepad); **2b** TSF đọc ngữ cảnh/mật khẩu; **2c** TSF nhập chính theo app. Spec: [`docs/superpowers/specs/2026-08-18-openvikey-gd2-windows-host-design.md`](docs/superpowers/specs/2026-08-18-openvikey-gd2-windows-host-design.md). Master plan: [`docs/superpowers/plans/2026-08-18-openvikey-gd2-master-plan.md`](docs/superpowers/plans/2026-08-18-openvikey-gd2-master-plan.md).
+- **GĐ3 — macOS:** spike InputMethodKit vs CGEventTap, tái dùng core.
 
 ## Kiến trúc (tóm tắt)
 
 - `openvikey-core` (Rust thuần, không phụ thuộc OS): `types`, `engine`, `lexicon`, `generate`, `rank`, `model`, `decision`, `feedback`, `store`.
-- `openvikey-lab`: harness v1 để *nhìn bộ não hoạt động* + test-runner đo độ chính xác.
-- *(sau)* `openvikey-win` (TSF), `openvikey-mac` (InputMethodKit/CGEventTap — chờ spike) — lớp mỏng bọc core.
+- `openvikey-lab`: harness để *nhìn bộ não hoạt động* + test-runner. `session` **không** gõ vào app khác.
+- `openvikey-session` / `openvikey-win`: GĐ2a (kế hoạch; chưa ship) — reducer dùng chung + hook Windows.
+- *(sau)* TSF DLL (GĐ2b/2c), `openvikey-mac`.
 
 Thiết kế chi tiết: [`docs/superpowers/specs/2026-08-17-openvikey-design.md`](docs/superpowers/specs/2026-08-17-openvikey-design.md).
 
-Kế hoạch triển khai v1: [`docs/superpowers/plans/2026-08-17-openvikey-v1-implementation-plan.md`](docs/superpowers/plans/2026-08-17-openvikey-v1-implementation-plan.md).
+Kế hoạch v1: [`docs/superpowers/plans/2026-08-17-openvikey-v1-implementation-plan.md`](docs/superpowers/plans/2026-08-17-openvikey-v1-implementation-plan.md).
 
 ## Lab CLI (harness, not a system IME)
 
@@ -61,6 +62,34 @@ cargo run -p openvikey-lab -- session --method telex --lexicon data/fixtures/lex
 ```
 
 Requires a real terminal (piped stdin exits with an error mentioning `terminal`). Space and Enter both commit with a space. Tab accepts the top suggestion, Esc rejects it, Ctrl+Z undoes the last Auto edit **in this process**, Ctrl+C / Ctrl+D flush both encrypted files and quit.
+
+## `openvikey-win` runbook (GĐ2a hook host)
+
+Windows system hook host (Notepad + Cursor/Electron). **Turn UniKey / other IMEs off** before running — only one keyboard filter should own the keys.
+
+```bash
+cargo run -p openvikey-win -- --method telex --lexicon data/fixtures/lexicon/authored.json
+```
+
+Optional: `--model` / `--capture` (default `%LOCALAPPDATA%\OpenViKey\model.ovk` and `capture.ovk`), `--electron-gap-ms` for Electron SendInput spacing. Passphrase is read hidden on the console before the message loop.
+
+Use the tiny fixture lexicon above (4 tokens: `xin`, `chào`, `không`, `nam`) for smoke: e.g. `xin` Space `chao` Space.
+
+| Key | Behavior |
+|---|---|
+| Letters / Backspace | Telex compose; inject into the focused app |
+| Space / punctuation | Commit |
+| **Enter** | Commit + inject **then** pass to the app (newline / Cursor submit) |
+| **Ctrl+.** | Accept top suggestion |
+| **Ctrl+,** | Reject suggestion |
+| **Ctrl+Shift+Z** | Undo last Auto edit |
+| Ctrl+C / Ctrl+V / … | Pass through (not OpenViKey hotkeys) |
+
+### Manual checklist (not CI)
+
+- [ ] UniKey (and other IMEs) off
+- [ ] Notepad: Enter inserts a newline after Vietnamese is visible
+- [ ] Cursor: Enter submits the prompt **after** visible Vietnamese (post-inject)
 
 ## Bảo mật & riêng tư
 
