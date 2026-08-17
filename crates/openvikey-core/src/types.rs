@@ -263,8 +263,8 @@ impl UndoTracker {
         self.is_valid = true;
     }
 
-    /// Invalidates undoable edits due to cursor or selection movement.
-    pub fn invalidate_due_to_cursor_movement(&mut self) {
+    /// Invalidates undoable edits after CursorMoved or SelectionChanged.
+    pub fn invalidate_due_to_caret_break(&mut self) {
         self.entries.clear();
         self.is_valid = false;
     }

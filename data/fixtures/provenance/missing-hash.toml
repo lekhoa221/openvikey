@@ -1,0 +1,13 @@
+# Deliberately invalid: empty sha256. Loaded by provenance_gate tests.
+[[records]]
+id = "missing-hash-fixture"
+kind = "corpus"
+source_url = "https://example.com/invalid"
+revision = "none"
+sha256 = ""
+code_license = "MIT"
+data_license = "MIT"
+redistribution = "allowed"
+purpose = "Negative fixture for provenance validation"
+split_role = "test"
+status = "candidate"

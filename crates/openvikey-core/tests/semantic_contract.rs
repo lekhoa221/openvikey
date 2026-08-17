@@ -109,9 +109,8 @@ fn test_replace_range_inverse_generation() {
 }
 
 #[test]
-fn test_undo_state_manager_rejects_stale_revision_or_cursor_break() {
+fn test_undo_rejects_mismatched_revision() {
     let mut undo_manager = UndoTracker::new(10);
-
     let edit = ReplaceRangeAction {
         edit_id: 1,
         range: EditRange {
@@ -124,32 +123,43 @@ fn test_undo_state_manager_rejects_stale_revision_or_cursor_break() {
         replacement: "the".to_string(),
         delimiter: None,
     };
-
-    undo_manager.record_edit(edit.clone());
-
-    // Stale revision rejection: passing revision 4 instead of 5
-    assert!(undo_manager.pop_undo(4).is_none());
-
-    // Valid undo matching exact revision 5
-    let inverse_action = undo_manager.pop_undo(5);
-    assert!(inverse_action.is_some());
-    let inv = inverse_action.unwrap();
-    assert_eq!(inv.original, "the");
-    assert_eq!(inv.replacement, "teh");
-    assert_eq!(inv.range.revision, 6);
-
-    // Once popped, undoing again fails
-    assert!(undo_manager.pop_undo(5).is_none());
-
-    // Invalidation on cursor move
-    undo_manager.record_edit(edit.clone());
-    undo_manager.invalidate_due_to_cursor_movement();
-    assert!(undo_manager.pop_undo(5).is_none());
-
-    // Invalidation on selection changed
     undo_manager.record_edit(edit);
-    undo_manager.invalidate_due_to_cursor_movement();
+
+    assert!(
+        undo_manager.pop_undo(4).is_none(),
+        "undo with stale revision 4 must be rejected"
+    );
+
+    let inverse = undo_manager
+        .pop_undo(5)
+        .expect("undo with matching revision 5 must succeed");
+    assert_eq!(inverse.original, "the");
+    assert_eq!(inverse.replacement, "teh");
+    assert_eq!(inverse.range.revision, 6);
     assert!(undo_manager.pop_undo(5).is_none());
+}
+
+#[test]
+fn test_undo_rejects_after_caret_or_selection_break() {
+    let mut undo_manager = UndoTracker::new(10);
+    let edit = ReplaceRangeAction {
+        edit_id: 1,
+        range: EditRange {
+            basis: RangeBasis::CommittedBeforeCaret,
+            start_grapheme: 0,
+            length_grapheme: 2,
+            revision: 5,
+        },
+        original: "teh".to_string(),
+        replacement: "the".to_string(),
+        delimiter: None,
+    };
+    undo_manager.record_edit(edit);
+    undo_manager.invalidate_due_to_caret_break();
+    assert!(
+        undo_manager.pop_undo(5).is_none(),
+        "CursorMoved/SelectionChanged must invalidate undo even at the recorded revision"
+    );
 }
 
 #[test]

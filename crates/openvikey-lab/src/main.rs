@@ -32,6 +32,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::ProvenanceVerify { manifest } => {
             println!("Verifying provenance at: {}", manifest.display());
             let manifest_data = provenance::ProvenanceManifest::from_file(&manifest)?;
+            let workspace_root = manifest
+                .parent()
+                .and_then(std::path::Path::parent)
+                .ok_or("provenance manifest must live at <workspace>/data/provenance.toml")?;
+            manifest_data.verify_artifacts(workspace_root)?;
             println!(
                 "Provenance valid: {} records checked.",
                 manifest_data.records.len()
