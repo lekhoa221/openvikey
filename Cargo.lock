@@ -424,11 +424,27 @@ dependencies = [
  "crossterm",
  "hex",
  "openvikey-core",
+ "openvikey-session",
  "serde",
  "serde_json",
  "sha2",
  "thiserror",
  "toml",
+ "unicode-normalization",
+ "unicode-segmentation",
+ "zeroize",
+]
+
+[[package]]
+name = "openvikey-session"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "openvikey-core",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
  "unicode-normalization",
  "unicode-segmentation",
  "zeroize",

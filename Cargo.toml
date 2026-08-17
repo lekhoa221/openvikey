@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/openvikey-core",
     "crates/openvikey-lab",
+    "crates/openvikey-session",
 ]
 
 [workspace.package]
