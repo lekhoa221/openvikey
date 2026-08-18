@@ -45,6 +45,7 @@ pub enum HostHotkey {
     UndoLast,
     ForgetLastRule,
     ToggleMode,
+    ToggleSuggestions,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

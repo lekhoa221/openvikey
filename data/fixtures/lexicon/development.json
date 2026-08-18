@@ -34,6 +34,8 @@
     { "token_nfc": "để", "frequency": 99 },
     { "token_nfc": "được", "frequency": 100 },
     { "token_nfc": "đúng", "frequency": 86 },
+    { "token_nfc": "đó", "frequency": 92 },
+    { "token_nfc": "đói", "frequency": 70 },
     { "token_nfc": "dùng", "frequency": 90 },
     { "token_nfc": "dụng", "frequency": 72 },
     { "token_nfc": "gì", "frequency": 90 },

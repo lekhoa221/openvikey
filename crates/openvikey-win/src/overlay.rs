@@ -8,6 +8,16 @@ pub fn overlay_lines(candidates: &[String], max: usize) -> Vec<String> {
     candidates.iter().take(max).cloned().collect()
 }
 
+/// Cap overlay lines, or return empty when the user has hidden suggestions.
+#[must_use]
+pub fn overlay_display_lines(candidates: &[String], max: usize, show: bool) -> Vec<String> {
+    if show {
+        overlay_lines(candidates, max)
+    } else {
+        Vec::new()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OverlayPresentation {
     Hidden,
@@ -16,7 +26,16 @@ pub enum OverlayPresentation {
 
 #[must_use]
 pub fn overlay_presentation(candidates: &[String], max: usize) -> OverlayPresentation {
-    let lines = overlay_lines(candidates, max);
+    overlay_presentation_if(candidates, max, true)
+}
+
+#[must_use]
+pub fn overlay_presentation_if(
+    candidates: &[String],
+    max: usize,
+    show: bool,
+) -> OverlayPresentation {
+    let lines = overlay_display_lines(candidates, max, show);
     if lines.is_empty() {
         OverlayPresentation::Hidden
     } else {

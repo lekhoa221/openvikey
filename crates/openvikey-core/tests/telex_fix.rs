@@ -90,6 +90,17 @@ fn telex_candidate(text: &str) -> Candidate {
     }
 }
 
+fn fuzzy_candidate(id: u64, text: &str) -> Candidate {
+    Candidate {
+        id,
+        text: text.to_string(),
+        source: CandidateSource::Fuzzy,
+        evidence: "fuzzy:weighted".to_string(),
+        base_score: 0.8,
+        final_score: 0.95,
+    }
+}
+
 #[test]
 fn telex_fix_policy_allows_win32_space_and_rejects_electron_punct() {
     let snapshot = snapshot("ch2ao", "ch2ao");
@@ -125,6 +136,34 @@ fn telex_fix_policy_allows_win32_space_and_rejects_electron_punct() {
         Some(' '),
         InterventionConfig::default(),
         &lexicon,
+        true,
+    ));
+}
+
+#[test]
+fn telex_fix_policy_autos_when_fuzzy_agrees_on_the_same_word() {
+    let snapshot = snapshot("ch2ao", "ch2ao");
+    let candidates = vec![telex_candidate("chào"), fuzzy_candidate(1, "chào")];
+    assert!(telex_fix_policy_applies(
+        &snapshot,
+        &candidates,
+        Some(' '),
+        InterventionConfig::win32(),
+        &chao_lexicon(),
+        true,
+    ));
+}
+
+#[test]
+fn telex_fix_policy_autos_when_unique_vni_fix_is_not_ranked_first() {
+    let snapshot = snapshot("ch2ao", "ch2ao");
+    let candidates = vec![fuzzy_candidate(1, "cho"), telex_candidate("chào")];
+    assert!(telex_fix_policy_applies(
+        &snapshot,
+        &candidates,
+        Some(' '),
+        InterventionConfig::win32(),
+        &chao_lexicon(),
         true,
     ));
 }

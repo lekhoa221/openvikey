@@ -1,5 +1,6 @@
 //! Synchronous typing host: session + inject (record and/or SendInput).
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
@@ -15,7 +16,6 @@ use openvikey_session::session::{LabSession, SessionCursors};
 use crate::classify::profile_for_exe;
 use crate::focus::FocusCache;
 use crate::inject::{CommandInjector, InjectError, InjectProfile};
-use crate::overlay::overlay_lines;
 use crate::policy::{HostHotkey, HostState, KeyDecision, Mode, RawKey, decide};
 use crate::sync::{
     InjectCommand, commands_from_accept, commands_from_caret_break, commands_from_typed,
@@ -27,6 +27,7 @@ struct HostRuntime {
     focus: Arc<FocusCache>,
     sending: Arc<AtomicBool>,
     mode: Arc<AtomicU8>,
+    show_suggestions: Arc<AtomicBool>,
     allow_terminal: bool,
     persist: OnceLock<Arc<dyn Fn() + Send + Sync>>,
 }
@@ -50,10 +51,11 @@ fn mode_from_u8(value: u8) -> Mode {
 
 /// Bind host + focus for LL callbacks (call once before installing hooks).
 pub fn bind_runtime(host: Arc<Mutex<TypingHost>>, focus: Arc<FocusCache>) {
-    let (sending, mode, allow_terminal) = match host.lock() {
+    let (sending, mode, show_suggestions, allow_terminal) = match host.lock() {
         Ok(guard) => (
             Arc::clone(&guard.sending),
             Arc::clone(&guard.mode_flag),
+            Arc::clone(&guard.suggestions_flag),
             guard.allow_terminal,
         ),
         Err(poisoned) => {
@@ -61,6 +63,7 @@ pub fn bind_runtime(host: Arc<Mutex<TypingHost>>, focus: Arc<FocusCache>) {
             (
                 Arc::clone(&guard.sending),
                 Arc::clone(&guard.mode_flag),
+                Arc::clone(&guard.suggestions_flag),
                 guard.allow_terminal,
             )
         }
@@ -70,6 +73,7 @@ pub fn bind_runtime(host: Arc<Mutex<TypingHost>>, focus: Arc<FocusCache>) {
         focus,
         sending,
         mode,
+        show_suggestions,
         allow_terminal,
         persist: OnceLock::new(),
     });
@@ -161,7 +165,7 @@ fn dispatch_locked_key(
         guard.meta = sync.meta;
     }
     let out = guard.handle_key(raw, at_ms);
-    let lines = overlay_lines(&guard.session.candidate_texts(), 3);
+    let lines = guard.overlay_display_lines();
     let mode = guard.mode;
     let notify_persist = guard.allow_learning_for_foreground();
     drop(guard);
@@ -208,7 +212,7 @@ pub fn caret_break_runtime_locked(at_ms: i64, caps_lock: bool, alt: bool, meta: 
     guard.alt = alt;
     guard.meta = meta;
     guard.notify_caret_break(at_ms);
-    let lines = overlay_lines(&guard.session.candidate_texts(), 3);
+    let lines = guard.overlay_display_lines();
     let notify_persist = guard.allow_learning_for_foreground();
     drop(guard);
     after_unlock(&lines, None, notify_persist);
@@ -216,14 +220,42 @@ pub fn caret_break_runtime_locked(at_ms: i64, caps_lock: bool, alt: bool, meta: 
 
 /// Tray left-click (message thread): blocking lock is allowed off the LL hook path.
 pub fn handle_tray_left_click(at_ms: i64) {
+    handle_tray_hotkey(HostHotkey::ToggleMode, at_ms);
+}
+
+/// Tray menu Gợi ý (message thread): hide/show overlay without changing V/E.
+pub fn handle_tray_toggle_suggestions(at_ms: i64) {
+    handle_tray_hotkey(HostHotkey::ToggleSuggestions, at_ms);
+}
+
+/// Overlay visibility for the tray check-mark (lock-free; message thread).
+#[must_use]
+pub fn suggestions_visible() -> bool {
+    RUNTIME
+        .get()
+        .is_none_or(|rt| rt.show_suggestions.load(Ordering::SeqCst))
+}
+
+fn handle_tray_hotkey(hotkey: HostHotkey, at_ms: i64) {
     let Some(rt) = RUNTIME.get() else {
         return;
     };
     let mut guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
-    guard.handle_hotkey(HostHotkey::ToggleMode, at_ms);
-    let mode = guard.mode;
+    guard.handle_hotkey(hotkey, at_ms);
+    let mode = matches!(hotkey, HostHotkey::ToggleMode).then_some(guard.mode);
+    let lines = guard.overlay_display_lines();
+    let ui_path = guard.ui_path.clone();
+    let show_suggestions = guard.show_suggestions;
     drop(guard);
-    after_unlock(&[], Some(mode), false);
+    after_unlock(&lines, mode, false);
+    if hotkey == HostHotkey::ToggleSuggestions
+        && let Some(path) = ui_path
+    {
+        let _ = crate::persist::save_ui_prefs(
+            &path,
+            crate::persist::UiPrefs { show_suggestions },
+        );
+    }
 }
 
 /// In-process host used by unit tests and the LL hook callback.
@@ -244,6 +276,11 @@ pub struct TypingHost {
     pub meta: bool,
     /// Shared with [`crate::inject::SendingGuard`] so policy sees in-flight SendInput.
     pub sending: Arc<AtomicBool>,
+    /// When false, candidates still generate (Ctrl+.) but the overlay HWND stays hidden.
+    pub show_suggestions: bool,
+    pub suggestions_flag: Arc<AtomicBool>,
+    /// Optional `%LOCALAPPDATA%\OpenViKey\ui.ovkdev.json` written from the tray thread.
+    pub ui_path: Option<PathBuf>,
     pub profile: InjectProfile,
     /// Commands applied during this host's lifetime (tests assert on these).
     pub recorded: Vec<InjectCommand>,
@@ -305,6 +342,9 @@ impl TypingHost {
             alt: false,
             meta: false,
             sending: Arc::new(AtomicBool::new(false)),
+            show_suggestions: true,
+            suggestions_flag: Arc::new(AtomicBool::new(true)),
+            ui_path: None,
             profile: InjectProfile::Win32,
             recorded: Vec::new(),
             stack_trace: Vec::new(),
@@ -360,7 +400,9 @@ impl TypingHost {
             }
             HostHotkey::UndoLast => self.undo_last(at_ms),
             HostHotkey::ForgetLastRule => {
-                let _ = self.session.forget_last_rule();
+                if self.allow_learning_for_foreground() {
+                    let _ = self.session.forget_last_rule();
+                }
             }
             HostHotkey::ToggleMode => {
                 self.apply_caret_break(at_ms);
@@ -373,7 +415,25 @@ impl TypingHost {
                 self.mode_flag
                     .store(mode_to_u8(self.mode), Ordering::SeqCst);
             }
+            HostHotkey::ToggleSuggestions => {
+                self.set_show_suggestions(!self.show_suggestions);
+            }
         }
+    }
+
+    /// Candidate strings the overlay HWND should show (empty when the user hid suggestions).
+    #[must_use]
+    pub fn overlay_display_lines(&self) -> Vec<String> {
+        crate::overlay::overlay_display_lines(
+            &self.session.candidate_texts(),
+            3,
+            self.show_suggestions,
+        )
+    }
+
+    pub fn set_show_suggestions(&mut self, show: bool) {
+        self.show_suggestions = show;
+        self.suggestions_flag.store(show, Ordering::SeqCst);
     }
 
     /// Mouse / focus caret-break without going through keyboard policy.

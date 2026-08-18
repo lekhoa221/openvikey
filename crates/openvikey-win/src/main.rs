@@ -18,8 +18,8 @@ use openvikey_win::focus::{FocusCache, run_host_message_loop};
 use openvikey_win::host::{TypingHost, bind_persist_notify, bind_runtime};
 use openvikey_win::inject::{InjectProfile, ProfilingInjector, SendInputSender};
 use openvikey_win::persist::{
-    HostShutdown, default_store_paths, ensure_open_store_cli_path, load_open_personal_store,
-    spawn_open_pair_saver,
+    HostShutdown, default_store_paths, default_ui_path, ensure_open_store_cli_path,
+    load_open_personal_store, load_ui_prefs, spawn_open_pair_saver,
 };
 #[cfg(windows)]
 use openvikey_win::tray::install_host_ui;
@@ -32,7 +32,7 @@ use openvikey_win::tray::install_host_ui;
     about = "Windows hook host for OpenViKey"
 )]
 struct Cli {
-    #[arg(long, value_enum, default_value = "telex")]
+    #[arg(long, value_enum, default_value = "vni")]
     method: MethodArg,
     /// Optional lexicon artifact. Debug builds embed the development lexicon by default.
     #[arg(long)]
@@ -111,6 +111,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sending = Arc::new(AtomicBool::new(false));
     let mut typing = TypingHost::new_with_session(session);
     typing.allow_terminal = cli.allow_terminal;
+    let ui_path = default_ui_path(std::env::var_os("LOCALAPPDATA").map(PathBuf::from));
+    typing.set_show_suggestions(load_ui_prefs(&ui_path).show_suggestions);
+    typing.ui_path = Some(ui_path);
     let initial_mode = typing.mode;
     typing.set_injector(Box::new(ProfilingInjector {
         profile: InjectProfile::Win32,

@@ -18,3 +18,17 @@ fn tray_exit_requests_host_shutdown() {
     assert!(apply_tray_event(TrayEvent::Exit, &shutdown).is_none());
     assert!(shutdown.is_requested());
 }
+
+#[test]
+fn tray_toggle_suggestions_maps_to_hotkey_without_exiting() {
+    let shutdown = HostShutdown::new();
+    assert_eq!(
+        tray_hotkey(TrayEvent::ToggleSuggestions),
+        Some(HostHotkey::ToggleSuggestions)
+    );
+    assert_eq!(
+        apply_tray_event(TrayEvent::ToggleSuggestions, &shutdown),
+        Some(HostHotkey::ToggleSuggestions)
+    );
+    assert!(!shutdown.is_requested());
+}

@@ -67,22 +67,24 @@ Requires a real terminal (piped stdin exits with an error mentioning `terminal`)
 Windows system hook host (Notepad + Cursor/Electron). **Turn UniKey / other IMEs off** before running — only one keyboard filter should own the keys.
 
 ```bash
-cargo run -p openvikey-win -- --method telex --allow-terminal
+cargo run -p openvikey-win -- --allow-terminal
 ```
 
-Optional: `--model` / `--capture` (default `%LOCALAPPDATA%\OpenViKey\model.ovkdev.json` and `capture.ovkdev.json`), `--electron-gap-ms` for Electron SendInput spacing. Custom store names must end in `.ovkdev.json` so Git ignores the plaintext and all recovery sidecars. The Windows development host starts without a passphrase and stores these two files as inspectable plaintext JSON. Existing encrypted `.ovk` files are left untouched.
+Default input method is **VNI**. Pass `--method telex` only when you want Telex. Learning keys are per-method: Telex evidence does not transfer to VNI.
 
-> **Development privacy warning:** `model.ovkdev.json`, `capture.ovkdev.json`, and their recovery sidecars are not encrypted. Do not share them or use this open-storage mode with sensitive text. Terminal/Electron learning and capture remain disabled.
+Optional: `--model` / `--capture` (default `%LOCALAPPDATA%\OpenViKey\model.ovkdev.json` and `capture.ovkdev.json`), `--electron-gap-ms` for Electron SendInput spacing. Custom store names must end in `.ovkdev.json` so Git ignores the plaintext and all recovery sidecars. The Windows development host starts without a passphrase and stores these two files as inspectable plaintext JSON. Overlay visibility is remembered in `ui.ovkdev.json` (a boolean, not typing data). Existing encrypted `.ovk` files are left untouched.
+
+> **Development privacy warning:** `model.ovkdev.json`, `capture.ovkdev.json`, and their recovery sidecars are not encrypted. Do not share them or use this open-storage mode with sensitive text. Terminal, denylist, and English-mode learning/capture stay disabled. Electron apps (Chrome/Discord/Slack) may learn and capture when transform is on.
 
 Exit from the tray or press **Ctrl+C** in the launching console for a graceful shutdown: input hooks stop first, then the coherent model/capture pair is flushed.
 
 Debug builds embed the project-authored development lexicon; it is **not release-quality corpus evidence**. Release builds fail closed and require an explicit `--lexicon` until G3 closes. `--allow-terminal` explicitly enables Pi/PowerShell/Windows Terminal while disabling learning, capture, and persistence there. SSH running inside a terminal cannot yet be detected in GĐ2a: toggle OpenViKey to English before entering terminal secrets. Direct SSH clients, password managers, `LogonUI.exe`, and `CredentialUIBroker.exe` remain blocked.
 
-Suggestion smoke: type `ko` and confirm the overlay shows `không`, then press **Ctrl+.** to replace it and append a space. Type `khogn` to confirm `không` appears as a fuzzy correction candidate.
+Suggestion smoke (VNI): type `ch2ao` then Space and confirm the host replaces it with `chào`. Type `ko` and press **Ctrl+.** to accept `không` (this writes VNI learning mass). Type `khogn` to confirm `không` appears as a fuzzy candidate. Right-click the tray icon and uncheck **Gợi ý** to hide the overlay (Accept/Reject still work; the preference is remembered). Left-click the tray icon still toggles Vietnamese/English.
 
 | Key | Behavior |
 |---|---|
-| Letters / Backspace | Telex compose; inject into the focused app |
+| Letters / digits / Backspace | VNI compose; inject into the focused app |
 | Space / punctuation | Commit |
 | **Enter** | Commit + inject **then** pass to the app (newline / Cursor submit) |
 | **Ctrl+.** | Accept top suggestion |

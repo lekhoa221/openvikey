@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use openvikey_core::engine::EngineConfig;
 use openvikey_core::lexicon::{Lexicon, LexiconArtifact};
-use openvikey_core::types::InputKind;
+use openvikey_core::model::{ModelView, RuleContextKey};
+use openvikey_core::types::{CandidateSource, InputKind, InputMethod, TonePlacement};
 use openvikey_session::session::LabSession;
 use openvikey_win::hook::dispatch_ll;
 use openvikey_win::host::TypingHost;
@@ -50,11 +51,33 @@ fn type_ascii(host: &mut TypingHost, text: &str) {
     }
 }
 
+fn ko_abbrev_rule() -> RuleContextKey {
+    ko_abbrev_rule_for(InputMethod::Telex)
+}
+
+fn ko_abbrev_rule_for(input_method: InputMethod) -> RuleContextKey {
+    RuleContextKey {
+        input_method,
+        source: CandidateSource::Abbreviation,
+        original_nfc: "ko".to_string(),
+        candidate_nfc: "không".to_string(),
+        left_token_nfc: None,
+        source_rule_id: "seed:ko".to_string(),
+    }
+}
+
+fn vni_engine() -> EngineConfig {
+    EngineConfig {
+        method: InputMethod::Vni,
+        tone_placement: TonePlacement::Modern,
+    }
+}
+
 #[test]
 fn development_lexicon_has_useful_breadth() {
     let lexicon = development_lexicon();
     assert!(lexicon.entries().len() >= 100);
-    for token in ["không", "người", "tiếng", "việt", "terminal", "sửa"] {
+    for token in ["không", "người", "tiếng", "việt", "terminal", "sửa", "đó", "chào"] {
         assert!(
             lexicon.contains(token),
             "missing development token: {token}"
@@ -199,6 +222,75 @@ fn terminal_context_cannot_leak_into_later_learning() {
 }
 
 #[test]
+fn vni_misplaced_tone_auto_replaces_and_learns_on_space() {
+    let session = LabSession::new(vni_engine(), development_lexicon());
+    let mut host = TypingHost::new_with_session(session);
+    type_ascii(&mut host, "ch2ao");
+    host.recorded.clear();
+    host.handle_key(key(0x20), 10);
+    assert!(
+        host.recorded.iter().any(|cmd| matches!(
+            cmd,
+            InjectCommand::Replace { text_nfc, .. } if text_nfc == "chào"
+        )),
+        "VNI ch2ao + space must inject chào; got {:?}",
+        host.recorded
+    );
+    assert_eq!(host.last_injected_token, "chào");
+    let snap = host.session.save_snapshot();
+    assert!(
+        snap.cursors.next_edit_id > 1,
+        "VNI misplaced-tone Auto must consume an edit id; recorded={:?}",
+        host.recorded
+    );
+    let payload = String::from_utf8(host.session.model_payload().expect("model")).expect("utf8");
+    assert!(
+        payload.contains("\"original_nfc\":\"ch2ao\"")
+            && payload.contains("\"candidate_nfc\":\"chào\"")
+            && payload.contains("\"input_method\":\"Vni\"")
+            && payload.contains("recent_auto"),
+        "VNI Auto must record a TelexFix emission; payload={payload}"
+    );
+}
+
+#[test]
+fn vni_tone_before_vowel_do_auto_replaces_on_space() {
+    let session = LabSession::new(vni_engine(), development_lexicon());
+    let mut host = TypingHost::new_with_session(session);
+    type_ascii(&mut host, "d91o");
+    host.recorded.clear();
+    host.handle_key(key(0x20), 10);
+    assert_eq!(host.last_injected_token, "đó");
+    assert!(
+        host.session.save_snapshot().cursors.next_edit_id > 1,
+        "d91o + space must Auto-replace; recorded={:?}",
+        host.recorded
+    );
+}
+
+#[test]
+fn vni_accept_top_learns_abbreviation_mass() {
+    let session = LabSession::new(vni_engine(), development_lexicon());
+    let mut host = TypingHost::new_with_session(session);
+    type_ascii(&mut host, "ko");
+    host.handle_hotkey(HostHotkey::AcceptTop, 10);
+    assert_eq!(
+        host.session
+            .model()
+            .positive_mass(&ko_abbrev_rule_for(InputMethod::Vni), 10),
+        1.0
+    );
+    assert!(
+        host.recorded.iter().any(|cmd| matches!(
+            cmd,
+            InjectCommand::Replace { text_nfc, .. } if text_nfc == "không"
+        )),
+        "VNI Ctrl+. must still replace; got {:?}",
+        host.recorded
+    );
+}
+
+#[test]
 fn common_typo_produces_a_correction_candidate() {
     let session = LabSession::new(EngineConfig::default(), development_lexicon());
     let mut host = TypingHost::new_with_session(session);
@@ -215,4 +307,52 @@ fn common_typo_produces_a_correction_candidate() {
         host.handle_key(key(0x08), 20),
         KeyDecision::EatAndInject(InputKind::Backspace)
     ));
+}
+
+#[test]
+fn terminal_forget_does_not_clear_notepad_learned_mass() {
+    let session = LabSession::new(EngineConfig::default(), development_lexicon());
+    let mut host = TypingHost::new_with_session(session);
+    host.set_hwnd(10, "notepad.exe".into(), 1);
+    type_ascii(&mut host, "ko");
+    host.handle_hotkey(HostHotkey::AcceptTop, 10);
+    let rule = ko_abbrev_rule();
+    assert_eq!(host.session.model().positive_mass(&rule, 10), 1.0);
+
+    host.allow_terminal = true;
+    host.set_hwnd(20, "WindowsTerminal.exe".into(), 20);
+    type_ascii(&mut host, "ko");
+    host.handle_hotkey(HostHotkey::AcceptTop, 30);
+    host.handle_hotkey(HostHotkey::ForgetLastRule, 40);
+
+    assert_eq!(
+        host.session.model().positive_mass(&rule, 10),
+        1.0,
+        "ForgetLastRule on a no-learning surface must not drop mass learned in Notepad"
+    );
+}
+
+#[test]
+fn terminal_accept_does_not_retarget_forget_after_returning_to_win32() {
+    let session = LabSession::new(EngineConfig::default(), development_lexicon());
+    let mut host = TypingHost::new_with_session(session);
+    host.set_hwnd(10, "notepad.exe".into(), 1);
+    type_ascii(&mut host, "ko");
+    host.handle_hotkey(HostHotkey::AcceptTop, 10);
+    let ko = ko_abbrev_rule();
+    assert_eq!(host.session.model().positive_mass(&ko, 10), 1.0);
+
+    host.allow_terminal = true;
+    host.set_hwnd(20, "WindowsTerminal.exe".into(), 20);
+    type_ascii(&mut host, "ntn");
+    host.handle_hotkey(HostHotkey::AcceptTop, 30);
+
+    host.set_hwnd(10, "notepad.exe".into(), 40);
+    host.handle_hotkey(HostHotkey::ForgetLastRule, 50);
+
+    assert_eq!(
+        host.session.model().positive_mass(&ko, 10),
+        0.0,
+        "returning to Win32 must still forget the last real learn, not a phantom terminal Accept"
+    );
 }

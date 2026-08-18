@@ -121,6 +121,28 @@ fn mode_toggle_clears_composition_and_candidates_without_backspacing() {
 }
 
 #[test]
+fn toggling_suggestions_hides_overlay_without_clearing_candidates() {
+    let mut host = TypingHost::new_telex_fixture();
+    host.handle_key(key(0x4B), 1); // k
+    host.handle_key(key(0x4F), 2); // o
+    assert!(!host.session.candidate_texts().is_empty());
+    assert!(!host.overlay_display_lines().is_empty());
+    assert!(host.show_suggestions);
+
+    host.handle_hotkey(HostHotkey::ToggleSuggestions, 3);
+    assert!(
+        !host.session.candidate_texts().is_empty(),
+        "hiding the overlay must not drop engine candidates"
+    );
+    assert!(host.overlay_display_lines().is_empty());
+    assert!(!host.show_suggestions);
+
+    host.handle_hotkey(HostHotkey::ToggleSuggestions, 4);
+    assert!(!host.overlay_display_lines().is_empty());
+    assert!(host.show_suggestions);
+}
+
+#[test]
 fn focus_change_does_not_backspace() {
     let mut host = TypingHost::new_telex_fixture();
     host.handle_key(key(0x41), 1);
@@ -293,6 +315,36 @@ fn undo_replaces_last_injected() {
         }]
     );
     assert_eq!(host.last_injected_token, "paht1");
+}
+
+#[test]
+fn terminal_auto_keeps_consumed_edit_id() {
+    fn type_paht1_space(host: &mut TypingHost, start_ms: i64) {
+        for (i, ch) in ['p', 'a', 'h', 't', '1'].into_iter().enumerate() {
+            let vk = if ch == '1' {
+                0x31
+            } else {
+                u16::from(ch.to_ascii_uppercase() as u8)
+            };
+            host.handle_key(key(vk), start_ms.saturating_add(i64::try_from(i).unwrap_or(0)));
+        }
+        host.handle_key(key(0x20), start_ms.saturating_add(10));
+    }
+
+    let mut host = TypingHost::new_vni_auto_fixture();
+    type_paht1_space(&mut host, 0);
+    assert_eq!(host.last_injected_token, "phát");
+    let after_notepad = host.session.cursors().next_edit_id;
+
+    host.allow_terminal = true;
+    host.set_hwnd(20, "WindowsTerminal.exe".into(), 20);
+    type_paht1_space(&mut host, 30);
+    assert_eq!(host.last_injected_token, "phát");
+    assert_eq!(
+        host.session.cursors().next_edit_id,
+        after_notepad.saturating_add(1),
+        "on-screen Auto on a no-learning surface must keep the consumed edit id"
+    );
 }
 
 #[test]

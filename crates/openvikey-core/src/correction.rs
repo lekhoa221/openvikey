@@ -281,7 +281,23 @@ fn is_telex_fix_candidate(candidate: &Candidate) -> bool {
             .any(|part| part.contains("telex-fix:") || part.contains("vni-fix:"))
 }
 
-/// TelexFix cold-start auto: unique reconstruction, lexicon gates, delimiter policy.
+/// The unique misplaced-tone reconstruction, if the ranked list has exactly one.
+#[must_use]
+pub fn unique_telex_fix_candidate(candidates: &[Candidate]) -> Option<&Candidate> {
+    let mut unique = None;
+    for candidate in candidates {
+        if !is_telex_fix_candidate(candidate) {
+            continue;
+        }
+        if unique.is_some() {
+            return None;
+        }
+        unique = Some(candidate);
+    }
+    unique
+}
+
+/// TelexFix/VNI-fix cold-start auto: unique reconstruction, lexicon gates, delimiter policy.
 #[must_use]
 pub fn telex_fix_policy_applies(
     snapshot: &CompositionSnapshot,
@@ -297,27 +313,11 @@ pub fn telex_fix_policy_applies(
     if !config.policy_delimiters.allows(delimiter) {
         return false;
     }
-    let Some(top) = candidates.first() else {
+    let Some(fix) = unique_telex_fix_candidate(candidates) else {
         return false;
     };
-    if !is_telex_fix_candidate(top) {
-        return false;
-    }
-    let telex_count = candidates
-        .iter()
-        .filter(|candidate| is_telex_fix_candidate(candidate))
-        .count();
-    if telex_count != 1 {
-        return false;
-    }
-    if candidates
-        .get(1)
-        .is_some_and(|second| second.text == top.text)
-    {
-        return false;
-    }
     if lexicon.contains(&snapshot.normalized) {
         return false;
     }
-    lexicon.contains(&top.text)
+    lexicon.contains(&fix.text)
 }

@@ -1,6 +1,9 @@
 //! Overlay candidate line cap (display-only helper).
 
-use openvikey_win::overlay::{OverlayPresentation, overlay_lines, overlay_presentation};
+use openvikey_win::overlay::{
+    OverlayPresentation, overlay_display_lines, overlay_lines, overlay_presentation,
+    overlay_presentation_if,
+};
 
 #[test]
 fn overlay_caps_at_three() {
@@ -15,6 +18,20 @@ fn candidates_show_and_empty_candidates_hide_the_overlay() {
         OverlayPresentation::Visible(vec!["không".into(), "khổng".into()])
     );
     assert_eq!(overlay_presentation(&[], 3), OverlayPresentation::Hidden);
+}
+
+#[test]
+fn disabled_suggestions_hide_overlay_even_with_candidates() {
+    let candidates = ["không".into(), "khổng".into()];
+    assert_eq!(
+        overlay_presentation_if(&candidates, 3, false),
+        OverlayPresentation::Hidden
+    );
+    assert!(overlay_display_lines(&candidates, 3, false).is_empty());
+    assert_eq!(
+        overlay_display_lines(&candidates, 3, true),
+        vec!["không".to_string(), "khổng".to_string()]
+    );
 }
 
 #[cfg(windows)]

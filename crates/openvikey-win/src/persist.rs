@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
 
+use serde::{Deserialize, Serialize};
+
 use crate::host::TypingHost;
 use openvikey_core::model::AdaptiveModel;
 use openvikey_core::store::StoreError;
@@ -73,6 +75,51 @@ pub fn default_store_paths(local_app_data: Option<impl AsRef<Path>>) -> (PathBuf
         root.join("model.ovkdev.json"),
         root.join("capture.ovkdev.json"),
     )
+}
+
+/// Resolve the overlay visibility preference next to the development stores.
+#[must_use]
+pub fn default_ui_path(local_app_data: Option<impl AsRef<Path>>) -> PathBuf {
+    let root = local_app_data.map_or_else(
+        || PathBuf::from("OpenViKey"),
+        |base| base.as_ref().join("OpenViKey"),
+    );
+    root.join("ui.ovkdev.json")
+}
+
+fn default_show_suggestions() -> bool {
+    true
+}
+
+/// Tray overlay visibility (not personal typing data).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiPrefs {
+    #[serde(default = "default_show_suggestions")]
+    pub show_suggestions: bool,
+}
+
+impl Default for UiPrefs {
+    fn default() -> Self {
+        Self {
+            show_suggestions: true,
+        }
+    }
+}
+
+/// Missing or unreadable prefs keep the overlay visible (current GĐ2a default).
+#[must_use]
+pub fn load_ui_prefs(path: &Path) -> UiPrefs {
+    fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// Persist overlay visibility; I/O stays off the LL hook thread.
+pub fn save_ui_prefs(path: &Path, prefs: UiPrefs) -> std::io::Result<()> {
+    let payload = serde_json::to_vec_pretty(&prefs)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+    atomic_replace_payload(path, &payload)
 }
 
 /// Reject custom CLI names that could escape the personal-data ignore pattern.

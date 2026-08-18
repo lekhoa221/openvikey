@@ -7,7 +7,7 @@ use crate::capture::{
 use crate::document::{CommittedUnit, DocumentBuffer};
 use openvikey_core::correction::{
     AutoEditContext, CorrectionSlice, InterventionConfig, run_learning_correction_slice,
-    telex_fix_policy_applies,
+    telex_fix_policy_applies, unique_telex_fix_candidate,
 };
 use openvikey_core::decision::{DecisionConfig, DecisionState};
 use openvikey_core::engine::{Engine, EngineConfig};
@@ -367,7 +367,9 @@ impl LabSession {
         self.learning
             .model_mut()
             .apply_feedback(&key, &feedback, allow_learning);
-        self.last_learned = Some(LastLearned::Rule(key));
+        if allow_learning {
+            self.last_learned = Some(LastLearned::Rule(key));
+        }
         self.clear_auto_anchor();
         let candidate_nfc = top.text.clone();
         if was_composing {
@@ -661,40 +663,44 @@ impl LabSession {
                 &self.lexicon,
                 event.context.allow_transform,
             )
+            && let (Some(fix), Some(edit)) = (
+                unique_telex_fix_candidate(&slice.candidates).cloned(),
+                auto_edit,
+            )
         {
-            if let (Some(top), Some(edit)) = (slice.candidates.first().cloned(), auto_edit) {
-                let action = openvikey_core::types::ReplaceRangeAction {
-                    edit_id: edit.edit_id,
-                    range: edit.range,
-                    original: snapshot.rendered.clone(),
-                    replacement: top.text.clone(),
-                    delimiter: edit.delimiter,
-                };
-                let rule = RuleContextKey {
-                    input_method: method,
-                    source: CandidateSource::TelexFix,
-                    original_nfc: snapshot.normalized.clone(),
-                    candidate_nfc: top.text.clone(),
-                    left_token_nfc: self.left_context.prev_token_nfc.clone(),
-                    source_rule_id: top
-                        .evidence
-                        .split('+')
-                        .find(|part| part.contains("-fix:move-tone-"))
-                        .or_else(|| top.evidence.split('+').next())
-                        .unwrap_or("")
-                        .to_string(),
-                };
-                self.learning.record_auto_edit(
-                    rule.clone(),
-                    action.clone(),
-                    event.at_ms,
-                    event.context.allow_learning,
-                );
-                self.pending_restore_raw = Some(snapshot.raw_keys.clone());
+            let action = openvikey_core::types::ReplaceRangeAction {
+                edit_id: edit.edit_id,
+                range: edit.range,
+                original: snapshot.rendered.clone(),
+                replacement: fix.text.clone(),
+                delimiter: edit.delimiter,
+            };
+            let rule = RuleContextKey {
+                input_method: method,
+                source: CandidateSource::TelexFix,
+                original_nfc: snapshot.normalized.clone(),
+                candidate_nfc: fix.text.clone(),
+                left_token_nfc: self.left_context.prev_token_nfc.clone(),
+                source_rule_id: fix
+                    .evidence
+                    .split('+')
+                    .find(|part| part.contains("-fix:move-tone-"))
+                    .or_else(|| fix.evidence.split('+').next())
+                    .unwrap_or("")
+                    .to_string(),
+            };
+            self.learning.record_auto_edit(
+                rule.clone(),
+                action.clone(),
+                event.at_ms,
+                event.context.allow_learning,
+            );
+            self.pending_restore_raw = Some(snapshot.raw_keys.clone());
+            if event.context.allow_learning {
                 self.last_learned = Some(LastLearned::Rule(rule));
-                slice.decision = Some(DecisionState::Auto);
-                slice.action = Some(EngineAction::ReplaceRange(action));
             }
+            slice.decision = Some(DecisionState::Auto);
+            slice.action = Some(EngineAction::ReplaceRange(action));
         }
         slice
     }
@@ -1005,12 +1011,15 @@ impl LabSession {
     }
 
     /// Restore persistent learning/capture state while preserving non-learning composition.
+    ///
+    /// `next_edit_id` is left alone: an on-screen Auto still records semantic undo even
+    /// when learning is disabled, so rolling the cursor back would reuse edit ids.
     pub fn restore_persistent_state(&mut self, checkpoint: &SessionInjectCheckpoint) {
         self.next_seq = checkpoint.next_seq;
-        self.next_edit_id = checkpoint.next_edit_id;
         self.last_at_ms = checkpoint.last_at_ms;
         self.capture.clone_from(&checkpoint.capture);
         *self.learning.model_mut() = checkpoint.learning.model().clone();
+        self.last_learned.clone_from(&checkpoint.last_learned);
     }
 
     /// Restore state captured by [`Self::checkpoint_for_inject`].

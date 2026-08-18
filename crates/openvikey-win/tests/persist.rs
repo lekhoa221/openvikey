@@ -11,9 +11,9 @@ use openvikey_session::session::LabSession;
 use openvikey_win::HostShutdown;
 use openvikey_win::host::TypingHost;
 use openvikey_win::persist::{
-    OpenPairFailurePoint, default_store_paths, ensure_open_store_cli_path,
-    load_open_personal_store, save_open_snapshot, save_open_snapshot_with_failure,
-    spawn_open_pair_saver,
+    OpenPairFailurePoint, UiPrefs, default_store_paths, default_ui_path,
+    ensure_open_store_cli_path, load_open_personal_store, load_ui_prefs, save_open_snapshot,
+    save_open_snapshot_with_failure, save_ui_prefs, spawn_open_pair_saver,
 };
 use openvikey_win::policy::RawKey;
 
@@ -153,6 +153,45 @@ fn default_store_paths_use_open_json_files() {
     assert_eq!(
         capture,
         std::path::PathBuf::from(r"C:\Users\Test\AppData\Local\OpenViKey\capture.ovkdev.json")
+    );
+}
+
+#[test]
+fn default_ui_path_is_open_json_next_to_stores() {
+    assert_eq!(
+        default_ui_path(Some(r"C:\Users\Test\AppData\Local")),
+        std::path::PathBuf::from(r"C:\Users\Test\AppData\Local\OpenViKey\ui.ovkdev.json")
+    );
+}
+
+#[test]
+fn missing_ui_prefs_default_to_showing_suggestions() {
+    let dir = test_dir("missing-ui");
+    assert_eq!(
+        load_ui_prefs(&dir.join("ui.ovkdev.json")),
+        UiPrefs {
+            show_suggestions: true
+        }
+    );
+}
+
+#[test]
+fn ui_prefs_round_trip_hide_suggestions() {
+    let dir = test_dir("ui-hide");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ui.ovkdev.json");
+    save_ui_prefs(
+        &path,
+        UiPrefs {
+            show_suggestions: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        load_ui_prefs(&path),
+        UiPrefs {
+            show_suggestions: false
+        }
     );
 }
 

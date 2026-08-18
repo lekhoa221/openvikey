@@ -1,4 +1,4 @@
-//! Tray icon V/E display; left click maps to toggle mode.
+//! Tray icon V/E display; left click maps to toggle mode; right-click Gợi ý hides overlay.
 
 use crate::persist::HostShutdown;
 use crate::policy::{HostHotkey, Mode};
@@ -6,6 +6,7 @@ use crate::policy::{HostHotkey, Mode};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayEvent {
     LeftClick,
+    ToggleSuggestions,
     Exit,
 }
 
@@ -13,14 +14,15 @@ pub enum TrayEvent {
 pub fn tray_hotkey(event: TrayEvent) -> Option<HostHotkey> {
     match event {
         TrayEvent::LeftClick => Some(HostHotkey::ToggleMode),
+        TrayEvent::ToggleSuggestions => Some(HostHotkey::ToggleSuggestions),
         TrayEvent::Exit => None,
     }
 }
 
-/// Map a tray event: left-click → toggle; Exit → [`HostShutdown::run`].
+/// Map a tray event: left-click → mode; menu Gợi ý → overlay; Exit → [`HostShutdown::run`].
 pub fn apply_tray_event(event: TrayEvent, shutdown: &HostShutdown) -> Option<HostHotkey> {
     match event {
-        TrayEvent::LeftClick => tray_hotkey(event),
+        TrayEvent::LeftClick | TrayEvent::ToggleSuggestions => tray_hotkey(event),
         TrayEvent::Exit => {
             shutdown.run();
             None
@@ -58,7 +60,7 @@ mod shell_tray {
     use windows::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CS_HREDRAW, CS_VREDRAW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
         DestroyMenu, DestroyWindow, GetCursorPos, HCURSOR, HICON, HWND_MESSAGE, IDI_APPLICATION,
-        LoadIconW, MF_STRING, PostQuitMessage, RegisterClassW, SetForegroundWindow,
+        LoadIconW, MF_CHECKED, MF_STRING, PostQuitMessage, RegisterClassW, SetForegroundWindow,
         TPM_RIGHTBUTTON, TrackPopupMenu, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_RBUTTONUP,
         WNDCLASSW, WS_POPUP,
     };
@@ -70,6 +72,7 @@ mod shell_tray {
     pub static TRAY: Mutex<Option<TrayIcon>> = Mutex::new(None);
     static SHUTDOWN: Mutex<Option<Arc<HostShutdown>>> = Mutex::new(None);
     const ID_EXIT: usize = 1;
+    const ID_SUGGESTIONS: usize = 2;
 
     /// Custom tray callback message (not unit-tested in CI).
     pub const WM_TRAYICON: u32 = 0x8000;
@@ -179,12 +182,21 @@ mod shell_tray {
                     crate::host::handle_tray_left_click(now_ms());
                 }
             } else if mouse == WM_RBUTTONUP {
-                show_exit_menu(hwnd);
+                show_tray_menu(hwnd);
             }
             return LRESULT(0);
         }
         if msg == WM_COMMAND {
             let id = wparam.0 & 0xFFFF;
+            if id == ID_SUGGESTIONS {
+                if let Some(shutdown) = peek_shutdown()
+                    && super::apply_tray_event(super::TrayEvent::ToggleSuggestions, &shutdown)
+                        == Some(crate::policy::HostHotkey::ToggleSuggestions)
+                {
+                    crate::host::handle_tray_toggle_suggestions(now_ms());
+                }
+                return LRESULT(0);
+            }
             if id == ID_EXIT {
                 if let Some(shutdown) = peek_shutdown() {
                     super::apply_tray_event(super::TrayEvent::Exit, &shutdown);
@@ -204,10 +216,16 @@ mod shell_tray {
         unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
     }
 
-    fn show_exit_menu(hwnd: HWND) {
+    fn show_tray_menu(hwnd: HWND) {
         let Ok(menu) = (unsafe { CreatePopupMenu() }) else {
             return;
         };
+        let suggestion_flags = if crate::host::suggestions_visible() {
+            MF_STRING | MF_CHECKED
+        } else {
+            MF_STRING
+        };
+        let _ = unsafe { AppendMenuW(menu, suggestion_flags, ID_SUGGESTIONS, w!("Gợi ý")) };
         let _ = unsafe { AppendMenuW(menu, MF_STRING, ID_EXIT, w!("E&xit")) };
         let mut pt = POINT::default();
         let _ = unsafe { GetCursorPos(&raw mut pt) };
@@ -244,13 +262,13 @@ mod shell_tray {
         Ok(())
     }
 
-    /// Overlay + tray + Exit sink for the host coordinator.
+    /// Overlay + tray + Gợi ý/Exit sink for the host coordinator.
     pub struct HostUi {
         _overlay: crate::overlay::OverlayWindow,
         sink: HWND,
     }
 
-    /// Install overlay HWND, tray V/E icon, and Exit menu (allowlisted FFI).
+    /// Install overlay HWND, tray V/E icon, and Gợi ý/Exit menu (allowlisted FFI).
     pub fn install_host_ui(shutdown: &Arc<HostShutdown>, mode: Mode) -> Result<HostUi> {
         if let Ok(mut guard) = SHUTDOWN.lock() {
             *guard = Some(Arc::clone(shutdown));
