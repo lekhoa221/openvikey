@@ -251,10 +251,7 @@ fn handle_tray_hotkey(hotkey: HostHotkey, at_ms: i64) {
     if hotkey == HostHotkey::ToggleSuggestions
         && let Some(path) = ui_path
     {
-        let _ = crate::persist::save_ui_prefs(
-            &path,
-            crate::persist::UiPrefs { show_suggestions },
-        );
+        let _ = crate::persist::save_ui_prefs(&path, crate::persist::UiPrefs { show_suggestions });
     }
 }
 

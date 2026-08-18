@@ -184,9 +184,9 @@ impl AdaptiveModel {
                 (0.0, 1.5)
             }
             FeedbackKind::AutoSettled { edit_id } => {
-                if !entry.settled_auto_ids.insert(edit_id) {
-                    (0.0, 0.0)
-                } else if entry.settled_auto_ids.len() > MAX_SETTLEMENTS_PER_RULE {
+                if !entry.settled_auto_ids.insert(edit_id)
+                    || entry.settled_auto_ids.len() > MAX_SETTLEMENTS_PER_RULE
+                {
                     (0.0, 0.0)
                 } else {
                     (SETTLEMENT_ADD, 0.0)

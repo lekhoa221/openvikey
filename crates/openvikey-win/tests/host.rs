@@ -1,8 +1,7 @@
 //! TypingHost (no OS hook) — composition inject + accept/undo visuals.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::Duration;
 
 use openvikey_core::engine::EngineConfig;
 use openvikey_core::lexicon::{Lexicon, LexiconEntry};
@@ -326,7 +325,10 @@ fn terminal_auto_keeps_consumed_edit_id() {
             } else {
                 u16::from(ch.to_ascii_uppercase() as u8)
             };
-            host.handle_key(key(vk), start_ms.saturating_add(i64::try_from(i).unwrap_or(0)));
+            host.handle_key(
+                key(vk),
+                start_ms.saturating_add(i64::try_from(i).unwrap_or(0)),
+            );
         }
         host.handle_key(key(0x20), start_ms.saturating_add(10));
     }
@@ -350,27 +352,14 @@ fn terminal_auto_keeps_consumed_edit_id() {
 #[test]
 fn try_lock_fail_on_letter_is_pass() {
     let host = Arc::new(Mutex::new(TypingHost::new_telex_fixture()));
-    let held = Arc::clone(&host);
-    let blocker = thread::spawn(move || {
-        let _guard = held.lock().unwrap();
-        thread::sleep(Duration::from_millis(200));
-    });
-    thread::sleep(Duration::from_millis(20));
-    let decision = handle_key_locked(&host, key(0x41), 1);
+    let decision = while_mutex_held(&host, || handle_key_locked(&host, key(0x41), 1));
     assert_eq!(decision, KeyDecision::Pass);
-    blocker.join().unwrap();
 }
 
 #[test]
 fn try_lock_fail_on_enter_eats() {
     let host = Arc::new(Mutex::new(TypingHost::new_telex_fixture()));
-    let held = Arc::clone(&host);
-    let blocker = thread::spawn(move || {
-        let _guard = held.lock().unwrap();
-        thread::sleep(Duration::from_millis(200));
-    });
-    thread::sleep(Duration::from_millis(20));
-    let decision = handle_key_locked(&host, enter_key(), 1);
+    let decision = while_mutex_held(&host, || handle_key_locked(&host, enter_key(), 1));
     assert_eq!(decision, KeyDecision::EatAndIgnore);
     assert_eq!(ll_return(&decision), 1);
     assert_eq!(
@@ -384,45 +373,46 @@ fn try_lock_fail_on_enter_eats() {
         })),
         KeyDecision::Pass
     );
-    blocker.join().unwrap();
 }
 
-fn hold_mutex(host: &Arc<Mutex<TypingHost>>) -> thread::JoinHandle<()> {
+fn while_mutex_held<T>(host: &Arc<Mutex<TypingHost>>, check: impl FnOnce() -> T) -> T {
     let held = Arc::clone(host);
+    let (acquired_tx, acquired_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
     let blocker = thread::spawn(move || {
         let _guard = held.lock().unwrap();
-        thread::sleep(Duration::from_millis(200));
+        acquired_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
     });
-    thread::sleep(Duration::from_millis(20));
-    blocker
+    acquired_rx.recv().unwrap();
+    let result = check();
+    release_tx.send(()).unwrap();
+    blocker.join().unwrap();
+    result
 }
 
 #[test]
 fn try_lock_fail_hotkey_eats() {
     let host = Arc::new(Mutex::new(TypingHost::new_telex_fixture()));
-    let blocker = hold_mutex(&host);
     let mut acc = key(0xBE);
     acc.control = true;
-    let decision = handle_key_locked(&host, acc, 1);
+    let decision = while_mutex_held(&host, || handle_key_locked(&host, acc, 1));
     assert_eq!(decision, KeyDecision::EatAndIgnore);
     assert_eq!(ll_return(&decision), 1);
     assert_eq!(
         on_try_lock_fail(&KeyDecision::Hotkey(HostHotkey::AcceptTop)),
         KeyDecision::EatAndIgnore
     );
-    blocker.join().unwrap();
 }
 
 #[test]
 fn try_lock_fail_ovk_extra_passes() {
     let host = Arc::new(Mutex::new(TypingHost::new_telex_fixture()));
-    let blocker = hold_mutex(&host);
     let mut extra_enter = enter_key();
     extra_enter.extra_info = OVK_EXTRA;
-    let decision = handle_key_locked(&host, extra_enter, 1);
+    let decision = while_mutex_held(&host, || handle_key_locked(&host, extra_enter, 1));
     assert_eq!(decision, KeyDecision::Pass);
     assert_eq!(ll_return(&decision), 0);
-    blocker.join().unwrap();
 }
 
 #[test]

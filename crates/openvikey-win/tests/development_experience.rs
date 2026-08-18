@@ -1,5 +1,7 @@
 //! Development-mode smoke: useful lexicon, visible candidate source, and real hotkey flow.
 
+#![allow(clippy::float_cmp)]
+
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -77,7 +79,9 @@ fn vni_engine() -> EngineConfig {
 fn development_lexicon_has_useful_breadth() {
     let lexicon = development_lexicon();
     assert!(lexicon.entries().len() >= 100);
-    for token in ["không", "người", "tiếng", "việt", "terminal", "sửa", "đó", "chào"] {
+    for token in [
+        "không", "người", "tiếng", "việt", "terminal", "sửa", "đó", "chào",
+    ] {
         assert!(
             lexicon.contains(token),
             "missing development token: {token}"

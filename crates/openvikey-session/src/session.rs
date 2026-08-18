@@ -210,6 +210,8 @@ impl LabSession {
         })
     }
 
+    // Keep the event state transitions together so their ordering stays explicit.
+    #[allow(clippy::too_many_lines)]
     pub fn process_event(&mut self, event: &InputEvent) -> SessionObservation {
         let mut event = event.clone();
         event.kind = map_extra_boundary_kind(event.kind);

@@ -1180,4 +1180,3 @@ README runbook only. Manual checklist (not CI): Notepad newline; Cursor Enter su
 - REPL match uses `let _ =`.
 - `windows` 0.62.2; no `[lints.clippy] workspace = true`.
 - P95 is not a CI unit assert.
-
