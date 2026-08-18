@@ -6,6 +6,8 @@
 - **License:** **MIT** — mã nguồn mở hoàn toàn (OSI). *Tác giả không thu phí và không thương mại hoá; MIT không hạn chế người khác* (kể cả dùng thương mại). Không gọi dự án là "phi thương mại".
 
 > **Changelog v3:** đóng review v2: sửa metric denominator; làm Beta evidence/decay tất định; chốt state machine `ignore/suggest/auto`; hoàn thiện `InputEvent`/semantic edit/inverse undo; chốt passphrase persistence và sensitive-context contract. Implementation plan: [`../plans/2026-08-17-openvikey-v1-implementation-plan.md`](../plans/2026-08-17-openvikey-v1-implementation-plan.md).
+>
+> **Changelog v3.1 (2026-08-18):** GĐ2 không còn “Windows qua TSF” thuần. Chốt hybrid hook-first + TSF sau — [`2026-08-18-openvikey-gd2-windows-host-design.md`](./2026-08-18-openvikey-gd2-windows-host-design.md), ADR [`0007`](../../decisions/0007-gd2-windows-hybrid-host.md).
 
 ---
 
@@ -48,7 +50,7 @@ Vấn đề gốc: gõ nhanh hay sai (đảo chữ, nuốt/đặt dấu sai ch�
 ### 2.3 Nền tảng & lộ trình
 - **Đích cuối:** Windows + macOS, chung `openvikey-core`.
 - **GĐ1 (v1 — spec này):** headless brain, chứng minh sự "thông minh".
-- **GĐ2:** Windows qua **TSF**.
+- **GĐ2:** Windows **hybrid** — hook nhập chính (2a), TSF ngữ cảnh (2b), TSF nhập chính theo app (2c). Không TSF-only. Chi tiết: [`2026-08-18-openvikey-gd2-windows-host-design.md`](./2026-08-18-openvikey-gd2-windows-host-design.md).
 - **GĐ3:** macOS — **spike: IMKInputController (InputMethodKit) vs CGEventTap** (chưa quyết, §10).
 
 ### 2.4 Non-goals (vĩnh viễn)
@@ -110,7 +112,7 @@ trait SecretProvider {
 
 **`openvikey-lab`** (harness v1): CLI nạp `InputEvent`, hiển thị composition + ứng viên + gợi ý, cho accept/reject; **test-runner** chạy corpus đo §3; **dump model** dạng text để kiểm tra "đã học gì". Full-screen TUI defer sau v1.
 
-**Về sau:** `openvikey-win` (TSF), `openvikey-mac` (IMK/CGEventTap) — bọc core, tự dịch `ReplaceRange` sang **UTF-16/CGEvent**.
+**Về sau:** `openvikey-win` (GĐ2a hook + `SendInput`; GĐ2b/2c TSF) và `openvikey-mac` (IMK/CGEventTap) — bọc core; TSF/IMK dịch `ReplaceRange` sang UTF-16; hook giả lập bằng backspace + Unicode.
 
 ### 4.2 Core contract (ngữ nghĩa)
 - **`CompositionSnapshot`**: `revision`, `raw_keys` (chuỗi phím thô — `telex_fix` cần), `rendered` (text đang hiển thị), `normalized` (**NFC**).
@@ -302,7 +304,7 @@ OpenKey (C++/GPL, mẫu Win+Mac), bamboo-core (Go/MIT, tách core sạch), VKey 
 
 ## 10. Rủi ro & câu hỏi mở
 - **macOS (GĐ3):** IMKInputController (InputMethodKit — API IME gốc, có composition/candidate/replacement-range) **vs** CGEventTap (event tap, cần Accessibility + Input Monitoring). → **spike, chưa quyết**.
-- **TSF trên Rust (GĐ2):** ít ví dụ; có thể tiến hoá kiến trúc lai (brain Rust + shim C++). Hoãn (YAGNI).
+- **TSF trên Rust:** ít ví dụ; GĐ2a **không** làm TSF. GĐ2b/2c: DLL COM (C++ hoặc `windows` crate), brain vẫn Rust. Xem ADR 0007.
 - **Chất lượng diacritics** phụ thuộc data & license → giữ per-token/suggestion ở v1.
 - **Calibrate ngưỡng** (hysteresis, trọng số, decay half-life, metric targets) qua thực nghiệm ở harness.
 - **vi-rs compatibility gate** trước khi chọn làm dependency của `engine`.
@@ -323,5 +325,5 @@ OpenKey (C++/GPL, mẫu Win+Mac), bamboo-core (Go/MIT, tách core sạch), VKey 
 ---
 
 ## 12. Bước tiếp theo
-1. Triển khai theo [`2026-08-17-openvikey-v1-implementation-plan.md`](../plans/2026-08-17-openvikey-v1-implementation-plan.md), bắt đầu từ workspace/provenance và `vi-rs` compatibility gate.
-2. Không mở rộng sang OS integration, sync, TUI hay phrase-level diacritics nếu chưa cập nhật spec/ADR.
+1. v1/Part 2: đã implement theo plan tương ứng.
+2. GĐ2: triển khai **2a** theo [`../plans/2026-08-18-openvikey-gd2a-implementation-plan.md`](../plans/2026-08-18-openvikey-gd2a-implementation-plan.md) sau khi chủ dự án duyệt spec. Không gộp 2b/2c vào 2a.
