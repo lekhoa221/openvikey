@@ -1,22 +1,20 @@
 [package]
-name = "openvikey-win"
+name = "openvikey-win-tsf"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Windows hook host for OpenViKey"
+description = "Read-only TSF context provider for OpenViKey"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-openvikey-core = { path = "../openvikey-core" }
-openvikey-session = { path = "../openvikey-session" }
 openvikey-win-context = { path = "../openvikey-win-context" }
-clap = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
-unicode-segmentation = { workspace = true }
 windows = { workspace = true }
+windows-core = "0.62.2"
+windows-registry = "0.6.1"
 
 [lints.rust]
 unsafe_code = "allow"

@@ -1,5 +1,6 @@
 # Rust
 /target/
+/target-gd2b/
 **/*.rs.bk
 *.pdb
 

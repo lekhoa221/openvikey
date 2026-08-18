@@ -4,6 +4,7 @@ use std::cell::Cell;
 
 use openvikey_core::engine::backend::is_boundary_char;
 use openvikey_core::types::InputKind;
+use openvikey_win_context::ContextState;
 
 /// Marker stamped on our own `SendInput` events so the hook must Pass them.
 pub const OVK_EXTRA: usize = 0x4F56_4B31;
@@ -24,6 +25,7 @@ pub struct HostState {
     pub caps_lock: bool,
     pub alt: bool,
     pub meta: bool,
+    pub context_state: ContextState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +101,14 @@ thread_local! {
 pub fn decide(raw: &RawKey, state: &HostState) -> KeyDecision {
     // 1. Own SendInput must always reach the app.
     if raw.extra_info == OVK_EXTRA {
+        return KeyDecision::Pass;
+    }
+
+    // TSF-sensitive or unresolved active contexts must see physical input unchanged.
+    if matches!(
+        state.context_state,
+        ContextState::Sensitive | ContextState::Pending | ContextState::Unavailable
+    ) {
         return KeyDecision::Pass;
     }
 

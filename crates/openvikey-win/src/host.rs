@@ -12,6 +12,7 @@ use openvikey_core::types::{
     EngineAction, FeedbackEvent, FeedbackKind, InputContext, InputKind, InputMethod, TonePlacement,
 };
 use openvikey_session::session::{LabSession, SessionCursors};
+use openvikey_win_context::ContextState;
 
 use crate::classify::profile_for_exe;
 use crate::focus::FocusCache;
@@ -114,6 +115,7 @@ fn lock_free_host_state(caps_lock: bool, alt: bool, meta: bool) -> HostState {
             caps_lock,
             alt,
             meta,
+            context_state: ContextState::Unsupported,
         };
     }
     HostState {
@@ -124,6 +126,7 @@ fn lock_free_host_state(caps_lock: bool, alt: bool, meta: bool) -> HostState {
         caps_lock,
         alt,
         meta,
+        context_state: ContextState::Unsupported,
     }
 }
 
@@ -452,6 +455,7 @@ impl TypingHost {
             caps_lock: self.caps_lock,
             alt: self.alt,
             meta: self.meta,
+            context_state: ContextState::Unsupported,
         };
         let decision = decide(&raw, &state);
         match &decision {

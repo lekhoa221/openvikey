@@ -39,7 +39,7 @@ Each plan produces a **runnable** `openvikey-win` (2b/2c add a DLL next to it). 
 | Plan | Spec | Implementation plan | Runnable outcome |
 |---|---|---|---|
 | **2a** | [`../specs/2026-08-18-openvikey-gd2a-hook-electron-design.md`](../specs/2026-08-18-openvikey-gd2a-hook-electron-design.md) | **This folder:** `2026-08-18-openvikey-gd2a-implementation-plan.md` (full TDD) | `openvikey-win` types into Notepad + Cursor via hook |
-| **2b** | *write at start of pha* `YYYY-MM-DD-openvikey-gd2b-tsf-context-design.md` | *write after that spec* `...-gd2b-implementation-plan.md` | Same exe; TSF DLL **read-only**; hook still types |
+| **2b** | [`../specs/2026-08-19-openvikey-gd2b-tsf-context-design.md`](../specs/2026-08-19-openvikey-gd2b-tsf-context-design.md) | *write after Phase 0 registration gate* `...-gd2b-implementation-plan.md` | Same exe; TSF DLL **read-only**; hook still types |
 | **2c** | *write at start of pha* `YYYY-MM-DD-openvikey-gd2c-tsf-primary-design.md` | *write after that spec* `...-gd2c-implementation-plan.md` | Per-exe TSF primary input; hook skipped for those processes |
 | **2d** | *write at start of pha* `YYYY-MM-DD-openvikey-gd2d-windows-ui-design.md` | *write after that spec* `...-gd2d-implementation-plan.md` | UniKey-style settings/control window over the stable 2a–2c host |
 

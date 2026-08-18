@@ -1,5 +1,6 @@
 use openvikey_core::types::InputKind;
 use openvikey_win::policy::{HostHotkey, HostState, KeyDecision, Mode, OVK_EXTRA, RawKey, decide};
+use openvikey_win_context::ContextState;
 
 fn viet() -> HostState {
     HostState {
@@ -10,7 +11,16 @@ fn viet() -> HostState {
         caps_lock: false,
         alt: false,
         meta: false,
+        context_state: ContextState::Unsupported,
     }
+}
+
+#[test]
+fn sensitive_context_passes_physical_letter_before_hook_eats_it() {
+    let mut state = viet();
+    state.context_state = ContextState::Sensitive;
+
+    assert_eq!(decide(&key(u16::from(b'A')), &state), KeyDecision::Pass);
 }
 
 fn key(vk: u16) -> RawKey {
