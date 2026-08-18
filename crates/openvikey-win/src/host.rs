@@ -15,10 +15,10 @@ use crate::classify::profile_for_exe;
 use crate::focus::FocusCache;
 use crate::inject::{CommandInjector, InjectError, InjectProfile};
 use crate::overlay::overlay_lines;
-use crate::policy::{decide, HostHotkey, HostState, KeyDecision, Mode, RawKey};
+use crate::policy::{HostHotkey, HostState, KeyDecision, Mode, RawKey, decide};
 use crate::sync::{
-    commands_from_accept, commands_from_caret_break, commands_from_typed, commands_from_undo,
-    InjectCommand,
+    InjectCommand, commands_from_accept, commands_from_caret_break, commands_from_typed,
+    commands_from_undo,
 };
 
 struct HostRuntime {
@@ -26,6 +26,7 @@ struct HostRuntime {
     focus: Arc<FocusCache>,
     sending: Arc<AtomicBool>,
     mode: Arc<AtomicU8>,
+    allow_terminal: bool,
     persist: OnceLock<Arc<dyn Fn() + Send + Sync>>,
 }
 
@@ -48,11 +49,19 @@ fn mode_from_u8(value: u8) -> Mode {
 
 /// Bind host + focus for LL callbacks (call once before installing hooks).
 pub fn bind_runtime(host: Arc<Mutex<TypingHost>>, focus: Arc<FocusCache>) {
-    let (sending, mode) = match host.lock() {
-        Ok(guard) => (Arc::clone(&guard.sending), Arc::clone(&guard.mode_flag)),
+    let (sending, mode, allow_terminal) = match host.lock() {
+        Ok(guard) => (
+            Arc::clone(&guard.sending),
+            Arc::clone(&guard.mode_flag),
+            guard.allow_terminal,
+        ),
         Err(poisoned) => {
             let guard = poisoned.into_inner();
-            (Arc::clone(&guard.sending), Arc::clone(&guard.mode_flag))
+            (
+                Arc::clone(&guard.sending),
+                Arc::clone(&guard.mode_flag),
+                guard.allow_terminal,
+            )
         }
     };
     let _ = RUNTIME.set(HostRuntime {
@@ -60,6 +69,7 @@ pub fn bind_runtime(host: Arc<Mutex<TypingHost>>, focus: Arc<FocusCache>) {
         focus,
         sending,
         mode,
+        allow_terminal,
         persist: OnceLock::new(),
     });
 }
@@ -95,6 +105,7 @@ fn lock_free_host_state(caps_lock: bool, alt: bool, meta: bool) -> HostState {
             mode: mode_from_u8(rt.mode.load(Ordering::SeqCst)),
             foreground_exe,
             is_sending: rt.sending.load(Ordering::SeqCst),
+            allow_terminal: rt.allow_terminal,
             caps_lock,
             alt,
             meta,
@@ -104,14 +115,16 @@ fn lock_free_host_state(caps_lock: bool, alt: bool, meta: bool) -> HostState {
         mode: Mode::Viet,
         foreground_exe: "notepad.exe".into(),
         is_sending: false,
+        allow_terminal: false,
         caps_lock,
         alt,
         meta,
     }
 }
 
-fn after_unlock(lines: &[String], mode: Option<Mode>) {
-    if let Some(rt) = RUNTIME.get()
+fn after_unlock(lines: &[String], mode: Option<Mode>, notify_persist: bool) {
+    if notify_persist
+        && let Some(rt) = RUNTIME.get()
         && let Some(notify) = rt.persist.get()
     {
         notify();
@@ -139,8 +152,8 @@ fn dispatch_locked_key(
         return on_try_lock_fail(&decision);
     };
     if let Some(sync) = sync {
-        if let Some((hwnd, exe)) = sync.focus.try_get() {
-            guard.set_hwnd(u64::try_from(hwnd).unwrap_or(0), exe, at_ms);
+        if let Some((hwnd, exe, generation)) = sync.focus.try_get_generation() {
+            guard.sync_focus(u64::try_from(hwnd).unwrap_or(0), exe, generation, at_ms);
         }
         guard.caps_lock = sync.caps_lock;
         guard.alt = sync.alt;
@@ -149,8 +162,9 @@ fn dispatch_locked_key(
     let out = guard.handle_key(raw, at_ms);
     let lines = overlay_lines(&guard.session.candidate_texts(), 3);
     let mode = guard.mode;
+    let notify_persist = guard.allow_learning_for_foreground();
     drop(guard);
-    after_unlock(&lines, Some(mode));
+    after_unlock(&lines, Some(mode), notify_persist);
     out
 }
 
@@ -186,16 +200,17 @@ pub fn caret_break_runtime_locked(at_ms: i64, caps_lock: bool, alt: bool, meta: 
     let Ok(mut guard) = rt.host.try_lock() else {
         return;
     };
-    if let Some((hwnd, exe)) = rt.focus.try_get() {
-        guard.set_hwnd(u64::try_from(hwnd).unwrap_or(0), exe, at_ms);
+    if let Some((hwnd, exe, generation)) = rt.focus.try_get_generation() {
+        guard.sync_focus(u64::try_from(hwnd).unwrap_or(0), exe, generation, at_ms);
     }
     guard.caps_lock = caps_lock;
     guard.alt = alt;
     guard.meta = meta;
     guard.notify_caret_break(at_ms);
     let lines = overlay_lines(&guard.session.candidate_texts(), 3);
+    let notify_persist = guard.allow_learning_for_foreground();
     drop(guard);
-    after_unlock(&lines, None);
+    after_unlock(&lines, None, notify_persist);
 }
 
 /// Tray left-click (message thread): blocking lock is allowed off the LL hook path.
@@ -207,7 +222,7 @@ pub fn handle_tray_left_click(at_ms: i64) {
     guard.handle_hotkey(HostHotkey::ToggleMode, at_ms);
     let mode = guard.mode;
     drop(guard);
-    after_unlock(&[], Some(mode));
+    after_unlock(&[], Some(mode), false);
 }
 
 /// In-process host used by unit tests and the LL hook callback.
@@ -218,9 +233,11 @@ pub struct TypingHost {
     pub last_injected_token: String,
     pub last_injected_hwnd: u64,
     pub hwnd: u64,
+    pub focus_generation: u64,
     pub foreground_exe: String,
     pub mode: Mode,
     pub mode_flag: Arc<AtomicU8>,
+    pub allow_terminal: bool,
     pub caps_lock: bool,
     pub alt: bool,
     pub meta: bool,
@@ -278,9 +295,11 @@ impl TypingHost {
             last_injected_token: String::new(),
             last_injected_hwnd: 0,
             hwnd: 1,
+            focus_generation: 0,
             foreground_exe: "notepad.exe".into(),
             mode: Mode::Viet,
             mode_flag: Arc::new(AtomicU8::new(0)),
+            allow_terminal: false,
             caps_lock: false,
             alt: false,
             meta: false,
@@ -301,26 +320,50 @@ impl TypingHost {
     /// Focus change: caret-break forgets `sent` without backspacing into the new app.
     pub fn set_hwnd(&mut self, hwnd: u64, exe: String, at_ms: i64) {
         if hwnd != self.hwnd {
-            let (cmds, sent) = commands_from_caret_break(&self.sent);
-            let _ = self.apply_commands(&cmds);
-            self.sent = sent;
-            self.last_injected_token.clear();
-            self.last_injected_hwnd = 0;
-            let _ = self
-                .session
-                .inject(InputKind::CursorMoved, InputContext::default(), at_ms);
+            self.reset_for_focus_change(at_ms);
             self.hwnd = hwnd;
         }
         self.foreground_exe = exe;
         self.profile = profile_for_exe(&self.foreground_exe);
     }
 
+    /// Synchronize a Winevent generation, including A → blocked target → same A transitions.
+    pub fn sync_focus(&mut self, hwnd: u64, exe: String, generation: u64, at_ms: i64) {
+        if generation != self.focus_generation || hwnd != self.hwnd {
+            self.reset_for_focus_change(at_ms);
+            self.hwnd = hwnd;
+            self.focus_generation = generation;
+        }
+        self.foreground_exe = exe;
+        self.profile = profile_for_exe(&self.foreground_exe);
+    }
+
+    fn reset_for_focus_change(&mut self, at_ms: i64) {
+        let (cmds, sent) = commands_from_caret_break(&self.sent);
+        let _ = self.apply_commands(&cmds);
+        self.sent = sent;
+        self.last_injected_token.clear();
+        self.last_injected_hwnd = 0;
+        self.inject_caret_break_without_persistence(at_ms);
+        self.session.clear_document_context();
+    }
+
     pub fn handle_hotkey(&mut self, hotkey: HostHotkey, at_ms: i64) {
         match hotkey {
             HostHotkey::AcceptTop => self.accept_top(at_ms),
-            HostHotkey::RejectTop => self.session.reject_top(at_ms),
+            HostHotkey::RejectTop => {
+                let checkpoint = self.session.checkpoint_for_inject(&InputKind::Reset);
+                self.session
+                    .reject_top_with_learning(at_ms, self.allow_learning_for_foreground());
+                if !self.allow_learning_for_foreground() {
+                    self.session.restore_persistent_state(&checkpoint);
+                }
+            }
             HostHotkey::UndoLast => self.undo_last(at_ms),
             HostHotkey::ToggleMode => {
+                self.apply_caret_break(at_ms);
+                self.last_injected_token.clear();
+                self.last_injected_hwnd = 0;
                 self.mode = match self.mode {
                     Mode::Viet => Mode::English,
                     Mode::English => Mode::Viet,
@@ -346,6 +389,7 @@ impl TypingHost {
             mode: self.mode,
             foreground_exe: self.foreground_exe.clone(),
             is_sending: self.sending.load(Ordering::SeqCst),
+            allow_terminal: self.allow_terminal,
             caps_lock: self.caps_lock,
             alt: self.alt,
             meta: self.meta,
@@ -353,8 +397,15 @@ impl TypingHost {
         let decision = decide(&raw, &state);
         match &decision {
             KeyDecision::EatAndInject(kind) => {
+                let pass_backspace = matches!(kind, InputKind::Backspace)
+                    && self.session.composition_text().is_empty();
                 if self.apply_typed(kind.clone(), at_ms).is_err() {
                     return on_try_lock_fail(&decision);
+                }
+                if pass_backspace {
+                    self.last_injected_token.clear();
+                    self.last_injected_hwnd = 0;
+                    return KeyDecision::Pass;
                 }
             }
             KeyDecision::CommitAndPass { delimiter } => {
@@ -392,7 +443,8 @@ impl TypingHost {
             return;
         }
         let checkpoint = self.session.checkpoint_for_inject(&InputKind::Reset);
-        let Some(visual) = self.session.accept_top(at_ms) else {
+        let allow_learning = self.allow_learning_for_foreground();
+        let Some(visual) = self.session.accept_top_with_learning(at_ms, allow_learning) else {
             return;
         };
         let (cmds, sent, token) =
@@ -400,6 +452,9 @@ impl TypingHost {
         if self.apply_commands(&cmds).is_err() {
             self.session.restore_inject_checkpoint(checkpoint);
             return;
+        }
+        if !allow_learning {
+            self.session.restore_persistent_state(&checkpoint);
         }
         self.sent = sent;
         self.last_injected_token = token;
@@ -411,7 +466,8 @@ impl TypingHost {
             return;
         }
         let checkpoint = self.session.checkpoint_for_inject(&InputKind::Reset);
-        let Some(visual) = self.session.undo_last(at_ms) else {
+        let allow_learning = self.allow_learning_for_foreground();
+        let Some(visual) = self.session.undo_last_with_learning(at_ms, allow_learning) else {
             return;
         };
         let cmds = commands_from_undo(&visual, &self.last_injected_token);
@@ -419,16 +475,27 @@ impl TypingHost {
             self.session.restore_inject_checkpoint(checkpoint);
             return;
         }
+        if !allow_learning {
+            self.session.restore_persistent_state(&checkpoint);
+        }
         self.last_injected_token = visual.show_nfc;
     }
 
     fn apply_typed(&mut self, kind: InputKind, at_ms: i64) -> Result<(), InjectError> {
         let checkpoint = self.session.checkpoint_for_inject(&kind);
-        let obs = self.session.inject(kind, InputContext::default(), at_ms);
+        let allow_learning = self.allow_learning_for_foreground();
+        let context = InputContext {
+            allow_transform: true,
+            allow_learning,
+        };
+        let obs = self.session.inject(kind, context, at_ms);
         let (cmds, sent) = commands_from_typed(&obs, &self.sent);
         if let Err(error) = self.apply_commands(&cmds) {
             self.session.restore_inject_checkpoint(checkpoint);
             return Err(error);
+        }
+        if !allow_learning {
+            self.session.restore_persistent_state(&checkpoint);
         }
         if obs
             .engine_actions
@@ -449,13 +516,29 @@ impl TypingHost {
         Ok(())
     }
 
+    fn allow_learning_for_foreground(&self) -> bool {
+        self.profile == InjectProfile::Win32
+            && !crate::policy::is_terminal_exe(&self.foreground_exe)
+    }
+
     fn apply_caret_break(&mut self, at_ms: i64) {
         let (cmds, sent) = commands_from_caret_break(&self.sent);
         let _ = self.apply_commands(&cmds);
         self.sent = sent;
-        let _ = self
-            .session
-            .inject(InputKind::CursorMoved, InputContext::default(), at_ms);
+        self.inject_caret_break_without_persistence(at_ms);
+    }
+
+    fn inject_caret_break_without_persistence(&mut self, at_ms: i64) {
+        let checkpoint = self.session.checkpoint_for_inject(&InputKind::CursorMoved);
+        let _ = self.session.inject(
+            InputKind::CursorMoved,
+            InputContext {
+                allow_transform: true,
+                allow_learning: false,
+            },
+            at_ms,
+        );
+        self.session.restore_persistent_state(&checkpoint);
     }
 
     fn apply_commands(&mut self, cmds: &[InjectCommand]) -> Result<(), InjectError> {
@@ -474,12 +557,12 @@ impl TypingHost {
 #[must_use]
 pub fn on_try_lock_fail(decision: &KeyDecision) -> KeyDecision {
     match decision {
-        KeyDecision::EatAndInject(_)
-        | KeyDecision::CaretBreakAndPass
-        | KeyDecision::Pass => KeyDecision::Pass,
-        KeyDecision::CommitAndPass { .. }
-        | KeyDecision::Hotkey(_)
-        | KeyDecision::EatAndIgnore => KeyDecision::EatAndIgnore,
+        KeyDecision::EatAndInject(_) | KeyDecision::CaretBreakAndPass | KeyDecision::Pass => {
+            KeyDecision::Pass
+        }
+        KeyDecision::CommitAndPass { .. } | KeyDecision::Hotkey(_) | KeyDecision::EatAndIgnore => {
+            KeyDecision::EatAndIgnore
+        }
     }
 }
 
@@ -529,12 +612,7 @@ fn paht1_rule(config: EngineConfig, lexicon: &Lexicon) -> (RuleContextKey, Strin
             original_nfc: observation.snapshot.normalized.clone(),
             candidate_nfc: top.text.clone(),
             left_token_nfc: None,
-            source_rule_id: top
-                .evidence
-                .split('+')
-                .next()
-                .unwrap_or("")
-                .to_string(),
+            source_rule_id: top.evidence.split('+').next().unwrap_or("").to_string(),
         },
         top.text.clone(),
     )

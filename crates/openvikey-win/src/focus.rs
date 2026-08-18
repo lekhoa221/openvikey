@@ -4,20 +4,21 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::classify::profile_for_exe;
 use crate::inject::InjectProfile;
-use windows::core::Result;
 use windows::Win32::Foundation::{CloseHandle, E_FAIL, HANDLE, HWND};
 use windows::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
-use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
+use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetWindowThreadProcessId, EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT,
+    EVENT_SYSTEM_FOREGROUND, GetForegroundWindow, GetWindowThreadProcessId, WINEVENT_OUTOFCONTEXT,
 };
+use windows::core::Result;
 
 struct Snapshot {
     hwnd: isize,
     exe: String,
     profile: InjectProfile,
+    generation: u64,
 }
 
 /// Lock-free-ish foreground snapshot: winevent thread writes; hook thread `try_read`s.
@@ -34,6 +35,7 @@ impl FocusCache {
                 hwnd: 0,
                 exe: String::new(),
                 profile: InjectProfile::Win32,
+                generation: 0,
             }),
         }
     }
@@ -46,6 +48,7 @@ impl FocusCache {
             guard.exe.clear();
             guard.exe.push_str(exe);
             guard.profile = profile;
+            guard.generation = guard.generation.wrapping_add(1);
         }
     }
 
@@ -71,6 +74,13 @@ impl FocusCache {
     pub fn try_get_profile(&self) -> Option<(isize, String, InjectProfile)> {
         let guard = self.inner.try_read().ok()?;
         Some((guard.hwnd, guard.exe.clone(), guard.profile))
+    }
+
+    /// Non-blocking read with the foreground generation for stale-composition invalidation.
+    #[must_use]
+    pub fn try_get_generation(&self) -> Option<(isize, String, u64)> {
+        let guard = self.inner.try_read().ok()?;
+        Some((guard.hwnd, guard.exe.clone(), guard.generation))
     }
 }
 
@@ -174,6 +184,7 @@ unsafe extern "system" fn foreground_callback(
     };
     let exe = exe_for_hwnd(hwnd);
     cache.set(hwnd.0 as isize, &exe);
+    crate::overlay::push_overlay_lines(&[]);
 }
 
 fn exe_for_hwnd(hwnd: HWND) -> String {
@@ -252,7 +263,7 @@ pub fn run_host_message_loop(shutdown: &crate::persist::HostShutdown) {
     #[cfg(windows)]
     {
         use windows::Win32::UI::WindowsAndMessaging::{
-            DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
+            DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage, WM_QUIT,
         };
         while !shutdown.is_requested() {
             let mut msg = MSG::default();

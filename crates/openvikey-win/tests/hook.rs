@@ -34,7 +34,10 @@ fn eat_and_inject_eats() {
 
 #[test]
 fn commit_and_pass_forwards_after_handle_key() {
-    assert_eq!(ll_return(&KeyDecision::CommitAndPass { delimiter: '\n' }), 0);
+    assert_eq!(
+        ll_return(&KeyDecision::CommitAndPass { delimiter: '\n' }),
+        0
+    );
 }
 
 #[test]
@@ -50,6 +53,22 @@ fn dispatch_ll_eat_and_inject_returns_one() {
 }
 
 #[test]
+fn dispatch_ll_backspace_eats_in_composition_but_passes_after_commit() {
+    let composing = Mutex::new(TypingHost::new_telex_fixture());
+    assert_eq!(dispatch_ll(&composing, key(0x58), 1), 1); // x
+    composing.lock().unwrap().recorded.clear();
+    assert_eq!(dispatch_ll(&composing, key(0x08), 2), 1);
+    assert!(!composing.lock().unwrap().recorded.is_empty());
+
+    let committed = Mutex::new(TypingHost::new_telex_fixture());
+    assert_eq!(dispatch_ll(&committed, key(0x58), 1), 1); // x
+    assert_eq!(dispatch_ll(&committed, key(0x20), 2), 1); // commit + space
+    committed.lock().unwrap().recorded.clear();
+    assert_eq!(dispatch_ll(&committed, key(0x08), 3), 0);
+    assert!(committed.lock().unwrap().recorded.is_empty());
+}
+
+#[test]
 fn dispatch_ll_commit_and_pass_returns_zero() {
     let host = Mutex::new(TypingHost::new_telex_fixture());
     let _ = dispatch_ll(&host, key(0x58), 1); // x
@@ -59,8 +78,8 @@ fn dispatch_ll_commit_and_pass_returns_zero() {
 
 #[test]
 fn dispatch_ll_letter_passes_when_inject_fails() {
-    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     use openvikey_win::inject::{
         InjectError, InjectProfile, InputSender, ProfilingInjector, SynthesizedEvent,
@@ -98,8 +117,8 @@ fn dispatch_ll_letter_passes_when_inject_fails() {
 
 #[test]
 fn dispatch_ll_letter_inject_fail_restores_learning_model() {
-    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     use openvikey_win::inject::{
         InjectError, InjectProfile, InputSender, ProfilingInjector, SynthesizedEvent,
@@ -163,8 +182,8 @@ fn dispatch_ll_lock_fail_hotkey_eats() {
 
 #[test]
 fn dispatch_ll_enter_eats_but_rolls_back_session_on_inject_fail() {
-    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     use openvikey_win::inject::{
         InjectError, InjectProfile, InputSender, ProfilingInjector, SynthesizedEvent,

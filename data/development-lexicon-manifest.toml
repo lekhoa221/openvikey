@@ -1,0 +1,10 @@
+version = "development-v1"
+kind = "project-authored-word-list"
+data_license = "MIT"
+redistribution = "allowed"
+release_evidence = false
+purpose = "Interactive Windows host suggestion and replacement smoke tests"
+
+[constraints]
+minimum_entries = 100
+allowed_for_g3_release_evidence = false

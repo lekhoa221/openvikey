@@ -9,7 +9,7 @@
 
 use std::sync::Mutex;
 
-use crate::host::{handle_key_locked, handle_runtime_key, TypingHost};
+use crate::host::{TypingHost, handle_key_locked, handle_runtime_key};
 use crate::policy::{KeyDecision, RawKey};
 
 /// `LLKHF_UP` — transition state is key-up when set.
@@ -89,7 +89,7 @@ pub unsafe extern "system" fn keyboard_ll_proc(
     lparam: windows::Win32::Foundation::LPARAM,
 ) -> windows::Win32::Foundation::LRESULT {
     use windows::Win32::Foundation::LRESULT;
-    use windows::Win32::UI::WindowsAndMessaging::{CallNextHookEx, KBDLLHOOKSTRUCT, HC_ACTION};
+    use windows::Win32::UI::WindowsAndMessaging::{CallNextHookEx, HC_ACTION, KBDLLHOOKSTRUCT};
 
     if code != i32::try_from(HC_ACTION).unwrap_or(0) {
         return unsafe { CallNextHookEx(None, code, wparam, lparam) };

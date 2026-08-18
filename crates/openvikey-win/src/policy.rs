@@ -20,6 +20,7 @@ pub struct HostState {
     pub mode: Mode,
     pub foreground_exe: String,
     pub is_sending: bool,
+    pub allow_terminal: bool,
     pub caps_lock: bool,
     pub alt: bool,
     pub meta: bool,
@@ -55,12 +56,17 @@ pub enum KeyDecision {
     CaretBreakAndPass,
 }
 
-const DENYLIST: &[&str] = &[
+const TERMINAL_APPS: &[&str] = &[
     "WindowsTerminal.exe",
     "powershell.exe",
     "pwsh.exe",
     "cmd.exe",
     "conhost.exe",
+];
+
+const AMBIGUOUS_TERMINAL_HOSTS: &[&str] = &["Cursor.exe", "Code.exe"];
+
+const DENYLIST: &[&str] = &[
     "OpenSSH.exe",
     "ssh.exe",
     "putty.exe",
@@ -68,7 +74,8 @@ const DENYLIST: &[&str] = &[
     "KeePass.exe",
     "KeePassXC.exe",
     "Bitwarden.exe",
-    "loginui.exe",
+    "LogonUI.exe",
+    "CredentialUIBroker.exe",
 ];
 
 /// Whether the LL hook should call `CallNextHookEx` for this decision.
@@ -113,8 +120,12 @@ pub fn decide(raw: &RawKey, state: &HostState) -> KeyDecision {
         return KeyDecision::Pass;
     }
 
-    // 4. Denylist or English → Pass (Toggle already handled on keyup)
-    if state.mode == Mode::English || is_denylisted(&state.foreground_exe) {
+    // 4. Unknown/sensitive targets, non-opted-in terminals, or English → Pass.
+    if state.mode == Mode::English
+        || state.foreground_exe.is_empty()
+        || is_denylisted(&state.foreground_exe)
+        || (requires_terminal_opt_in(&state.foreground_exe) && !state.allow_terminal)
+    {
         return KeyDecision::Pass;
     }
 
@@ -166,14 +177,29 @@ pub fn decide(raw: &RawKey, state: &HostState) -> KeyDecision {
     KeyDecision::Pass
 }
 
-fn is_denylisted(exe: &str) -> bool {
-    let name = exe
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(exe);
-    DENYLIST
+fn executable_name(exe: &str) -> &str {
+    exe.rsplit(['/', '\\']).next().unwrap_or(exe)
+}
+
+#[must_use]
+pub fn is_terminal_exe(exe: &str) -> bool {
+    let name = executable_name(exe);
+    TERMINAL_APPS
         .iter()
-        .any(|d| name.eq_ignore_ascii_case(d))
+        .any(|terminal| name.eq_ignore_ascii_case(terminal))
+}
+
+fn requires_terminal_opt_in(exe: &str) -> bool {
+    let name = executable_name(exe);
+    is_terminal_exe(exe)
+        || AMBIGUOUS_TERMINAL_HOSTS
+            .iter()
+            .any(|host| name.eq_ignore_ascii_case(host))
+}
+
+fn is_denylisted(exe: &str) -> bool {
+    let name = executable_name(exe);
+    DENYLIST.iter().any(|d| name.eq_ignore_ascii_case(d))
 }
 
 fn note_toggle_chord(raw: &RawKey) {
@@ -194,10 +220,7 @@ fn note_toggle_chord(raw: &RawKey) {
 fn is_toggle_chord(raw: &RawKey) -> bool {
     // Both Left-Ctrl and Left-Shift held; keyup of either (VK_LSHIFT / VK_LCONTROL);
     // no other key was down during the chord (spec §3.1.6).
-    raw.left_ctrl
-        && raw.left_shift
-        && (raw.vk == 0xA0 || raw.vk == 0xA2)
-        && !TOGGLE_DIRTY.get()
+    raw.left_ctrl && raw.left_shift && (raw.vk == 0xA0 || raw.vk == 0xA2) && !TOGGLE_DIRTY.get()
 }
 
 fn match_hotkey_keydown(raw: &RawKey) -> Option<HostHotkey> {
@@ -273,17 +296,17 @@ fn shifted_digit(vk: u16) -> Option<char> {
 fn map_punctuation(raw: &RawKey) -> Option<char> {
     // US QWERTY OEM keys (unshifted / shifted).
     let (base, shifted) = match raw.vk {
-        0xBA => (';', ':'),   // OEM_1
-        0xBB => ('=', '+'),   // OEM_PLUS
-        0xBC => (',', '<'),   // OEM_COMMA
-        0xBD => ('-', '_'),   // OEM_MINUS
-        0xBE => ('.', '>'),   // OEM_PERIOD
-        0xBF => ('/', '?'),   // OEM_2
-        0xC0 => ('`', '~'),   // OEM_3
-        0xDB => ('[', '{'),   // OEM_4
-        0xDC => ('\\', '|'),  // OEM_5
-        0xDD => (']', '}'),   // OEM_6
-        0xDE => ('\'', '"'),  // OEM_7
+        0xBA => (';', ':'),  // OEM_1
+        0xBB => ('=', '+'),  // OEM_PLUS
+        0xBC => (',', '<'),  // OEM_COMMA
+        0xBD => ('-', '_'),  // OEM_MINUS
+        0xBE => ('.', '>'),  // OEM_PERIOD
+        0xBF => ('/', '?'),  // OEM_2
+        0xC0 => ('`', '~'),  // OEM_3
+        0xDB => ('[', '{'),  // OEM_4
+        0xDC => ('\\', '|'), // OEM_5
+        0xDD => (']', '}'),  // OEM_6
+        0xDE => ('\'', '"'), // OEM_7
         _ => return None,
     };
     Some(if raw.shift { shifted } else { base })

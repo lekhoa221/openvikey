@@ -8,11 +8,32 @@ pub enum InjectCommand {
         backspace_graphemes: usize,
         text_nfc: String,
     },
-    AppendDelimiter { delimiter: char },
+    AppendDelimiter {
+        delimiter: char,
+    },
 }
 
 pub fn grapheme_len(s: &str) -> usize {
     s.graphemes(true).count()
+}
+
+fn replace_changed_suffix(visible_nfc: &str, next_nfc: &str) -> Option<InjectCommand> {
+    let visible: Vec<&str> = visible_nfc.graphemes(true).collect();
+    let next: Vec<&str> = next_nfc.graphemes(true).collect();
+    let unchanged_prefix = visible
+        .iter()
+        .zip(&next)
+        .take_while(|(left, right)| left == right)
+        .count();
+
+    if unchanged_prefix == visible.len() && unchanged_prefix == next.len() {
+        return None;
+    }
+
+    Some(InjectCommand::Replace {
+        backspace_graphemes: visible.len().saturating_sub(unchanged_prefix),
+        text_nfc: next[unchanged_prefix..].concat(),
+    })
 }
 
 pub fn commands_from_caret_break(_sent_nfc: &str) -> (Vec<InjectCommand>, String) {
@@ -49,18 +70,16 @@ pub fn commands_from_typed(
     for action in &obs.engine_actions {
         match action {
             EngineAction::UpdateComposition { text, .. } => {
-                cmds.push(InjectCommand::Replace {
-                    backspace_graphemes: grapheme_len(&sent),
-                    text_nfc: text.clone(),
-                });
+                if let Some(command) = replace_changed_suffix(&sent, text) {
+                    cmds.push(command);
+                }
                 sent.clone_from(text);
             }
-            EngineAction::Commit { text, delimiter, .. } => {
-                if sent != *text {
-                    cmds.push(InjectCommand::Replace {
-                        backspace_graphemes: grapheme_len(&sent),
-                        text_nfc: text.clone(),
-                    });
+            EngineAction::Commit {
+                text, delimiter, ..
+            } => {
+                if let Some(command) = replace_changed_suffix(&sent, text) {
+                    cmds.push(command);
                     sent.clone_from(text);
                 }
                 if let Some(d) = *delimiter

@@ -7,11 +7,11 @@ use std::sync::{Mutex, PoisonError};
 use crate::host::TypingHost;
 
 use openvikey_core::store::ModelStore;
+use openvikey_core::store::StoreError;
 use openvikey_core::store::file::FileModelStore;
 use openvikey_core::store::passphrase::PassphraseProvider;
-use openvikey_core::store::StoreError;
 use openvikey_session::capture::{
-    sha256_hex, CaptureHeader, CaptureLog, CAPTURE_VERSION, SessionStoreError,
+    CAPTURE_VERSION, CaptureHeader, CaptureLog, SessionStoreError, sha256_hex,
 };
 use openvikey_session::session::SessionSaveSnapshot;
 use thiserror::Error;

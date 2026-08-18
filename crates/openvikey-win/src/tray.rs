@@ -50,19 +50,19 @@ pub fn set_tray_mode(mode: Mode) {
 mod shell_tray {
     use std::sync::{Arc, Mutex};
 
-    use windows::core::{w, Result, PCWSTR};
-    use windows::Win32::Foundation::{HWND, HINSTANCE, LPARAM, LRESULT, POINT, WPARAM};
+    use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
     use windows::Win32::UI::Shell::{
-        Shell_NotifyIconW, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, NIF_ICON,
-        NIF_MESSAGE, NIF_TIP,
+        NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
+        Shell_NotifyIconW,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
-        GetCursorPos, LoadIconW, PostQuitMessage, RegisterClassW, SetForegroundWindow,
-        TrackPopupMenu, CS_HREDRAW, CS_VREDRAW, HCURSOR, HICON, HWND_MESSAGE, IDI_APPLICATION,
-        MF_STRING, TPM_RIGHTBUTTON, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_RBUTTONUP, WNDCLASSW,
-        WS_POPUP,
+        AppendMenuW, CS_HREDRAW, CS_VREDRAW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
+        DestroyMenu, DestroyWindow, GetCursorPos, HCURSOR, HICON, HWND_MESSAGE, IDI_APPLICATION,
+        LoadIconW, MF_STRING, PostQuitMessage, RegisterClassW, SetForegroundWindow,
+        TPM_RIGHTBUTTON, TrackPopupMenu, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_RBUTTONUP,
+        WNDCLASSW, WS_POPUP,
     };
+    use windows::core::{PCWSTR, Result, w};
 
     use crate::persist::HostShutdown;
     use crate::policy::Mode;
@@ -92,8 +92,7 @@ mod shell_tray {
         pub unsafe fn install(hwnd: HWND, mode: Mode) -> Result<Self> {
             let hicon = unsafe { LoadIconW(None, IDI_APPLICATION)? };
             let mut data = NOTIFYICONDATAW {
-                cbSize: u32::try_from(std::mem::size_of::<NOTIFYICONDATAW>())
-                    .unwrap_or(u32::MAX),
+                cbSize: u32::try_from(std::mem::size_of::<NOTIFYICONDATAW>()).unwrap_or(u32::MAX),
                 uID: 1,
                 hWnd: hwnd,
                 uFlags: NIF_MESSAGE | NIF_ICON,
@@ -303,4 +302,4 @@ mod shell_tray {
 }
 
 #[cfg(windows)]
-pub use shell_tray::{install_host_ui, HostUi, TrayIcon, WM_TRAYICON};
+pub use shell_tray::{HostUi, TrayIcon, WM_TRAYICON, install_host_ui};

@@ -2,12 +2,9 @@ use openvikey_core::types::{
     CompositionSnapshot, EditRange, EngineAction, RangeBasis, ReplaceRangeAction,
 };
 use openvikey_session::session::SessionObservation;
-use openvikey_win::sync::{commands_from_caret_break, commands_from_typed, InjectCommand};
+use openvikey_win::sync::{InjectCommand, commands_from_caret_break, commands_from_typed};
 
-fn obs(
-    engine_actions: Vec<EngineAction>,
-    action: Option<EngineAction>,
-) -> SessionObservation {
+fn obs(engine_actions: Vec<EngineAction>, action: Option<EngineAction>) -> SessionObservation {
     SessionObservation {
         event_seq: 1,
         snapshot: CompositionSnapshot::new(1, String::new(), String::new()),

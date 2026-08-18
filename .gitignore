@@ -5,6 +5,7 @@
 
 # Local personal model / user data — MUST never be committed
 *.ovk
+*.ovk.bak
 *.ovkmodel
 /data/personal/
 *.model.enc

@@ -12,14 +12,14 @@ use openvikey_core::types::{InputMethod, TonePlacement};
 use openvikey_session::capture::{ensure_distinct_store_paths, load_personal_store};
 use openvikey_session::persistence::DebouncedSaver;
 use openvikey_session::session::{LabSession, SessionCursors};
-use openvikey_win::focus::{run_host_message_loop, FocusCache};
 #[cfg(windows)]
 use openvikey_win::focus::HostHooks;
-use openvikey_win::host::{bind_persist_notify, bind_runtime, TypingHost};
+use openvikey_win::focus::{FocusCache, run_host_message_loop};
+use openvikey_win::host::{TypingHost, bind_persist_notify, bind_runtime};
 use openvikey_win::inject::{InjectProfile, ProfilingInjector, SendInputSender};
 use openvikey_win::passphrase::{read_hidden_passphrase, release_console};
 use openvikey_win::persist::{
-    capture_payload_from_host, default_store_paths, model_payload_from_host, HostShutdown,
+    HostShutdown, capture_payload_from_host, default_store_paths, model_payload_from_host,
 };
 #[cfg(windows)]
 use openvikey_win::tray::install_host_ui;
@@ -34,8 +34,12 @@ use openvikey_win::tray::install_host_ui;
 struct Cli {
     #[arg(long, value_enum, default_value = "telex")]
     method: MethodArg,
-    #[arg(long, default_value = "data/fixtures/lexicon/authored.json")]
-    lexicon: PathBuf,
+    /// Optional lexicon artifact. Debug builds embed the development lexicon by default.
+    #[arg(long)]
+    lexicon: Option<PathBuf>,
+    /// Explicitly enable transformation in local terminal hosts. Learning/capture stay disabled.
+    #[arg(long)]
+    allow_terminal: bool,
     #[arg(long)]
     model: Option<PathBuf>,
     #[arg(long)]
@@ -64,6 +68,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Reserved for Electron SendInput gap (inject path).
     let _ = cli.electron_gap_ms;
 
+    let lexicon_bytes = if let Some(path) = &cli.lexicon {
+        std::fs::read(path)?
+    } else if cfg!(debug_assertions) {
+        include_bytes!("../../../data/fixtures/lexicon/development.json").to_vec()
+    } else {
+        return Err("release builds require an explicit --lexicon artifact until G3 closes".into());
+    };
+    let artifact: LexiconArtifact = serde_json::from_slice(&lexicon_bytes)?;
+    let lexicon = Lexicon::from_artifact(artifact);
+
     let (default_model, default_capture) =
         default_store_paths(std::env::var_os("LOCALAPPDATA").map(PathBuf::from));
     let model_path = cli.model.unwrap_or(default_model);
@@ -77,8 +91,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let passphrase = read_hidden_passphrase()?;
     let provider = PassphraseProvider::new(passphrase.as_str(), KdfConfig::default());
 
-    let artifact: LexiconArtifact = serde_json::from_slice(&std::fs::read(&cli.lexicon)?)?;
-    let lexicon = Lexicon::from_artifact(artifact);
     let (model, log) = load_personal_store(&model_path, &capture_path, &provider)?;
     let mut session = LabSession::new_with_model(
         EngineConfig {
@@ -97,6 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let sending = Arc::new(AtomicBool::new(false));
     let mut typing = TypingHost::new_with_session(session);
+    typing.allow_terminal = cli.allow_terminal;
     let initial_mode = typing.mode;
     typing.set_injector(Box::new(ProfilingInjector {
         profile: InjectProfile::Win32,

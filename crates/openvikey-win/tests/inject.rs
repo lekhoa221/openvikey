@@ -1,8 +1,8 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use openvikey_win::inject::{
-    to_win32_events, InjectError, InjectProfile, InputSender, ProfilingInjector, SynthesizedEvent,
+    InjectError, InjectProfile, InputSender, ProfilingInjector, SynthesizedEvent, to_win32_events,
 };
 
 fn inj(profile: InjectProfile) -> ProfilingInjector<VecSender> {

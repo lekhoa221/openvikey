@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use openvikey_win::focus::{
-    bind_callback_cache, peek_callback_cache, unbind_callback_cache, FocusCache,
+    FocusCache, bind_callback_cache, peek_callback_cache, unbind_callback_cache,
 };
 use openvikey_win::mouse::mouse_decision;
 use openvikey_win::policy::KeyDecision;
@@ -39,10 +39,7 @@ fn callback_cache_rebinds_after_unbind() {
     let first = Arc::new(FocusCache::new());
     first.set(1, "first.exe");
     bind_callback_cache(Arc::clone(&first));
-    assert!(Arc::ptr_eq(
-        &peek_callback_cache().expect("bound"),
-        &first
-    ));
+    assert!(Arc::ptr_eq(&peek_callback_cache().expect("bound"), &first));
 
     unbind_callback_cache();
     assert!(peek_callback_cache().is_none());
@@ -63,6 +60,17 @@ fn focus_cache_roundtrip() {
     let cache = FocusCache::new();
     cache.set(1, "notepad.exe");
     assert_eq!(cache.get(), (1, "notepad.exe".into()));
+}
+
+#[test]
+fn foreground_generation_changes_even_when_hwnd_returns_to_the_same_app() {
+    let cache = FocusCache::new();
+    cache.set(1, "notepad.exe");
+    let (_, _, first) = cache.try_get_generation().expect("first generation");
+    cache.set(2, "CredentialUIBroker.exe");
+    cache.set(1, "notepad.exe");
+    let (_, _, returned) = cache.try_get_generation().expect("returned generation");
+    assert!(returned >= first.saturating_add(2));
 }
 
 #[test]

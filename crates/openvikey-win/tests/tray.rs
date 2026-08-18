@@ -2,11 +2,14 @@
 
 use openvikey_win::persist::HostShutdown;
 use openvikey_win::policy::HostHotkey;
-use openvikey_win::tray::{apply_tray_event, tray_hotkey, TrayEvent};
+use openvikey_win::tray::{TrayEvent, apply_tray_event, tray_hotkey};
 
 #[test]
 fn left_click_toggles_mode() {
-    assert_eq!(tray_hotkey(TrayEvent::LeftClick), Some(HostHotkey::ToggleMode));
+    assert_eq!(
+        tray_hotkey(TrayEvent::LeftClick),
+        Some(HostHotkey::ToggleMode)
+    );
 }
 
 #[test]

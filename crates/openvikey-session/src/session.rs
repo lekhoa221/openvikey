@@ -252,11 +252,19 @@ impl LabSession {
     }
 
     pub fn accept_top(&mut self, at_ms: i64) -> Option<AcceptVisual> {
+        self.accept_top_with_learning(at_ms, true)
+    }
+
+    pub fn accept_top_with_learning(
+        &mut self,
+        at_ms: i64,
+        allow_learning: bool,
+    ) -> Option<AcceptVisual> {
         let slice = self.last_slice.clone()?;
         let top = slice.candidates.first().cloned()?;
         let was_composing = !self.engine.snapshot().is_empty();
         let seq = self.take_seq();
-        if self.capturing {
+        if self.capturing && allow_learning {
             self.record_capture(CaptureRecord::AcceptTop { seq, at_ms });
         }
         let key = self.top_rule_key(&top);
@@ -269,7 +277,7 @@ impl LabSession {
         };
         self.learning
             .model_mut()
-            .apply_feedback(&key, &feedback, true);
+            .apply_feedback(&key, &feedback, allow_learning);
         self.clear_auto_anchor();
         let candidate_nfc = top.text.clone();
         if was_composing {
@@ -286,6 +294,7 @@ impl LabSession {
             self.document.replace_last_token(top.text);
         }
         self.sync_left_context();
+        self.last_slice = None;
         Some(AcceptVisual {
             candidate_nfc,
             was_composing,
@@ -293,6 +302,10 @@ impl LabSession {
     }
 
     pub fn reject_top(&mut self, at_ms: i64) {
+        self.reject_top_with_learning(at_ms, true);
+    }
+
+    pub fn reject_top_with_learning(&mut self, at_ms: i64, allow_learning: bool) {
         let Some(slice) = self.last_slice.clone() else {
             return;
         };
@@ -300,7 +313,7 @@ impl LabSession {
             return;
         };
         let seq = self.take_seq();
-        if self.capturing {
+        if self.capturing && allow_learning {
             self.record_capture(CaptureRecord::RejectTop { seq, at_ms });
         }
         let key = self.top_rule_key(&top);
@@ -313,19 +326,28 @@ impl LabSession {
         };
         self.learning
             .model_mut()
-            .apply_feedback(&key, &feedback, true);
+            .apply_feedback(&key, &feedback, allow_learning);
+        self.last_slice = None;
         let _ = slice;
     }
 
     pub fn undo_last(&mut self, at_ms: i64) -> Option<UndoVisual> {
+        self.undo_last_with_learning(at_ms, true)
+    }
+
+    pub fn undo_last_with_learning(
+        &mut self,
+        at_ms: i64,
+        allow_learning: bool,
+    ) -> Option<UndoVisual> {
         let revision = self.last_auto_revision?;
         if !self.auto_token_is_last() {
             return None;
         }
         let seq = self.next_seq;
-        let outcome = self.learning.undo(revision, seq, at_ms, true)?;
+        let outcome = self.learning.undo(revision, seq, at_ms, allow_learning)?;
         let _ = self.take_seq();
-        if self.capturing {
+        if self.capturing && allow_learning {
             self.record_capture(CaptureRecord::UndoLast { seq, at_ms });
         }
         let show_nfc = outcome.inverse.replacement.clone();
@@ -333,6 +355,7 @@ impl LabSession {
             .replace_last_token(outcome.inverse.replacement);
         self.clear_auto_anchor();
         self.sync_left_context();
+        self.last_slice = None;
         Some(UndoVisual { show_nfc })
     }
 
@@ -354,6 +377,16 @@ impl LabSession {
     #[must_use]
     pub fn document_text(&self) -> String {
         self.document.rendered()
+    }
+
+    /// Drop per-document context when the foreground surface changes.
+    pub fn clear_document_context(&mut self) {
+        self.document = DocumentBuffer::new();
+        self.left_context = LeftContext::default();
+        self.invalidate_caret();
+        self.last_slice = None;
+        self.last_original_nfc.clear();
+        self.last_left_token = None;
     }
 
     #[must_use]
@@ -693,6 +726,15 @@ impl LabSession {
             capture: self.capture.clone(),
             learning: self.learning.clone(),
         }
+    }
+
+    /// Restore persistent learning/capture state while preserving non-learning composition.
+    pub fn restore_persistent_state(&mut self, checkpoint: &SessionInjectCheckpoint) {
+        self.next_seq = checkpoint.next_seq;
+        self.next_edit_id = checkpoint.next_edit_id;
+        self.last_at_ms = checkpoint.last_at_ms;
+        self.capture.clone_from(&checkpoint.capture);
+        *self.learning.model_mut() = checkpoint.learning.model().clone();
     }
 
     /// Restore state captured by [`Self::checkpoint_for_inject`].

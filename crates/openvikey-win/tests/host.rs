@@ -5,9 +5,9 @@ use std::thread;
 use std::time::Duration;
 
 use openvikey_core::types::InputKind;
-use openvikey_win::host::{handle_key_locked, on_try_lock_fail, TypingHost};
 use openvikey_win::hook::ll_return;
-use openvikey_win::policy::{HostHotkey, KeyDecision, RawKey, OVK_EXTRA};
+use openvikey_win::host::{TypingHost, handle_key_locked, on_try_lock_fail};
+use openvikey_win::policy::{HostHotkey, KeyDecision, OVK_EXTRA, RawKey};
 use openvikey_win::sync::InjectCommand;
 
 fn key(vk: u16) -> RawKey {
@@ -40,6 +40,58 @@ fn typed_letter_records_replace() {
 }
 
 #[test]
+fn plain_typing_appends_without_rewriting_visible_prefix() {
+    let mut host = TypingHost::new_telex_fixture();
+    host.handle_key(key(0x58), 1); // x
+
+    host.recorded.clear();
+    host.handle_key(key(0x49), 2); // i
+    assert_eq!(
+        host.recorded,
+        vec![InjectCommand::Replace {
+            backspace_graphemes: 0,
+            text_nfc: "i".into(),
+        }],
+        "an unchanged prefix should remain visible instead of being erased and retyped"
+    );
+}
+
+#[test]
+fn ordinary_composition_backspace_deletes_one_visible_grapheme() {
+    let mut host = TypingHost::new_telex_fixture();
+    for vk in [0x58u16, 0x49, 0x4E] {
+        host.handle_key(key(vk), 1);
+    }
+
+    host.recorded.clear();
+    host.handle_key(key(0x08), 2);
+    assert_eq!(
+        host.recorded,
+        vec![InjectCommand::Replace {
+            backspace_graphemes: 1,
+            text_nfc: String::new(),
+        }]
+    );
+}
+
+#[test]
+fn backspace_after_commit_passes_through_to_the_focused_app() {
+    let mut host = TypingHost::new_telex_fixture();
+    for vk in [0x58u16, 0x49, 0x4E, 0x20] {
+        host.handle_key(key(vk), 1);
+    }
+
+    host.recorded.clear();
+    let decision = host.handle_key(key(0x08), 2);
+    assert_eq!(decision, KeyDecision::Pass);
+    assert!(
+        host.recorded.is_empty(),
+        "outside composition, the physical Backspace should perform the visible deletion"
+    );
+    assert!(host.last_injected_token.is_empty());
+}
+
+#[test]
 fn space_commit_updates_last_injected_token() {
     let mut host = TypingHost::new_telex_fixture();
     for vk in [0x58u16, 0x49, 0x4E, 0x20] {
@@ -50,6 +102,22 @@ fn space_commit_updates_last_injected_token() {
 }
 
 #[test]
+fn mode_toggle_clears_composition_and_candidates_without_backspacing() {
+    let mut host = TypingHost::new_telex_fixture();
+    host.handle_key(key(0x4B), 1); // k
+    host.handle_key(key(0x4F), 2); // o
+    assert!(!host.sent.is_empty());
+    assert!(!host.session.candidate_texts().is_empty());
+
+    host.recorded.clear();
+    host.handle_hotkey(HostHotkey::ToggleMode, 3);
+    assert_eq!(host.mode, openvikey_win::policy::Mode::English);
+    assert!(host.sent.is_empty());
+    assert!(host.session.candidate_texts().is_empty());
+    assert!(host.recorded.is_empty());
+}
+
+#[test]
 fn focus_change_does_not_backspace() {
     let mut host = TypingHost::new_telex_fixture();
     host.handle_key(key(0x41), 1);
@@ -57,6 +125,22 @@ fn focus_change_does_not_backspace() {
     host.set_hwnd(99, "Cursor.exe".into(), 2);
     assert!(host.recorded.is_empty());
     assert!(host.last_injected_token.is_empty());
+}
+
+#[test]
+fn foreground_generation_breaks_stale_composition_even_for_same_hwnd() {
+    let mut host = TypingHost::new_telex_fixture();
+    let hwnd = host.hwnd;
+    host.sync_focus(hwnd, "notepad.exe".into(), 1, 1);
+    host.handle_key(key(0x4B), 2); // k
+    host.handle_key(key(0x4F), 3); // o
+    assert!(!host.sent.is_empty());
+
+    // Winevent observed an intermediate blocked/unknown target, then returned to this HWND.
+    host.sync_focus(hwnd, "notepad.exe".into(), 3, 4);
+    assert!(host.sent.is_empty());
+    assert!(host.session.candidate_texts().is_empty());
+    assert!(host.session.document_text().is_empty());
 }
 
 #[test]
@@ -122,22 +206,21 @@ fn leave_and_return_same_hwnd_does_not_accept_or_undo_without_token() {
     }
     assert_eq!(host.last_injected_token, "ko");
     assert_eq!(host.last_injected_hwnd, original_hwnd);
-    let document_after_commit = host.session.document_text();
-
     host.set_hwnd(2, "Cursor.exe".into(), 2);
     assert!(host.last_injected_token.is_empty());
     host.set_hwnd(original_hwnd, "notepad.exe".into(), 3);
     assert_eq!(host.hwnd, original_hwnd);
     assert!(host.last_injected_token.is_empty());
+    assert!(host.session.document_text().is_empty());
 
     host.recorded.clear();
     host.handle_hotkey(HostHotkey::AcceptTop, 4);
     assert!(host.recorded.is_empty());
-    assert_eq!(host.session.document_text(), document_after_commit);
+    assert!(host.session.document_text().is_empty());
 
     host.handle_hotkey(HostHotkey::UndoLast, 5);
     assert!(host.recorded.is_empty());
-    assert_eq!(host.session.document_text(), document_after_commit);
+    assert!(host.session.document_text().is_empty());
 }
 
 #[test]
@@ -308,9 +391,7 @@ fn enter_runs_after_replace_on_same_stack() {
         .position(|m| m == "enter")
         .expect("enter marker");
     assert!(
-        host.stack_trace[..enter_pos]
-            .iter()
-            .any(|m| m == "inject"),
+        host.stack_trace[..enter_pos].iter().any(|m| m == "inject"),
         "Replace/inject must run before enter marker on the same stack: {:?}",
         host.stack_trace
     );
@@ -346,15 +427,16 @@ fn eat_and_inject_kind_is_forwarded() {
 fn apply_commands_drives_injector_sender() {
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
-    use openvikey_win::inject::{InjectError, InjectProfile, InputSender, ProfilingInjector, SynthesizedEvent};
+    use openvikey_win::inject::{
+        InjectError, InjectProfile, InputSender, ProfilingInjector, SynthesizedEvent,
+    };
 
     struct CountingSender {
         events: Arc<AtomicUsize>,
     }
     impl InputSender for CountingSender {
         fn send(&mut self, events: &[SynthesizedEvent]) -> Result<u32, InjectError> {
-            self.events
-                .fetch_add(events.len(), AtomicOrdering::SeqCst);
+            self.events.fetch_add(events.len(), AtomicOrdering::SeqCst);
             Ok(u32::try_from(events.len()).expect("batch len fits u32"))
         }
     }

@@ -46,8 +46,8 @@ pub fn read_hidden_passphrase() -> io::Result<Zeroizing<String>> {
 #[cfg(windows)]
 fn read_hidden_passphrase_windows() -> io::Result<Zeroizing<String>> {
     use windows::Win32::System::Console::{
-        AllocConsole, GetConsoleMode, GetStdHandle, SetConsoleMode, CONSOLE_MODE,
-        ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT, STD_INPUT_HANDLE,
+        AllocConsole, CONSOLE_MODE, ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT,
+        GetConsoleMode, GetStdHandle, STD_INPUT_HANDLE, SetConsoleMode,
     };
 
     let stdin = unsafe { GetStdHandle(STD_INPUT_HANDLE) }.map_err(|e| io_from_windows(&e))?;

@@ -6,22 +6,22 @@ use openvikey_core::engine::EngineConfig;
 use openvikey_core::lexicon::Lexicon;
 use openvikey_core::model::AdaptiveModel;
 use openvikey_core::store::ModelStore;
+use openvikey_core::store::StoreError;
 use openvikey_core::store::file::FileModelStore;
 use openvikey_core::store::passphrase::PassphraseProvider;
-use openvikey_core::store::StoreError;
 use openvikey_session::capture::{
-    load_personal_store, sha256_hex, CaptureHeader, CaptureLog, CAPTURE_VERSION, SessionStoreError,
+    CAPTURE_VERSION, CaptureHeader, CaptureLog, SessionStoreError, load_personal_store, sha256_hex,
 };
 use openvikey_session::session::LabSession;
 use std::sync::{Arc, Mutex};
 
 use openvikey_session::persistence::DebouncedSaver;
+use openvikey_win::HostShutdown;
 use openvikey_win::host::TypingHost;
 use openvikey_win::persist::{
     capture_payload_from_host, default_store_paths, model_payload_from_host, seal_save_snapshot,
 };
 use openvikey_win::policy::RawKey;
-use openvikey_win::HostShutdown;
 
 #[test]
 fn missing_model_file_loads_defaults() {
@@ -88,10 +88,7 @@ fn save_snapshot_seals_matching_sha() {
     let (model, log) = load_personal_store(&model_path, &log_path, &provider).unwrap();
     let payload = model.to_json_payload().unwrap();
     assert_eq!(log.header.model_sha256, sha256_hex(&payload));
-    assert_eq!(
-        payload,
-        snap.model.to_json_payload().unwrap()
-    );
+    assert_eq!(payload, snap.model.to_json_payload().unwrap());
 }
 
 #[test]
@@ -163,8 +160,14 @@ fn notify_and_shutdown_writes_encrypted_stores() {
     shutdown.run();
     model_saver.flush().unwrap();
     capture_saver.flush().unwrap();
-    assert!(model_path.exists(), "model.ovk must be written after notify+flush");
-    assert!(log_path.exists(), "capture.ovk must be written after notify+flush");
+    assert!(
+        model_path.exists(),
+        "model.ovk must be written after notify+flush"
+    );
+    assert!(
+        log_path.exists(),
+        "capture.ovk must be written after notify+flush"
+    );
     let (_model, log) = load_personal_store(&model_path, &log_path, &provider).unwrap();
     assert!(
         !log.records.is_empty(),

@@ -8,6 +8,22 @@ pub fn overlay_lines(candidates: &[String], max: usize) -> Vec<String> {
     candidates.iter().take(max).cloned().collect()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OverlayPresentation {
+    Hidden,
+    Visible(Vec<String>),
+}
+
+#[must_use]
+pub fn overlay_presentation(candidates: &[String], max: usize) -> OverlayPresentation {
+    let lines = overlay_lines(candidates, max);
+    if lines.is_empty() {
+        OverlayPresentation::Hidden
+    } else {
+        OverlayPresentation::Visible(lines)
+    }
+}
+
 static OVERLAY_HWND: Mutex<Option<isize>> = Mutex::new(None);
 
 /// Bind the live overlay HWND so the host can push lines after releasing the typing mutex.
@@ -28,7 +44,7 @@ pub fn push_overlay_lines(lines: &[String]) {
         if raw == 0 {
             return;
         }
-        hwnd_overlay::set_overlay_text(raw, lines);
+        hwnd_overlay::apply_overlay_presentation(raw, &overlay_presentation(lines, 3));
     }
     #[cfg(not(windows))]
     {
@@ -38,54 +54,16 @@ pub fn push_overlay_lines(lines: &[String]) {
 
 #[cfg(windows)]
 mod hwnd_overlay {
-    use std::sync::OnceLock;
-
-    use windows::core::{w, Result, PCWSTR};
-    use windows::Win32::Foundation::{HWND, HINSTANCE, LPARAM, LRESULT, WPARAM};
-    use windows::Win32::Graphics::Gdi::HBRUSH;
+    use windows::Win32::Foundation::{HWND, POINT, RECT};
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DestroyWindow, HCURSOR, HICON, RegisterClassW,
-        SetWindowPos,
-        SetWindowTextW, ShowWindow, CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, SW_HIDE,
-        SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOSIZE, SWP_SHOWWINDOW, WS_EX_NOACTIVATE,
-        WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WNDCLASSW,
+        CreateWindowExW, DestroyWindow, GetCursorPos, GetForegroundWindow, GetWindowRect,
+        HWND_TOPMOST, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOSIZE, SWP_SHOWWINDOW,
+        SetWindowPos, SetWindowTextW, ShowWindow, WS_BORDER, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        WS_EX_TOPMOST, WS_POPUP,
     };
+    use windows::core::{PCWSTR, Result, w};
 
-    static CLASS_ATOM: OnceLock<u16> = OnceLock::new();
-
-    fn register_class() -> Result<u16> {
-        if let Some(atom) = CLASS_ATOM.get() {
-            return Ok(*atom);
-        }
-        let class_name = w!("OpenViKeyOverlay");
-        let wc = WNDCLASSW {
-            style: CS_HREDRAW | CS_VREDRAW,
-            lpfnWndProc: Some(def_window_proc),
-            cbClsExtra: 0,
-            cbWndExtra: 0,
-            hInstance: HINSTANCE::default(),
-            hIcon: HICON::default(),
-            hCursor: HCURSOR::default(),
-            hbrBackground: HBRUSH::default(),
-            lpszMenuName: PCWSTR::null(),
-            lpszClassName: class_name,
-        };
-        let atom = unsafe { RegisterClassW(&raw const wc) };
-        if atom == 0 {
-            return Err(windows::core::Error::from_thread());
-        }
-        let _ = CLASS_ATOM.set(atom);
-        Ok(atom)
-    }
-
-    unsafe extern "system" fn def_window_proc(
-        hwnd: HWND,
-        msg: u32,
-        wparam: WPARAM,
-        lparam: LPARAM,
-    ) -> LRESULT {
-        unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
-    }
+    use super::OverlayPresentation;
 
     /// Display-only popup HWND for suggestion candidates (not unit-tested in CI).
     pub struct OverlayWindow {
@@ -99,18 +77,16 @@ mod hwnd_overlay {
         ///
         /// Calls Win32 window APIs.
         pub unsafe fn create() -> Result<Self> {
-            register_class()?;
-            let class_name = w!("OpenViKeyOverlay");
             let hwnd = unsafe {
                 CreateWindowExW(
                     WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
-                    class_name,
-                    class_name,
-                    WS_POPUP,
+                    w!("STATIC"),
+                    w!(""),
+                    WS_POPUP | WS_BORDER,
                     0,
                     0,
-                    200,
-                    80,
+                    320,
+                    72,
                     None,
                     None,
                     None,
@@ -131,7 +107,10 @@ mod hwnd_overlay {
         ///
         /// Calls Win32 `SetWindowTextW`.
         pub unsafe fn set_lines(&self, lines: &[String]) {
-            set_overlay_text(self.hwnd.0 as isize, lines);
+            apply_overlay_presentation(
+                self.hwnd.0 as isize,
+                &super::overlay_presentation(lines, 3),
+            );
         }
 
         /// Show the overlay at screen coordinates without activating.
@@ -177,15 +156,49 @@ mod hwnd_overlay {
         }
     }
 
-    pub(super) fn set_overlay_text(hwnd_raw: isize, lines: &[String]) {
-        let text = super::overlay_lines(lines, 3).join("\n");
-        let wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
-        unsafe {
-            let _ = SetWindowTextW(
-                HWND(hwnd_raw as *mut core::ffi::c_void),
-                PCWSTR(wide.as_ptr()),
-            );
+    pub(super) fn apply_overlay_presentation(hwnd_raw: isize, presentation: &OverlayPresentation) {
+        let hwnd = HWND(hwnd_raw as *mut core::ffi::c_void);
+        match presentation {
+            OverlayPresentation::Hidden => unsafe {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            },
+            OverlayPresentation::Visible(lines) => {
+                let text = lines.join("\n");
+                let wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
+                let (x, y) = overlay_anchor();
+                unsafe {
+                    let _ = SetWindowTextW(hwnd, PCWSTR(wide.as_ptr()));
+                    let _ = SetWindowPos(
+                        hwnd,
+                        Some(HWND_TOPMOST),
+                        x,
+                        y,
+                        320,
+                        72,
+                        SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                    );
+                    let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                }
+            }
         }
+    }
+
+    fn overlay_anchor() -> (i32, i32) {
+        unsafe {
+            let foreground = GetForegroundWindow();
+            let mut rect = RECT::default();
+            if !foreground.is_invalid() && GetWindowRect(foreground, &raw mut rect).is_ok() {
+                return (
+                    rect.left.saturating_add(16),
+                    rect.bottom.saturating_sub(112),
+                );
+            }
+            let mut cursor = POINT::default();
+            if GetCursorPos(&raw mut cursor).is_ok() {
+                return (cursor.x.saturating_add(12), cursor.y.saturating_add(20));
+            }
+        }
+        (16, 16)
     }
 }
 

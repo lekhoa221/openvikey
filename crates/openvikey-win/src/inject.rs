@@ -1,7 +1,7 @@
 //! Injector batching for Win32 and Electron profiles (no sleep).
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::policy::OVK_EXTRA;
 use crate::sync::InjectCommand;
@@ -239,7 +239,7 @@ impl InputSender for SendInputSender {
 #[cfg(windows)]
 fn send_input_win32(events: &[SynthesizedEvent]) -> Result<u32, InjectError> {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, VIRTUAL_KEY,
+        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, SendInput, VIRTUAL_KEY,
     };
 
     let intents = to_win32_events(events);

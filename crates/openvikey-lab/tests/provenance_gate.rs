@@ -1,5 +1,6 @@
 use openvikey_lab::provenance::{
     EMPTY_STRING_SHA256, PENDING_SHA256, ProvenanceManifest, ProvenanceRecord, ProvenanceStatus,
+    sha256_file,
 };
 use std::path::Path;
 
@@ -165,4 +166,50 @@ fn test_project_provenance_file_and_artifact_hashes() {
     assert!(manifest.records.iter().all(|record| {
         record.status != ProvenanceStatus::Approved || !record.revision.eq_ignore_ascii_case("HEAD")
     }));
+}
+
+#[test]
+fn every_lexicon_artifact_is_declared_and_development_data_is_not_release_evidence() {
+    let root = workspace_root();
+    let manifest = ProvenanceManifest::from_file(root.join("data/provenance.toml"))
+        .expect("workspace provenance");
+    let declared: std::collections::BTreeSet<_> = manifest
+        .records
+        .iter()
+        .filter_map(|record| record.artifact.as_deref())
+        .collect();
+    for entry in std::fs::read_dir(root.join("data/fixtures/lexicon")).expect("lexicon directory") {
+        let path = entry.expect("lexicon entry").path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(&root)
+            .expect("workspace path")
+            .to_string_lossy()
+            .replace('\\', "/");
+        assert!(
+            declared.contains(relative.as_str()),
+            "undeclared lexicon: {relative}"
+        );
+    }
+
+    let development_manifest =
+        std::fs::read_to_string(root.join("data/development-lexicon-manifest.toml"))
+            .expect("development manifest");
+    assert!(development_manifest.contains("release_evidence = false"));
+    assert!(development_manifest.contains("allowed_for_g3_release_evidence = false"));
+
+    let artifact: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(root.join("data/fixtures/lexicon/development.json"))
+            .expect("development lexicon"),
+    )
+    .expect("development lexicon JSON");
+    assert_eq!(
+        artifact["source_manifest_hash"],
+        serde_json::Value::String(
+            sha256_file(&root.join("data/development-lexicon-manifest.toml"))
+                .expect("manifest hash")
+        )
+    );
 }

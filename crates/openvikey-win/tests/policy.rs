@@ -1,13 +1,12 @@
 use openvikey_core::types::InputKind;
-use openvikey_win::policy::{
-    decide, HostHotkey, HostState, KeyDecision, Mode, RawKey, OVK_EXTRA,
-};
+use openvikey_win::policy::{HostHotkey, HostState, KeyDecision, Mode, OVK_EXTRA, RawKey, decide};
 
 fn viet() -> HostState {
     HostState {
         mode: Mode::Viet,
         foreground_exe: "notepad.exe".into(),
         is_sending: false,
+        allow_terminal: false,
         caps_lock: false,
         alt: false,
         meta: false,
@@ -45,9 +44,59 @@ fn letter_eaten_as_key_in_viet() {
 }
 
 #[test]
-fn powershell_denylist_passes_letters() {
+fn terminal_apps_are_transformed_during_development() {
+    for exe in [
+        "WindowsTerminal.exe",
+        "powershell.exe",
+        "pwsh.exe",
+        "cmd.exe",
+        "conhost.exe",
+        "Cursor.exe",
+        "Code.exe",
+    ] {
+        let mut st = viet();
+        st.foreground_exe = exe.into();
+        st.allow_terminal = true;
+        assert_eq!(
+            decide(&key(0x41), &st),
+            KeyDecision::EatAndInject(InputKind::Key {
+                logical: 'a',
+                physical: None,
+            }),
+            "{exe} should allow OpenViKey while the Windows host is under development"
+        );
+    }
+}
+
+#[test]
+fn terminals_require_explicit_opt_in() {
     let mut st = viet();
-    st.foreground_exe = "powershell.exe".into();
+    st.foreground_exe = "WindowsTerminal.exe".into();
+    assert_eq!(decide(&key(0x41), &st), KeyDecision::Pass);
+}
+
+#[test]
+fn security_sensitive_apps_remain_denylisted() {
+    for exe in [
+        "1Password.exe",
+        "KeePass.exe",
+        "KeePassXC.exe",
+        "Bitwarden.exe",
+        "LogonUI.exe",
+        "CredentialUIBroker.exe",
+        "ssh.exe",
+    ] {
+        let mut st = viet();
+        st.foreground_exe = exe.into();
+        st.allow_terminal = true;
+        assert_eq!(decide(&key(0x41), &st), KeyDecision::Pass, "{exe}");
+    }
+}
+
+#[test]
+fn unknown_foreground_fails_open_to_the_application_without_transforming() {
+    let mut st = viet();
+    st.foreground_exe.clear();
     assert_eq!(decide(&key(0x41), &st), KeyDecision::Pass);
 }
 

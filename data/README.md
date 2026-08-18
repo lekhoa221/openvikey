@@ -9,3 +9,7 @@ This directory manages dataset provenance, corpus manifests, and test fixtures.
 3. **Data license ≠ code license**: a corpus asset is rejected if `data_license` is missing, `unknown`, `unverified`, or `none`, even when the code repo is MIT.
 4. **Lexicon artifact**: `data/fixtures/lexicon/authored.json` is reproducibly built from NFC-normalized train gold tokens and adjacent-token bigrams, and records `source_manifest_hash` of `corpus-manifest.toml`. Rebuild it with `cargo run -p openvikey-lab -- corpus build-lexicon --manifest data/corpus-manifest.toml --out data/fixtures/lexicon/authored.json`.
 5. **No GPL/Copyleft data in shipped artifacts**: Only permissive licenses (MIT, Apache-2.0, CC0, Unicode-DFS) are approved for binary distribution.
+
+## Development lexicon
+
+`fixtures/lexicon/development.json` is a project-authored MIT development aid used by `openvikey-win`. It provides enough common vocabulary to exercise fuzzy/diacritics suggestions interactively, but it is not generated from the frozen corpus manifest and must never be cited as G3 release evidence. `fixtures/lexicon/authored.json` remains the reproducible corpus-manifest fixture.

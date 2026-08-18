@@ -67,12 +67,14 @@ Requires a real terminal (piped stdin exits with an error mentioning `terminal`)
 Windows system hook host (Notepad + Cursor/Electron). **Turn UniKey / other IMEs off** before running — only one keyboard filter should own the keys.
 
 ```bash
-cargo run -p openvikey-win -- --method telex --lexicon data/fixtures/lexicon/authored.json
+cargo run -p openvikey-win -- --method telex --allow-terminal
 ```
 
 Optional: `--model` / `--capture` (default `%LOCALAPPDATA%\OpenViKey\model.ovk` and `capture.ovk`), `--electron-gap-ms` for Electron SendInput spacing. Passphrase is read hidden on the console before the message loop.
 
-Use the tiny fixture lexicon above (4 tokens: `xin`, `chào`, `không`, `nam`) for smoke: e.g. `xin` Space `chao` Space.
+Debug builds embed the project-authored development lexicon; it is **not release-quality corpus evidence**. Release builds fail closed and require an explicit `--lexicon` until G3 closes. `--allow-terminal` explicitly enables Pi/PowerShell/Windows Terminal while disabling learning, capture, and persistence there. SSH running inside a terminal cannot yet be detected in GĐ2a: toggle OpenViKey to English before entering terminal secrets. Direct SSH clients, password managers, `LogonUI.exe`, and `CredentialUIBroker.exe` remain blocked.
+
+Suggestion smoke: type `ko` and confirm the overlay shows `không`, then press **Ctrl+.** to replace it and append a space. Type `khogn` to confirm `không` appears as a fuzzy correction candidate.
 
 | Key | Behavior |
 |---|---|

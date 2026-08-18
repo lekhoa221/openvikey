@@ -5,10 +5,7 @@ use std::path::Path;
 
 fn assert_forbidden(path: &str, src: &str) {
     for needle in ["lock(", "sleep", "model_payload", "to_payload", "recv("] {
-        assert!(
-            !src.contains(needle),
-            "{path} must not contain `{needle}`"
-        );
+        assert!(!src.contains(needle), "{path} must not contain `{needle}`");
     }
 }
 
