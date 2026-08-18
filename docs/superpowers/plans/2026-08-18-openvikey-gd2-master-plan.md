@@ -1,12 +1,12 @@
-# OpenViKey GĐ2 — Master plan (ba plan nhỏ)
+# OpenViKey GĐ2 — Master plan (bốn plan nhỏ)
 
-> **For agentic workers:** This file is the **index**, not an executable TDD plan. Execute **GĐ2a** via [`2026-08-18-openvikey-gd2a-implementation-plan.md`](./2026-08-18-openvikey-gd2a-implementation-plan.md) (subagent-driven-development or executing-plans). Write GĐ2b/GĐ2c specs+plans only when that pha starts.
+> **For agentic workers:** This file is the **index**, not an executable TDD plan. GĐ2a is implemented. Write GĐ2b/GĐ2c/GĐ2d specs and plans only when that phase starts.
 
-**Goal:** Ship a Windows host in three independently testable slices so the user can type Telex in daily apps (including Cursor Agent prompts) without waiting for a full TSF IME.
+**Goal:** Ship a Windows host in four independently testable slices: daily hook typing, read-only TSF context, per-app TSF primary input, then a stable Windows product UI.
 
 **Architecture:** Hybrid host — hook is the typing path; TSF is added later for context then for per-app primary input. Brain stays `openvikey-core` + `openvikey-session`.
 
-**Tech Stack:** Rust 1.96, `windows` crate (2a), later a TSF COM DLL (2b/2c). MIT only.
+**Tech Stack:** Rust 1.96, `windows` crate (2a), later a TSF COM DLL (2b/2c). GĐ2d UI technology is selected only after the 2c host/config contracts stabilize. MIT only.
 
 **Spec:** [`../specs/2026-08-18-openvikey-gd2-windows-host-design.md`](../specs/2026-08-18-openvikey-gd2-windows-host-design.md)
 
@@ -21,15 +21,17 @@
 
 ---
 
-## How the three plans relate
+## How the four plans relate
 
 ```text
 Plan 2a  ──implements──►  spec gd2a-hook-electron
-Plan 2b  ──implements──►  spec gd2b-tsf-context     (not written yet)
+Plan 2b  ──implements──►  spec gd2b-tsf-context     (survey complete; spec not written yet)
 Plan 2c  ──implements──►  spec gd2c-tsf-primary     (not written yet)
+Plan 2d  ──implements──►  spec gd2d-windows-ui      (not written yet)
 
 2b must not start until 2a manual smoke (Notepad + Cursor) is accepted.
 2c must not start until 2b InputScope tests are green.
+2d must not start until 2c app-routing/config contracts are stable.
 ```
 
 Each plan produces a **runnable** `openvikey-win` (2b/2c add a DLL next to it). No “big bang” merge of hook+TSF+UWP.
@@ -39,6 +41,7 @@ Each plan produces a **runnable** `openvikey-win` (2b/2c add a DLL next to it). 
 | **2a** | [`../specs/2026-08-18-openvikey-gd2a-hook-electron-design.md`](../specs/2026-08-18-openvikey-gd2a-hook-electron-design.md) | **This folder:** `2026-08-18-openvikey-gd2a-implementation-plan.md` (full TDD) | `openvikey-win` types into Notepad + Cursor via hook |
 | **2b** | *write at start of pha* `YYYY-MM-DD-openvikey-gd2b-tsf-context-design.md` | *write after that spec* `...-gd2b-implementation-plan.md` | Same exe; TSF DLL **read-only**; hook still types |
 | **2c** | *write at start of pha* `YYYY-MM-DD-openvikey-gd2c-tsf-primary-design.md` | *write after that spec* `...-gd2c-implementation-plan.md` | Per-exe TSF primary input; hook skipped for those processes |
+| **2d** | *write at start of pha* `YYYY-MM-DD-openvikey-gd2d-windows-ui-design.md` | *write after that spec* `...-gd2d-implementation-plan.md` | UniKey-style settings/control window over the stable 2a–2c host |
 
 ---
 
@@ -60,11 +63,13 @@ Each plan produces a **runnable** `openvikey-win` (2b/2c add a DLL next to it). 
 
 **Architecture:** Register a TSF text service DLL that **does not** commit composition as the default path. It publishes InputScope + a small surrounding-text snapshot over IPC/shared memory to `openvikey-win`. Hook remains the typer. Credit VietType/VKey for InputScope *idea* only.
 
+**Pre-design survey:** [`../specs/2026-08-19-openvikey-gd2b-tsf-context-survey.md`](../specs/2026-08-19-openvikey-gd2b-tsf-context-survey.md). It locks the scope and required Phase 0 evidence, not the final implementation choices.
+
 **Likely files:** `crates/openvikey-win-tsf/` (C++ or `windows` COM), `src/context_bridge.rs` in win, tests with mock `ITfContext`.
 
-**Likely tasks:** (1) InputScope mock → flags, (2) DLL register/unregister documented, (3) wire flags into `InputContext` before `inject`, (4) surrounding token → `LeftContext`, (5) manual Chrome password, (6) ADR 0008.
+**Likely tasks:** (1) InputScope mock → flags, (2) DLL register/unregister documented, (3) wire flags into host policy and `InputContext`, (4) surrounding token → `LeftContext`, (5) manual Chrome password, (6) new TSF/context ADR or amendment to ADR 0007, (7) a development-only read-only Data Inspector for `model.ovkdev.json` and `capture.ovkdev.json` with refresh/filter.
 
-**Done when:** denylist 2a still works; password InputScope test forces `allow_transform=false`; no double typing.
+**Done when:** denylist 2a still works; explicit password/PIN scope makes hook `Pass` before it eats the key and produces zero context read/capture/model mutation; no double typing; the development Data Inspector can inspect normal learning/capture data without becoming the production settings shell. Development persistence remains plaintext `.ovkdev.json`; no password/passphrase is introduced in 2b.
 
 **Out:** TSF as the key source; UWP primary; changing Tab/Esc.
 
@@ -86,11 +91,26 @@ Each plan produces a **runnable** `openvikey-win` (2b/2c add a DLL next to it). 
 
 ---
 
+## Plan 2d — Windows product UI (after 2c)
+
+**Goal:** Provide a UniKey-style Windows control surface without duplicating typing, learning, or app-routing logic in the UI.
+
+**Scope:** method/tone settings, V/E and suggestion state, hotkeys, learned-rule inspection and deletion, open data folder, per-app hook/TSF policy, start-with-Windows, import/export settings. Installer, product icons, and signing are separate release gates after the control surface is stable.
+
+**Architecture:** UI consumes versioned host/config/model-inspection APIs. It does not own hooks, TSF composition, ranking, persistence recovery, or a second copy of session state. The UI framework and process boundary are selected in the 2d spec after 2c fixes the app-routing schema.
+
+**Done when:** every UI mutation round-trips through one validated settings contract; restarting the host preserves settings; learned data is inspectable and selectively forgettable; closing the window does not stop the tray host.
+
+**Out:** cloud accounts/sync, telemetry, corpus editing, macro automation, automatic upload, and macOS UI.
+
+---
+
 ## Order of docs to write later
 
 1. After 2a ships: GĐ2b design spec (same template as 2a: locks, file map, tests, non-goals) → then writing-plans for 2b.
 2. After 2b ships: GĐ2c design spec → writing-plans for 2c.
-3. Do not pre-write 2b/2c TDD plans now — APIs will follow 2a host seams.
+3. After 2c ships: GĐ2d Windows UI spec → writing-plans for 2d.
+4. Do not pre-write later TDD plans — 2b follows live 2a seams, 2c follows 2b TSF seams, and 2d follows the stable 2c settings/app-routing schema.
 
 ---
 

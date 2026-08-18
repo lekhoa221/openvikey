@@ -1,7 +1,7 @@
 # OpenViKey GĐ2 — Windows host (thiết kế master)
 
 - **Ngày:** 2026-08-18
-- **Trạng thái:** v1.1 — chốt hướng; GĐ2a spec v2 (hợp đồng core + threading) — chưa implement
+- **Trạng thái:** v1.3 — GĐ2a implemented; GĐ2b survey complete; GĐ2d Windows product UI recorded
 - **Governing spec:** [`2026-08-17-openvikey-design.md`](./2026-08-17-openvikey-design.md)
 - **Part 2 (lab capture):** [`2026-08-17-openvikey-part2-personal-capture-design.md`](./2026-08-17-openvikey-part2-personal-capture-design.md)
 - **Pha đầu (spec chi tiết):** [`2026-08-18-openvikey-gd2a-hook-electron-design.md`](./2026-08-18-openvikey-gd2a-hook-electron-design.md)
@@ -35,21 +35,22 @@ Spec gốc ghi **“GĐ2 = TSF”**. Khảo sát repo tham chiếu tại `D:\Wor
 | Không làm | TSF-only như README cũ; hook-only OpenKey như trạng thái cuối; Cursor extension-only |
 | Não | Tái dùng `openvikey-core` + reducer session (Part 2). **Không** sửa `engine/`, `types.rs`, `model.rs` |
 | License | MIT; `unsafe` chỉ trong crate Windows; không link GPL |
-| “Xong GĐ2” | Ba pha độc lập, mỗi pha ra phần mềm chạy được + test; GĐ2a đủ dùng hàng ngày với Agent |
+| “Xong GĐ2” | Bốn pha độc lập, mỗi pha ra phần mềm chạy được + test; GĐ2a đủ dùng hàng ngày với Agent; GĐ2d hoàn thiện control surface Windows |
 | G3 / lexicon lớn | **Không** thuộc GĐ2. IME mọi app không làm từ điển fixture thành tiếng Việt đầy đủ |
 
 Sửa chữ trên README / spec phần 1: GĐ2 không còn là “Windows qua TSF” mà là **Windows host (hook + TSF theo pha)**.
 
 ---
 
-## 1. Ba pha — hợp đồng tách
+## 1. Bốn pha — hợp đồng tách
 
-Mỗi pha có spec (2a đã có; 2b/2c viết khi bắt đầu pha đó), một implementation plan, và tiêu chí “xong” riêng. **Không** gộp TSF DLL vào 2a.
+Mỗi pha có spec (2a đã có; 2b/2c/2d viết khi bắt đầu pha đó), một implementation plan, và tiêu chí “xong” riêng. **Không** gộp TSF DLL vào 2a hoặc product UI vào 2b/2c.
 
 ```text
 GĐ2a  hook + Electron inject + học session
   └─► GĐ2b  TSF đọc ngữ cảnh / InputScope (hook vẫn nhập chính)
         └─► GĐ2c  TSF nhập chính theo app (UWP / anti-cheat)
+              └─► GĐ2d  Windows settings/control UI
 ```
 
 | Pha | Việc người dùng làm được | Surface OS | Học / document |
@@ -57,8 +58,9 @@ GĐ2a  hook + Electron inject + học session
 | **2a** | Gõ Telex trong Notepad **và** ô chat Cursor; UniKey tắt | `WH_KEYBOARD_LL` + `SendInput`; profile Electron | Session buffer = từ đang gõ + token vừa commit **trong cùng focus**; đổi cửa sổ = `Reset` |
 | **2b** | Ô password/PIN không bị Telex; left-context đọc được khi TSF cho phép | Thêm DLL TSF **chỉ đọc** (InputScope + surrounding text). Hook vẫn gõ | `left_context` giàu hơn; `allow_transform=false` theo InputScope |
 | **2c** | App trong list TSF (UWP, một số game chống cheat) gõ được | TSF **nhập chính** cho những exe đó (composition Windows, có gạch chân) | Cùng reducer; adapter `ReplaceRange` → UTF-16 range |
+| **2d** | Cấu hình và kiểm tra OpenViKey qua cửa sổ kiểu UniKey | Settings/control UI trên host 2a–2c đã ổn định | Xem/xóa luật đã học; quản lý method, hotkey, app policy và autostart |
 
-**Không thuộc GĐ2 (mọi pha):** macOS GĐ3, G3 corpus, PII export, sync/CRDT, GUI settings đầy đủ, production key management, keymap Tab/Esc như lab. Post-checkpoint ADR 0008 uses open JSON only for the Windows development host; Part 2 lab encryption remains.
+**Không thuộc GĐ2 (mọi pha):** macOS GĐ3, G3 corpus, PII export, sync/CRDT, production key management, macro automation, automatic upload, keymap Tab/Esc như lab. Post-checkpoint ADR 0008 uses open JSON only for the Windows development host; Part 2 lab encryption remains.
 
 ---
 
@@ -85,6 +87,7 @@ GĐ2a  hook + Electron inject + học session
 - **`openvikey-lab`:** CLI + REPL; re-export session để test cũ ít đổi.
 - **`openvikey-win`:** hook, injector, overlay, tray. `unsafe` chỉ trong module Win32. **Không** phụ thuộc `crossterm`/`clap` của lab nếu có thể dùng `clap` riêng. Development persistence is open JSON under ADR 0008.
 - **`openvikey-win-tsf` (2b/2c):** DLL C++ hoặc `windows` COM — **không** viết trong 2a.
+- **Windows product UI (2d):** framework/process boundary chọn sau 2c; chỉ gọi settings/model-inspection API đã version hóa, không sở hữu hook, TSF hoặc session state riêng.
 
 Workspace hiện `unsafe_code = "forbid"` toàn cục → crate win **override** `unsafe_code = "allow"` và giới hạn file.
 
@@ -111,8 +114,10 @@ Workspace hiện `unsafe_code = "forbid"` toàn cục → crate win **override**
 - Manual (không gate CI): Notepad `xin chao` Telex → `xin chào`; Enter xuống dòng; Cursor composer cùng Telex **và Enter gửi prompt**; Ctrl+. nhận gợi ý; Tab trong Cursor **không** bị nuốt.
 
 ### 4.2 GĐ2b
-- Test InputScope password → `allow_transform=false`, không capture.
+- Khảo sát trước thiết kế: [`2026-08-19-openvikey-gd2b-tsf-context-survey.md`](./2026-08-19-openvikey-gd2b-tsf-context-survey.md).
+- Test InputScope password/PIN → hook `Pass` trước khi eat key; không đọc surrounding text, không transform/learn/capture.
 - Test surrounding text (mock TSF) → `left_context.prev_token_nfc` khác rỗng khi TSF trả token trái.
+- Development persistence tiếp tục là plaintext `.ovkdev.json`; GĐ2b không thêm password/passphrase.
 - Manual: Notepad password field (nếu có) / Chrome password không Telex.
 
 ### 4.3 GĐ2c
@@ -120,13 +125,19 @@ Workspace hiện `unsafe_code = "forbid"` toàn cục → crate win **override**
 - UWP Notepad hoặc app Store mẫu gõ được Telex.
 - Manual: gạch chân composition là chấp nhận được trên list đó.
 
+### 4.4 GĐ2d
+- Settings round-trip qua một schema version hóa; restart host giữ nguyên cấu hình.
+- V/E, method, suggestions, hotkeys, app routing và autostart có control surface rõ ràng.
+- Xem và xóa chọn lọc rule đã học; đóng cửa sổ không dừng tray host.
+- Installer, product icons và signing là release gates sau khi UI ổn định.
+
 ---
 
 ## 5. Việc cố ý không làm trong GĐ2
 
 - Đọc transcript Cursor / nạp hội thoại Agent làm corpus.
 - Sở hữu document buffer của Word/Cursor (B1 lab không dịch 1-1 ra OS).
-- Overlay đầy đủ như UniKey macro UI.
+- Macro editor/automation như các bộ gõ mở rộng; GĐ2d chỉ làm settings/control và learned-data inspection.
 - Code signing / Authenticode (ghi nhận AV false positive; làm sau nếu phát hành).
 
 ---

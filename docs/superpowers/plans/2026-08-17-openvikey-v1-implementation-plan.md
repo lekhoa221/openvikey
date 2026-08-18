@@ -770,7 +770,7 @@ Pause và cập nhật spec/ADR trước khi tiếp tục nếu gặp một tron
 - Held-out test đã bị dùng để calibrate; phải tạo split/version mới và ghi provenance.
 - Metric chỉ đạt bằng cách tăng auto coverage làm FPR/precision vi phạm gate.
 
-Những việc defer sau v1: Windows TSF adapter, macOS IMK/CGEventTap spike, OS keyring wrappers, cross-device sync/CRDT, phrase/câu diacritics và settings GUI.
+Những việc defer sau v1: Windows TSF adapter (GĐ2b/2c), Windows settings GUI (GĐ2d), macOS IMK/CGEventTap spike, OS keyring wrappers, cross-device sync/CRDT và phrase/câu diacritics.
 
 ---
 

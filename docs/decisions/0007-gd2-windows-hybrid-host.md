@@ -20,7 +20,7 @@ TSF-only would delay the owner’s daily Agent workflow and still miss apps wher
 ## Decision
 
 1. **GĐ2 is a hybrid Windows host**, not “TSF-only” and not “hook forever”.
-2. **Three plans:** GĐ2a hook + Electron inject; GĐ2b TSF read-only context; GĐ2c TSF primary per app. Specs: `docs/superpowers/specs/2026-08-18-openvikey-gd2-windows-host-design.md` and `...-gd2a-hook-electron-design.md`.
+2. **Three technical host-integration plans:** GĐ2a hook + Electron inject; GĐ2b TSF read-only context; GĐ2c TSF primary per app. Specs: `docs/superpowers/specs/2026-08-18-openvikey-gd2-windows-host-design.md` and `...-gd2a-hook-electron-design.md`. Amendment v4 adds the separate GĐ2d product-UI slice.
 3. Extract **`openvikey-session`** from lab so the host does not depend on the REPL. Core `engine/`, `types.rs`, `model.rs` stay frozen.
 4. **Tab/Esc pass through.** Accept/reject are `Ctrl+.` / `Ctrl+,`.
 5. **No GPL code.** Credit VKey, OpenKey, and VietType (InputScope, later) in GĐ2 docs.
@@ -45,3 +45,13 @@ GĐ2a spec/plan v3, from a second review of WH_KEYBOARD_LL return semantics and 
 - Saver clones `SessionSaveSnapshot` under one lock; serialize and SHA-256 **after** unlock. Do not call `capture_log()` on that path.
 - Shared `Arc<AtomicBool>` + `SendingGuard` (Drop clears even on partial `SendInput`).
 - Real-keyboard policy includes Backspace, Ctrl/Alt/Win shortcuts, Caps Lock, punctuation delimiters, and the documented hotkeys.
+
+## Amendment v4 (2026-08-19)
+
+The three technical host-integration slices remain GĐ2a–2c. A fourth product slice, **GĐ2d Windows product UI**, follows 2c so the settings and per-app routing schema are stable before a UniKey-style control window is built.
+
+- GĐ2b ends with a development-only, read-only Data Inspector for the plaintext `.ovkdev.json` model/capture files. It supports learning analysis but is not the production settings shell.
+- GĐ2b does not introduce a password/passphrase. Password/PIN **field detection** remains required so sensitive fields pass through without transform, surrounding-text read, learning, or capture.
+- GĐ2d owns method/tone settings, V/E and suggestion controls, hotkeys, learned-rule inspection/deletion, app routing, autostart, and settings import/export.
+- The UI must consume versioned host/config/model-inspection APIs and must not own a second hook, TSF pipeline, session state, or persistence implementation.
+- Installer, product icons, and signing are release gates after the 2d control surface stabilizes.

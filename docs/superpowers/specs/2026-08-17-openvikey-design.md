@@ -45,12 +45,12 @@ Vấn đề gốc: gõ nhanh hay sai (đảo chữ, nuốt/đặt dấu sai ch�
 - **OS-keyring thật** (DPAPI/Keychain) — v1 chỉ dùng provider inject.
 - **Đồng bộ & merge đa máy** (CRDT) — §7.5.
 - **Khôi phục dấu cả cụm/câu** (delayed decision / beam search) — milestone riêng, §5.4.
-- **Settings UI** / bảng "app đã học gì" bản GUI (v1 chỉ cần API + dump text để test).
+- **Settings UI** / bảng "app đã học gì" bản GUI (v1 chỉ cần API + dump text để test; Windows product UI làm ở GĐ2d).
 
 ### 2.3 Nền tảng & lộ trình
 - **Đích cuối:** Windows + macOS, chung `openvikey-core`.
 - **GĐ1 (v1 — spec này):** headless brain, chứng minh sự "thông minh".
-- **GĐ2:** Windows **hybrid** — hook nhập chính (2a), TSF ngữ cảnh (2b), TSF nhập chính theo app (2c). Không TSF-only. Chi tiết: [`2026-08-18-openvikey-gd2-windows-host-design.md`](./2026-08-18-openvikey-gd2-windows-host-design.md).
+- **GĐ2:** Windows **hybrid** — hook nhập chính (2a), TSF ngữ cảnh (2b), TSF nhập chính theo app (2c), settings/control UI kiểu UniKey (2d). Không TSF-only. Chi tiết: [`2026-08-18-openvikey-gd2-windows-host-design.md`](./2026-08-18-openvikey-gd2-windows-host-design.md).
 - **GĐ3:** macOS — **spike: IMKInputController (InputMethodKit) vs CGEventTap** (chưa quyết, §10).
 
 ### 2.4 Non-goals (vĩnh viễn)
@@ -236,7 +236,7 @@ Mỗi rule-context bắt đầu ở `ignore`. `final_score` là score đã calib
 
 ### 6.6 Cold start & minh bạch
 - Ship kèm lexicon nền + viết tắt mồi + mẫu lỗi phổ biến; lớp cá nhân đắp lên, dần lấn át.
-- API xem/sửa/xoá từng mục đã học + "quên tất cả" (GUI để GĐ sau; v1 có API + text dump).
+- API xem/sửa/xoá từng mục đã học + "quên tất cả" (Windows GUI ở GĐ2d; v1 có API + text dump).
 
 ---
 
@@ -326,4 +326,4 @@ OpenKey (C++/GPL, mẫu Win+Mac), bamboo-core (Go/MIT, tách core sạch), VKey 
 
 ## 12. Bước tiếp theo
 1. v1/Part 2: đã implement theo plan tương ứng.
-2. GĐ2: triển khai **2a** theo [`../plans/2026-08-18-openvikey-gd2a-implementation-plan.md`](../plans/2026-08-18-openvikey-gd2a-implementation-plan.md) sau khi chủ dự án duyệt spec. Không gộp 2b/2c vào 2a.
+2. GĐ2a đã implement. Tiếp theo: khảo sát rồi viết spec/plan GĐ2b; không gộp 2c hoặc GĐ2d vào 2b.
