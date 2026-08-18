@@ -1,7 +1,7 @@
 //! Synchronous typing host: session + inject (record and/or SendInput).
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use openvikey_core::engine::EngineConfig;
 use openvikey_core::lexicon::{Lexicon, LexiconEntry};
@@ -14,6 +14,7 @@ use openvikey_session::session::{LabSession, SessionCursors};
 use crate::classify::profile_for_exe;
 use crate::focus::FocusCache;
 use crate::inject::{CommandInjector, InjectError, InjectProfile};
+use crate::overlay::overlay_lines;
 use crate::policy::{decide, HostHotkey, HostState, KeyDecision, Mode, RawKey};
 use crate::sync::{
     commands_from_accept, commands_from_caret_break, commands_from_typed, commands_from_undo,
@@ -23,37 +24,158 @@ use crate::sync::{
 struct HostRuntime {
     host: Arc<Mutex<TypingHost>>,
     focus: Arc<FocusCache>,
+    sending: Arc<AtomicBool>,
+    mode: Arc<AtomicU8>,
+    persist: OnceLock<Arc<dyn Fn() + Send + Sync>>,
 }
 
 static RUNTIME: OnceLock<HostRuntime> = OnceLock::new();
 
+fn mode_to_u8(mode: Mode) -> u8 {
+    match mode {
+        Mode::Viet => 0,
+        Mode::English => 1,
+    }
+}
+
+fn mode_from_u8(value: u8) -> Mode {
+    if value == 1 {
+        Mode::English
+    } else {
+        Mode::Viet
+    }
+}
+
 /// Bind host + focus for LL callbacks (call once before installing hooks).
 pub fn bind_runtime(host: Arc<Mutex<TypingHost>>, focus: Arc<FocusCache>) {
-    let _ = RUNTIME.set(HostRuntime { host, focus });
+    let (sending, mode) = match host.lock() {
+        Ok(guard) => (Arc::clone(&guard.sending), Arc::clone(&guard.mode_flag)),
+        Err(poisoned) => {
+            let guard = poisoned.into_inner();
+            (Arc::clone(&guard.sending), Arc::clone(&guard.mode_flag))
+        }
+    };
+    let _ = RUNTIME.set(HostRuntime {
+        host,
+        focus,
+        sending,
+        mode,
+        persist: OnceLock::new(),
+    });
 }
 
-/// Sync HWND/exe + caps/alt/meta under `try_lock` (only lock site outside [`handle_key_locked`]).
-pub fn sync_runtime_locked(at_ms: i64, caps_lock: bool, alt: bool, meta: bool) {
-    let Some(rt) = RUNTIME.get() else {
-        return;
-    };
-    let Ok(mut guard) = rt.host.try_lock() else {
-        return;
-    };
-    if let Some((hwnd, exe)) = rt.focus.try_get() {
-        guard.set_hwnd(u64::try_from(hwnd).unwrap_or(0), exe, at_ms);
+/// Notify both savers after the typing mutex is released.
+pub fn bind_persist_notify(notify: Arc<dyn Fn() + Send + Sync>) {
+    if let Some(rt) = RUNTIME.get() {
+        let _ = rt.persist.set(notify);
     }
-    guard.caps_lock = caps_lock;
-    guard.alt = alt;
-    guard.meta = meta;
 }
 
-/// Live keyboard path: [`handle_key_locked`] against the bound runtime host.
-pub fn handle_runtime_key_locked(raw: RawKey, at_ms: i64) -> KeyDecision {
-    let Some(rt) = RUNTIME.get() else {
-        return KeyDecision::Pass;
+struct FocusSync {
+    focus: Arc<FocusCache>,
+    caps_lock: bool,
+    alt: bool,
+    meta: bool,
+}
+
+fn needs_session(decision: &KeyDecision) -> bool {
+    matches!(
+        decision,
+        KeyDecision::EatAndInject(_)
+            | KeyDecision::CommitAndPass { .. }
+            | KeyDecision::Hotkey(_)
+            | KeyDecision::CaretBreakAndPass
+    )
+}
+
+fn lock_free_host_state(caps_lock: bool, alt: bool, meta: bool) -> HostState {
+    if let Some(rt) = RUNTIME.get() {
+        let foreground_exe = rt.focus.try_get().map(|(_, exe)| exe).unwrap_or_default();
+        return HostState {
+            mode: mode_from_u8(rt.mode.load(Ordering::SeqCst)),
+            foreground_exe,
+            is_sending: rt.sending.load(Ordering::SeqCst),
+            caps_lock,
+            alt,
+            meta,
+        };
+    }
+    HostState {
+        mode: Mode::Viet,
+        foreground_exe: "notepad.exe".into(),
+        is_sending: false,
+        caps_lock,
+        alt,
+        meta,
+    }
+}
+
+fn after_unlock(lines: &[String], mode: Option<Mode>) {
+    if let Some(rt) = RUNTIME.get()
+        && let Some(notify) = rt.persist.get()
+    {
+        notify();
+    }
+    crate::overlay::push_overlay_lines(lines);
+    if let Some(mode) = mode {
+        crate::tray::set_tray_mode(mode);
+    }
+}
+
+fn dispatch_locked_key(
+    host: &Mutex<TypingHost>,
+    raw: RawKey,
+    at_ms: i64,
+    sync: Option<&FocusSync>,
+) -> KeyDecision {
+    let (caps_lock, alt, meta) = sync.map_or((false, false, false), |sync| {
+        (sync.caps_lock, sync.alt, sync.meta)
+    });
+    let decision = decide(&raw, &lock_free_host_state(caps_lock, alt, meta));
+    if !needs_session(&decision) {
+        return decision;
+    }
+    let Ok(mut guard) = host.try_lock() else {
+        return on_try_lock_fail(&decision);
     };
-    handle_key_locked(&rt.host, raw, at_ms)
+    if let Some(sync) = sync {
+        if let Some((hwnd, exe)) = sync.focus.try_get() {
+            guard.set_hwnd(u64::try_from(hwnd).unwrap_or(0), exe, at_ms);
+        }
+        guard.caps_lock = sync.caps_lock;
+        guard.alt = sync.alt;
+        guard.meta = sync.meta;
+    }
+    let out = guard.handle_key(raw, at_ms);
+    let lines = overlay_lines(&guard.session.candidate_texts(), 3);
+    let mode = guard.mode;
+    drop(guard);
+    after_unlock(&lines, Some(mode));
+    out
+}
+
+/// Live keyboard path: lock-free [`decide`], then one `try_lock` for HWND + key.
+pub fn handle_runtime_key(
+    raw: RawKey,
+    at_ms: i64,
+    caps_lock: bool,
+    alt: bool,
+    meta: bool,
+) -> KeyDecision {
+    let Some(rt) = RUNTIME.get() else {
+        return decide(&raw, &lock_free_host_state(caps_lock, alt, meta));
+    };
+    dispatch_locked_key(
+        &rt.host,
+        raw,
+        at_ms,
+        Some(&FocusSync {
+            focus: Arc::clone(&rt.focus),
+            caps_lock,
+            alt,
+            meta,
+        }),
+    )
 }
 
 /// Mouse caret-break under a single `try_lock` (focus + modifiers + notify).
@@ -71,6 +193,21 @@ pub fn caret_break_runtime_locked(at_ms: i64, caps_lock: bool, alt: bool, meta: 
     guard.alt = alt;
     guard.meta = meta;
     guard.notify_caret_break(at_ms);
+    let lines = overlay_lines(&guard.session.candidate_texts(), 3);
+    drop(guard);
+    after_unlock(&lines, None);
+}
+
+/// Tray left-click (message thread): blocking lock is allowed off the LL hook path.
+pub fn handle_tray_left_click(at_ms: i64) {
+    let Some(rt) = RUNTIME.get() else {
+        return;
+    };
+    let mut guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
+    guard.handle_hotkey(HostHotkey::ToggleMode, at_ms);
+    let mode = guard.mode;
+    drop(guard);
+    after_unlock(&[], Some(mode));
 }
 
 /// In-process host used by unit tests and the LL hook callback.
@@ -83,6 +220,7 @@ pub struct TypingHost {
     pub hwnd: u64,
     pub foreground_exe: String,
     pub mode: Mode,
+    pub mode_flag: Arc<AtomicU8>,
     pub caps_lock: bool,
     pub alt: bool,
     pub meta: bool,
@@ -142,6 +280,7 @@ impl TypingHost {
             hwnd: 1,
             foreground_exe: "notepad.exe".into(),
             mode: Mode::Viet,
+            mode_flag: Arc::new(AtomicU8::new(0)),
             caps_lock: false,
             alt: false,
             meta: false,
@@ -186,6 +325,8 @@ impl TypingHost {
                     Mode::Viet => Mode::English,
                     Mode::English => Mode::Viet,
                 };
+                self.mode_flag
+                    .store(mode_to_u8(self.mode), Ordering::SeqCst);
             }
         }
     }
@@ -213,7 +354,7 @@ impl TypingHost {
         match &decision {
             KeyDecision::EatAndInject(kind) => {
                 if self.apply_typed(kind.clone(), at_ms).is_err() {
-                    return on_inject_fail(&raw);
+                    return on_try_lock_fail(&decision);
                 }
             }
             KeyDecision::CommitAndPass { delimiter } => {
@@ -226,7 +367,7 @@ impl TypingHost {
                     )
                     .is_err()
                 {
-                    return on_inject_fail(&raw);
+                    return on_try_lock_fail(&decision);
                 }
                 if *delimiter == '\n' {
                     self.stack_trace.push("enter".into());
@@ -250,12 +391,16 @@ impl TypingHost {
         {
             return;
         }
+        let checkpoint = self.session.checkpoint_for_inject(&InputKind::Reset);
         let Some(visual) = self.session.accept_top(at_ms) else {
             return;
         };
         let (cmds, sent, token) =
             commands_from_accept(&visual, &self.sent, &self.last_injected_token);
-        let _ = self.apply_commands(&cmds);
+        if self.apply_commands(&cmds).is_err() {
+            self.session.restore_inject_checkpoint(checkpoint);
+            return;
+        }
         self.sent = sent;
         self.last_injected_token = token;
         self.last_injected_hwnd = self.hwnd;
@@ -265,11 +410,15 @@ impl TypingHost {
         if self.hwnd != self.last_injected_hwnd || self.last_injected_token.is_empty() {
             return;
         }
+        let checkpoint = self.session.checkpoint_for_inject(&InputKind::Reset);
         let Some(visual) = self.session.undo_last(at_ms) else {
             return;
         };
         let cmds = commands_from_undo(&visual, &self.last_injected_token);
-        let _ = self.apply_commands(&cmds);
+        if self.apply_commands(&cmds).is_err() {
+            self.session.restore_inject_checkpoint(checkpoint);
+            return;
+        }
         self.last_injected_token = visual.show_nfc;
     }
 
@@ -321,28 +470,22 @@ impl TypingHost {
     }
 }
 
-/// When `try_lock` fails: letters Pass; Enter eats (do not Pass / CommitAndPass).
+/// When `try_lock` fails: map from the already-known lock-free [`KeyDecision`].
 #[must_use]
-pub fn on_try_lock_fail(raw: &RawKey) -> KeyDecision {
-    if raw.down && raw.vk == 0x0D {
-        KeyDecision::EatAndIgnore
-    } else {
-        KeyDecision::Pass
+pub fn on_try_lock_fail(decision: &KeyDecision) -> KeyDecision {
+    match decision {
+        KeyDecision::EatAndInject(_)
+        | KeyDecision::CaretBreakAndPass
+        | KeyDecision::Pass => KeyDecision::Pass,
+        KeyDecision::CommitAndPass { .. }
+        | KeyDecision::Hotkey(_)
+        | KeyDecision::EatAndIgnore => KeyDecision::EatAndIgnore,
     }
-}
-
-/// When SendInput fails after a decision that would eat: same mapping as try_lock fail.
-#[must_use]
-pub fn on_inject_fail(raw: &RawKey) -> KeyDecision {
-    on_try_lock_fail(raw)
 }
 
 /// Try to lock the host; on failure use [`on_try_lock_fail`].
 pub fn handle_key_locked(host: &Mutex<TypingHost>, raw: RawKey, at_ms: i64) -> KeyDecision {
-    let Ok(mut guard) = host.try_lock() else {
-        return on_try_lock_fail(&raw);
-    };
-    guard.handle_key(raw, at_ms)
+    dispatch_locked_key(host, raw, at_ms, None)
 }
 
 fn seed_accepts(key: &RuleContextKey, count: u64) -> AdaptiveModel {

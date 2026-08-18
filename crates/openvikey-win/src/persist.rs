@@ -2,6 +2,9 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
+
+use crate::host::TypingHost;
 
 use openvikey_core::store::ModelStore;
 use openvikey_core::store::file::FileModelStore;
@@ -65,6 +68,40 @@ pub fn default_store_paths(local_app_data: Option<impl AsRef<Path>>) -> (PathBuf
         |base| base.as_ref().join("OpenViKey"),
     );
     (root.join("model.ovk"), root.join("capture.ovk"))
+}
+
+/// Clone [`LabSession::save_snapshot`] under the host mutex, then drop the guard.
+pub fn snapshot_host(host: &Mutex<TypingHost>) -> SessionSaveSnapshot {
+    let guard = host.lock().unwrap_or_else(PoisonError::into_inner);
+    guard.session.save_snapshot()
+}
+
+/// Serialize the model payload after unlocking the typing host.
+pub fn model_payload_from_host(host: &Mutex<TypingHost>) -> Result<Vec<u8>, String> {
+    let snap = snapshot_host(host);
+    snap.model
+        .to_json_payload()
+        .map_err(|error| error.to_string())
+}
+
+/// Serialize the capture payload after unlocking the typing host (no `capture_log`).
+pub fn capture_payload_from_host(host: &Mutex<TypingHost>) -> Result<Vec<u8>, String> {
+    let snap = snapshot_host(host);
+    let model_payload = snap
+        .model
+        .to_json_payload()
+        .map_err(|error| error.to_string())?;
+    let log = CaptureLog {
+        header: CaptureHeader {
+            v: CAPTURE_VERSION,
+            next_seq: snap.cursors.next_seq,
+            next_edit_id: snap.cursors.next_edit_id,
+            last_at_ms: snap.last_at_ms,
+            model_sha256: sha256_hex(&model_payload),
+        },
+        records: snap.capture_records,
+    };
+    log.to_payload().map_err(|error| error.to_string())
 }
 
 /// Seal model + capture from a [`SessionSaveSnapshot`] (clone-then-serialize; no `capture_log`).

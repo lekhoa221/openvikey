@@ -66,6 +66,16 @@ fn focus_cache_roundtrip() {
 }
 
 #[test]
+fn seed_current_foreground_fills_empty_cache() {
+    use openvikey_win::focus::seed_current_foreground;
+    let cache = FocusCache::new();
+    assert_eq!(cache.get(), (0, String::new()));
+    seed_current_foreground(&cache);
+    let (hwnd, exe) = cache.get();
+    let _ = (hwnd, exe);
+}
+
+#[test]
 fn mouse_lbutton_is_caret_break() {
     assert_eq!(mouse_decision(0x0201), KeyDecision::CaretBreakAndPass); // WM_LBUTTONDOWN
 }

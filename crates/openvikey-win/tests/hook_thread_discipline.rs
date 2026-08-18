@@ -67,3 +67,21 @@ fn main_has_no_unsafe() {
         "main.rs must not contain unsafe (allowlisted modules only)"
     );
 }
+
+#[test]
+fn live_keyboard_path_uses_one_lock_helper() {
+    let hook = fs::read_to_string("src/hook.rs").expect("src/hook.rs");
+    assert!(
+        hook.contains("handle_runtime_key("),
+        "live keyboard callback must call the one-lock host helper"
+    );
+    assert!(
+        !hook.contains("sync_runtime_locked"),
+        "focus+key must share one try_lock; hook.rs must not call sync_runtime_locked"
+    );
+    let host = fs::read_to_string("src/host.rs").expect("src/host.rs");
+    assert!(
+        host.contains("pub fn handle_runtime_key("),
+        "one-lock helper handle_runtime_key must exist in host.rs"
+    );
+}

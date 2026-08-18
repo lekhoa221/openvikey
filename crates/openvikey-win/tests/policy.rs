@@ -191,6 +191,11 @@ fn alt_or_win_letter_passes() {
 
 #[test]
 fn left_ctrl_left_shift_keyup_toggles() {
+    // Drop any leftover chord latch on this worker thread.
+    let mut idle = key(0x41);
+    idle.down = false;
+    assert_eq!(decide(&idle, &viet()), KeyDecision::Pass);
+
     let mut k = key(0xA0); // VK_LSHIFT
     k.down = false;
     k.left_ctrl = true;
@@ -199,6 +204,29 @@ fn left_ctrl_left_shift_keyup_toggles() {
         decide(&k, &viet()),
         KeyDecision::Hotkey(HostHotkey::ToggleMode)
     );
+}
+
+#[test]
+fn ctrl_shift_z_then_shift_up_is_not_toggle() {
+    let mut idle = key(0x41);
+    idle.down = false;
+    assert_eq!(decide(&idle, &viet()), KeyDecision::Pass);
+
+    let mut z = key(0x5A);
+    z.control = true;
+    z.shift = true;
+    z.left_ctrl = true;
+    z.left_shift = true;
+    assert_eq!(
+        decide(&z, &viet()),
+        KeyDecision::Hotkey(HostHotkey::UndoLast)
+    );
+
+    let mut shift_up = key(0xA0);
+    shift_up.down = false;
+    shift_up.left_ctrl = true;
+    shift_up.left_shift = true;
+    assert_eq!(decide(&shift_up, &viet()), KeyDecision::Pass);
 }
 
 #[test]

@@ -436,6 +436,20 @@ impl LabSession {
             .map(|candidate| candidate.text.clone())
     }
 
+    #[must_use]
+    pub fn candidate_texts(&self) -> Vec<String> {
+        self.last_slice
+            .as_ref()
+            .map(|slice| {
+                slice
+                    .candidates
+                    .iter()
+                    .map(|candidate| candidate.text.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     fn pop_document_on_empty_backspace(
         &mut self,
         kind: &InputKind,

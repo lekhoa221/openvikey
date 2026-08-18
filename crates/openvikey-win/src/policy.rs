@@ -1,5 +1,7 @@
 //! Lock-free key policy for the WH_KEYBOARD_LL hook path.
 
+use std::cell::Cell;
+
 use openvikey_core::engine::backend::is_boundary_char;
 use openvikey_core::types::InputKind;
 
@@ -78,6 +80,11 @@ pub fn hook_allows_next(decision: &KeyDecision) -> bool {
     )
 }
 
+thread_local! {
+    static TOGGLE_BOTH: Cell<bool> = const { Cell::new(false) };
+    static TOGGLE_DIRTY: Cell<bool> = const { Cell::new(false) };
+}
+
 /// Decide how the keyboard LL hook should treat `raw` given `state`.
 #[must_use]
 pub fn decide(raw: &RawKey, state: &HostState) -> KeyDecision {
@@ -85,6 +92,8 @@ pub fn decide(raw: &RawKey, state: &HostState) -> KeyDecision {
     if raw.extra_info == OVK_EXTRA {
         return KeyDecision::Pass;
     }
+
+    note_toggle_chord(raw);
 
     // 2. Swallow physical leak/auto-repeat while we are injecting.
     if state.is_sending {
@@ -167,11 +176,28 @@ fn is_denylisted(exe: &str) -> bool {
         .any(|d| name.eq_ignore_ascii_case(d))
 }
 
+fn note_toggle_chord(raw: &RawKey) {
+    let both = raw.left_ctrl && raw.left_shift;
+    let was_both = TOGGLE_BOTH.get();
+    if both && !was_both {
+        TOGGLE_DIRTY.set(false);
+    }
+    if both && raw.down && raw.vk != 0xA0 && raw.vk != 0xA2 {
+        TOGGLE_DIRTY.set(true);
+    }
+    if !both {
+        TOGGLE_DIRTY.set(false);
+    }
+    TOGGLE_BOTH.set(both);
+}
+
 fn is_toggle_chord(raw: &RawKey) -> bool {
-    // Both Left-Ctrl and Left-Shift held; keyup of either (VK_LSHIFT / VK_LCONTROL).
+    // Both Left-Ctrl and Left-Shift held; keyup of either (VK_LSHIFT / VK_LCONTROL);
+    // no other key was down during the chord (spec §3.1.6).
     raw.left_ctrl
         && raw.left_shift
         && (raw.vk == 0xA0 || raw.vk == 0xA2)
+        && !TOGGLE_DIRTY.get()
 }
 
 fn match_hotkey_keydown(raw: &RawKey) -> Option<HostHotkey> {

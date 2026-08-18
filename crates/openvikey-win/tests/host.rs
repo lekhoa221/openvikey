@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use openvikey_core::types::InputKind;
 use openvikey_win::host::{handle_key_locked, on_try_lock_fail, TypingHost};
-use openvikey_win::policy::{HostHotkey, KeyDecision, RawKey};
+use openvikey_win::hook::ll_return;
+use openvikey_win::policy::{HostHotkey, KeyDecision, RawKey, OVK_EXTRA};
 use openvikey_win::sync::InjectCommand;
 
 fn key(vk: u16) -> RawKey {
@@ -233,8 +234,56 @@ fn try_lock_fail_on_enter_eats() {
     thread::sleep(Duration::from_millis(20));
     let decision = handle_key_locked(&host, enter_key(), 1);
     assert_eq!(decision, KeyDecision::EatAndIgnore);
-    assert_eq!(on_try_lock_fail(&enter_key()), KeyDecision::EatAndIgnore);
-    assert_eq!(on_try_lock_fail(&key(0x41)), KeyDecision::Pass);
+    assert_eq!(ll_return(&decision), 1);
+    assert_eq!(
+        on_try_lock_fail(&KeyDecision::CommitAndPass { delimiter: '\n' }),
+        KeyDecision::EatAndIgnore
+    );
+    assert_eq!(
+        on_try_lock_fail(&KeyDecision::EatAndInject(InputKind::Key {
+            logical: 'a',
+            physical: None,
+        })),
+        KeyDecision::Pass
+    );
+    blocker.join().unwrap();
+}
+
+fn hold_mutex(host: &Arc<Mutex<TypingHost>>) -> thread::JoinHandle<()> {
+    let held = Arc::clone(host);
+    let blocker = thread::spawn(move || {
+        let _guard = held.lock().unwrap();
+        thread::sleep(Duration::from_millis(200));
+    });
+    thread::sleep(Duration::from_millis(20));
+    blocker
+}
+
+#[test]
+fn try_lock_fail_hotkey_eats() {
+    let host = Arc::new(Mutex::new(TypingHost::new_telex_fixture()));
+    let blocker = hold_mutex(&host);
+    let mut acc = key(0xBE);
+    acc.control = true;
+    let decision = handle_key_locked(&host, acc, 1);
+    assert_eq!(decision, KeyDecision::EatAndIgnore);
+    assert_eq!(ll_return(&decision), 1);
+    assert_eq!(
+        on_try_lock_fail(&KeyDecision::Hotkey(HostHotkey::AcceptTop)),
+        KeyDecision::EatAndIgnore
+    );
+    blocker.join().unwrap();
+}
+
+#[test]
+fn try_lock_fail_ovk_extra_passes() {
+    let host = Arc::new(Mutex::new(TypingHost::new_telex_fixture()));
+    let blocker = hold_mutex(&host);
+    let mut extra_enter = enter_key();
+    extra_enter.extra_info = OVK_EXTRA;
+    let decision = handle_key_locked(&host, extra_enter, 1);
+    assert_eq!(decision, KeyDecision::Pass);
+    assert_eq!(ll_return(&decision), 0);
     blocker.join().unwrap();
 }
 
@@ -323,4 +372,68 @@ fn apply_commands_drives_injector_sender() {
     host.handle_key(key(0x58), 1); // x → Replace inject
     assert!(events.load(AtomicOrdering::SeqCst) > 0);
     assert!(!sending.load(AtomicOrdering::SeqCst));
+}
+
+struct FailSender;
+impl openvikey_win::inject::InputSender for FailSender {
+    fn send(
+        &mut self,
+        events: &[openvikey_win::inject::SynthesizedEvent],
+    ) -> Result<u32, openvikey_win::inject::InjectError> {
+        Err(openvikey_win::inject::InjectError::Partial {
+            sent: 0,
+            expected: events.len(),
+        })
+    }
+}
+
+fn failing_injector() -> Box<dyn openvikey_win::inject::CommandInjector> {
+    Box::new(openvikey_win::inject::ProfilingInjector {
+        profile: openvikey_win::inject::InjectProfile::Win32,
+        sender: FailSender,
+        sending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    })
+}
+
+#[test]
+fn accept_inject_fail_restores_session() {
+    let mut host = TypingHost::new_telex_fixture();
+    host.handle_key(key(0x4B), 1); // k
+    host.handle_key(key(0x4F), 2); // o
+    let before_sent = host.sent.clone();
+    let before_token = host.last_injected_token.clone();
+    let before_comp = host.session.composition_text();
+    let before_doc = host.session.document_text();
+    let before_model = host.session.clone_model();
+    host.set_injector(failing_injector());
+    host.handle_hotkey(HostHotkey::AcceptTop, 3);
+    assert_eq!(host.sent, before_sent);
+    assert_eq!(host.last_injected_token, before_token);
+    assert_eq!(host.session.composition_text(), before_comp);
+    assert_eq!(host.session.document_text(), before_doc);
+    assert_eq!(host.session.clone_model(), before_model);
+}
+
+#[test]
+fn undo_inject_fail_restores_session() {
+    let mut host = TypingHost::new_vni_auto_fixture();
+    for (i, ch) in ['p', 'a', 'h', 't', '1'].into_iter().enumerate() {
+        let vk = if ch == '1' {
+            0x31
+        } else {
+            u16::from(ch.to_ascii_uppercase() as u8)
+        };
+        host.handle_key(key(vk), i64::try_from(i).unwrap_or(0));
+    }
+    host.handle_key(key(0x20), 10);
+    let before_token = host.last_injected_token.clone();
+    let before_hwnd = host.last_injected_hwnd;
+    let before_doc = host.session.document_text();
+    let before_model = host.session.clone_model();
+    host.set_injector(failing_injector());
+    host.handle_hotkey(HostHotkey::UndoLast, 11);
+    assert_eq!(host.last_injected_token, before_token);
+    assert_eq!(host.last_injected_hwnd, before_hwnd);
+    assert_eq!(host.session.document_text(), before_doc);
+    assert_eq!(host.session.clone_model(), before_model);
 }

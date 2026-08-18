@@ -2,14 +2,14 @@
 //!
 //! Callback order (synchronous, no key queue channel):
 //! 1. `decide` (lock-free policy)
-//! 2. if the decision needs session work: `handle_key_locked` → `host.handle_key` (SendInput)
+//! 2. if the decision needs session work: `handle_runtime_key` → one host session lock (HWND + key)
 //! 3. `ll_return(decision)` — 0 forwards via CallNextHookEx, 1 eats
 //!
-//! Session acquisition for step 2 lives in `host.rs` (`handle_key_locked`), not here.
+//! Session acquisition for step 2 lives in `host.rs` (`handle_runtime_key` / `handle_key_locked`), not here.
 
 use std::sync::Mutex;
 
-use crate::host::{handle_key_locked, handle_runtime_key_locked, sync_runtime_locked, TypingHost};
+use crate::host::{handle_key_locked, handle_runtime_key, TypingHost};
 use crate::policy::{KeyDecision, RawKey};
 
 /// `LLKHF_UP` — transition state is key-up when set.
@@ -76,7 +76,7 @@ fn fill_modifiers(raw: &mut RawKey) -> (bool, bool, bool) {
     (caps, alt, meta)
 }
 
-/// Keyboard LL procedure: sync runtime via host helpers, then [`handle_key_locked`].
+/// Keyboard LL procedure: lock-free decide, then one host session lock for HWND + key.
 ///
 /// # Safety
 ///
@@ -102,8 +102,7 @@ pub unsafe extern "system" fn keyboard_ll_proc(
     );
     let (caps, alt, meta) = fill_modifiers(&mut raw);
     let at_ms = now_ms();
-    sync_runtime_locked(at_ms, caps, alt, meta);
-    let ret = ll_return(&handle_runtime_key_locked(raw, at_ms));
+    let ret = ll_return(&handle_runtime_key(raw, at_ms, caps, alt, meta));
     if ret != 0 {
         LRESULT(1)
     } else {

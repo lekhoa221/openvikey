@@ -2,26 +2,27 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use clap::{Parser, ValueEnum};
 use openvikey_core::engine::EngineConfig;
 use openvikey_core::lexicon::{Lexicon, LexiconArtifact};
 use openvikey_core::store::passphrase::{KdfConfig, PassphraseProvider};
 use openvikey_core::types::{InputMethod, TonePlacement};
-use openvikey_session::capture::{
-    ensure_distinct_store_paths, load_personal_store, sha256_hex, CaptureHeader, CaptureLog,
-    CAPTURE_VERSION,
-};
+use openvikey_session::capture::{ensure_distinct_store_paths, load_personal_store};
 use openvikey_session::persistence::DebouncedSaver;
 use openvikey_session::session::{LabSession, SessionCursors};
 use openvikey_win::focus::{run_host_message_loop, FocusCache};
 #[cfg(windows)]
 use openvikey_win::focus::HostHooks;
-use openvikey_win::host::{bind_runtime, TypingHost};
+use openvikey_win::host::{bind_persist_notify, bind_runtime, TypingHost};
 use openvikey_win::inject::{InjectProfile, ProfilingInjector, SendInputSender};
 use openvikey_win::passphrase::{read_hidden_passphrase, release_console};
-use openvikey_win::persist::{default_store_paths, HostShutdown};
+use openvikey_win::persist::{
+    capture_payload_from_host, default_store_paths, model_payload_from_host, HostShutdown,
+};
+#[cfg(windows)]
+use openvikey_win::tray::install_host_ui;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -96,6 +97,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let sending = Arc::new(AtomicBool::new(false));
     let mut typing = TypingHost::new_with_session(session);
+    let initial_mode = typing.mode;
     typing.set_injector(Box::new(ProfilingInjector {
         profile: InjectProfile::Win32,
         sender: SendInputSender,
@@ -105,43 +107,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let focus = Arc::new(FocusCache::new());
     bind_runtime(Arc::clone(&host), Arc::clone(&focus));
 
-    let model_saver = DebouncedSaver::spawn_encrypted(model_path.clone(), provider.clone(), {
-        let host = Arc::clone(&host);
-        move || {
-            let guard = host.lock().unwrap_or_else(PoisonError::into_inner);
-            let snap = guard.session.save_snapshot();
-            snap.model
-                .to_json_payload()
-                .map_err(|error| error.to_string())
-        }
-    });
-    let capture_saver = DebouncedSaver::spawn_encrypted(capture_path.clone(), provider, {
-        let host = Arc::clone(&host);
-        move || {
-            let guard = host.lock().unwrap_or_else(PoisonError::into_inner);
-            let snap = guard.session.save_snapshot();
-            let model_payload = snap
-                .model
-                .to_json_payload()
-                .map_err(|error| error.to_string())?;
-            let log = CaptureLog {
-                header: CaptureHeader {
-                    v: CAPTURE_VERSION,
-                    next_seq: snap.cursors.next_seq,
-                    next_edit_id: snap.cursors.next_edit_id,
-                    last_at_ms: snap.last_at_ms,
-                    model_sha256: sha256_hex(&model_payload),
-                },
-                records: snap.capture_records,
-            };
-            log.to_payload().map_err(|error| error.to_string())
-        }
-    });
+    let model_saver = Arc::new(DebouncedSaver::spawn_encrypted(
+        model_path.clone(),
+        provider.clone(),
+        {
+            let host = Arc::clone(&host);
+            move || model_payload_from_host(&host)
+        },
+    ));
+    let capture_saver = Arc::new(DebouncedSaver::spawn_encrypted(
+        capture_path.clone(),
+        provider,
+        {
+            let host = Arc::clone(&host);
+            move || capture_payload_from_host(&host)
+        },
+    ));
+
+    let model_for_notify = Arc::clone(&model_saver);
+    let capture_for_notify = Arc::clone(&capture_saver);
+    bind_persist_notify(Arc::new(move || {
+        let _ = model_for_notify.notify();
+        let _ = capture_for_notify.notify();
+    }));
 
     let shutdown = Arc::new(HostShutdown::new());
 
     #[cfg(windows)]
     let _hooks = HostHooks::install(Arc::clone(&focus))?;
+
+    #[cfg(windows)]
+    let _host_ui = install_host_ui(&shutdown, initial_mode)?;
+    #[cfg(not(windows))]
+    let _ = initial_mode;
 
     release_console();
     run_host_message_loop(&shutdown);

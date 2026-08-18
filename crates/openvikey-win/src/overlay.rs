@@ -1,9 +1,39 @@
 //! Suggestion overlay (display-only): caps candidate lines and owns a Win32 HWND shell.
 
+use std::sync::Mutex;
+
 /// Take the first `max` candidate strings for on-screen overlay display.
 #[must_use]
 pub fn overlay_lines(candidates: &[String], max: usize) -> Vec<String> {
     candidates.iter().take(max).cloned().collect()
+}
+
+static OVERLAY_HWND: Mutex<Option<isize>> = Mutex::new(None);
+
+/// Bind the live overlay HWND so the host can push lines after releasing the typing mutex.
+pub fn bind_overlay_hwnd(hwnd: isize) {
+    if let Ok(mut guard) = OVERLAY_HWND.lock() {
+        *guard = Some(hwnd);
+    }
+}
+
+/// Push capped candidate lines to the overlay HWND (no-op if unbound).
+pub fn push_overlay_lines(lines: &[String]) {
+    #[cfg(windows)]
+    {
+        let hwnd = OVERLAY_HWND.lock().ok().and_then(|guard| *guard);
+        let Some(raw) = hwnd else {
+            return;
+        };
+        if raw == 0 {
+            return;
+        }
+        hwnd_overlay::set_overlay_text(raw, lines);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = lines;
+    }
 }
 
 #[cfg(windows)]
@@ -101,11 +131,7 @@ mod hwnd_overlay {
         ///
         /// Calls Win32 `SetWindowTextW`.
         pub unsafe fn set_lines(&self, lines: &[String]) {
-            let text = super::overlay_lines(lines, 3).join("\n");
-            let wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
-            unsafe {
-                let _ = SetWindowTextW(self.hwnd, PCWSTR(wide.as_ptr()));
-            }
+            set_overlay_text(self.hwnd.0 as isize, lines);
         }
 
         /// Show the overlay at screen coordinates without activating.
@@ -142,11 +168,23 @@ mod hwnd_overlay {
 
     impl Drop for OverlayWindow {
         fn drop(&mut self) {
+            super::bind_overlay_hwnd(0);
             unsafe {
                 if !self.hwnd.is_invalid() {
                     let _ = DestroyWindow(self.hwnd);
                 }
             }
+        }
+    }
+
+    pub(super) fn set_overlay_text(hwnd_raw: isize, lines: &[String]) {
+        let text = super::overlay_lines(lines, 3).join("\n");
+        let wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
+        unsafe {
+            let _ = SetWindowTextW(
+                HWND(hwnd_raw as *mut core::ffi::c_void),
+                PCWSTR(wide.as_ptr()),
+            );
         }
     }
 }

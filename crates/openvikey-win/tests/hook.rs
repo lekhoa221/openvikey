@@ -138,6 +138,30 @@ fn dispatch_ll_letter_inject_fail_restores_learning_model() {
 }
 
 #[test]
+fn dispatch_ll_lock_fail_hotkey_eats() {
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    let host = Arc::new(Mutex::new(TypingHost::new_telex_fixture()));
+    let held = Arc::clone(&host);
+    let blocker = thread::spawn(move || {
+        let _guard = held.lock().unwrap();
+        thread::sleep(Duration::from_millis(200));
+    });
+    thread::sleep(Duration::from_millis(20));
+    let mut acc = key(0xBE);
+    acc.control = true;
+    assert_eq!(dispatch_ll(&host, acc, 1), 1);
+    let mut letter = key(0x41);
+    assert_eq!(dispatch_ll(&host, letter, 2), 0);
+    assert_eq!(dispatch_ll(&host, key(0x0D), 3), 1);
+    letter.extra_info = openvikey_win::policy::OVK_EXTRA;
+    assert_eq!(dispatch_ll(&host, letter, 4), 0);
+    blocker.join().unwrap();
+}
+
+#[test]
 fn dispatch_ll_enter_eats_but_rolls_back_session_on_inject_fail() {
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;

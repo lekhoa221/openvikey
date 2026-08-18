@@ -11,7 +11,7 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowThreadProcessId, EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT,
+    GetForegroundWindow, GetWindowThreadProcessId, EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT,
 };
 
 struct Snapshot {
@@ -80,6 +80,13 @@ impl Default for FocusCache {
     }
 }
 
+/// Seed the cache from the current foreground window (install path; not the key hook).
+pub fn seed_current_foreground(cache: &FocusCache) {
+    let hwnd = unsafe { GetForegroundWindow() };
+    let exe = exe_for_hwnd(hwnd);
+    cache.set(hwnd.0 as isize, &exe);
+}
+
 static CALLBACK_CACHE: Mutex<Option<Arc<FocusCache>>> = Mutex::new(None);
 
 /// Bind the winevent callback target after a successful hook install.
@@ -133,6 +140,7 @@ impl FocusHook {
             return Err(windows::core::Error::new(E_FAIL, "SetWinEventHook failed"));
         }
         bind_callback_cache(Arc::clone(&cache));
+        seed_current_foreground(&cache);
         Ok(Self {
             hook,
             _cache: cache,
