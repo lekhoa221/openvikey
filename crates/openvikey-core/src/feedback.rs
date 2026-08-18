@@ -1,8 +1,12 @@
 //! Feedback integration, bounded auto-edit undo, and implicit correction mining.
 
 use crate::model::{AdaptiveModel, RuleContextKey};
-use crate::types::{FeedbackEvent, FeedbackKind, ReplaceRangeAction, UndoTracker};
+use crate::types::{
+    Candidate, FeedbackEvent, FeedbackKind, InputMethod, ReplaceRangeAction, UndoTracker,
+};
 use std::collections::{BTreeMap, VecDeque};
+
+const IMPLICIT_MAX_DURATION_MS: i64 = 10_000;
 
 /// Result of undoing one auto-applied edit.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,6 +20,7 @@ struct PendingAutoSettlement {
     key: RuleContextKey,
     edit_id: u64,
     remaining_events: u8,
+    started_at_ms: i64,
 }
 
 /// Couples an adaptive model with a bounded semantic edit log.
@@ -88,6 +93,7 @@ impl LearningSession {
                 key,
                 edit_id: action.edit_id,
                 remaining_events: 10,
+                started_at_ms: at_ms,
             });
         }
         self.undo.record_edit(action);
@@ -106,22 +112,25 @@ impl LearningSession {
         for pending in &mut self.pending_auto_settlements {
             pending.remaining_events = pending.remaining_events.saturating_sub(1);
         }
-        let mut settled = Vec::new();
+        let mut ready = Vec::new();
         self.pending_auto_settlements.retain(|pending| {
-            if pending.remaining_events != 0 {
+            if pending.remaining_events != 0 || at_ms.saturating_sub(pending.started_at_ms) < 3_000
+            {
                 return true;
             }
+            ready.push((pending.key.clone(), pending.edit_id));
+            false
+        });
+        let mut settled = Vec::new();
+        for (key, edit_id) in ready {
             let event = FeedbackEvent {
                 seq: first_feedback_seq.saturating_add(settled.len() as u64),
                 at_ms,
-                kind: FeedbackKind::AutoSettled {
-                    edit_id: pending.edit_id,
-                },
+                kind: FeedbackKind::AutoSettled { edit_id },
             };
-            self.model.apply_feedback(&pending.key, &event, true);
+            self.model.apply_feedback(&key, &event, true);
             settled.push(event);
-            false
-        });
+        }
         settled
     }
 
@@ -199,5 +208,130 @@ impl ImplicitCorrectionMiner {
                 replacement,
             },
         })
+    }
+}
+
+/// Peak composition captured at the start of a Backspace rewind.
+#[derive(Debug, Clone)]
+pub struct CompositionPeak {
+    pub original_nfc: String,
+    pub raw_keys: String,
+    pub candidates: Vec<Candidate>,
+    pub left_token_nfc: Option<String>,
+    pub input_method: InputMethod,
+    pub started_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+enum RewindPhase {
+    #[default]
+    Idle,
+    Rewinding(CompositionPeak),
+    Typing(CompositionPeak),
+}
+
+/// Composition-session rewind miner. Last peak wins; VALUE is committed at Space.
+#[derive(Debug, Clone, Default)]
+pub struct CompositionRewindMiner {
+    phase: RewindPhase,
+}
+
+/// Outcome of evaluating a rewind against the committed VALUE.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RewindEvaluate {
+    Matched {
+        key: RuleContextKey,
+        feedback: FeedbackEvent,
+    },
+    Unmatched {
+        original_nfc: String,
+        replacement_nfc: String,
+        input_method: InputMethod,
+    },
+    Ignored,
+}
+
+impl CompositionRewindMiner {
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        !matches!(self.phase, RewindPhase::Idle)
+    }
+
+    pub fn on_backspace(&mut self, peak: CompositionPeak) {
+        match &self.phase {
+            RewindPhase::Idle | RewindPhase::Typing(_) => {
+                self.phase = RewindPhase::Rewinding(peak);
+            }
+            RewindPhase::Rewinding(_) => {}
+        }
+    }
+
+    pub fn on_key(&mut self) {
+        if let RewindPhase::Rewinding(peak) = &self.phase {
+            self.phase = RewindPhase::Typing(peak.clone());
+        }
+    }
+
+    pub fn invalidate(&mut self) {
+        self.phase = RewindPhase::Idle;
+    }
+
+    pub fn evaluate(&mut self, value: &str, seq: u64, at_ms: i64) -> RewindEvaluate {
+        let peak = match std::mem::take(&mut self.phase) {
+            RewindPhase::Idle => return RewindEvaluate::Ignored,
+            RewindPhase::Rewinding(peak) | RewindPhase::Typing(peak) => peak,
+        };
+        if at_ms.saturating_sub(peak.started_at_ms) > IMPLICIT_MAX_DURATION_MS {
+            return RewindEvaluate::Ignored;
+        }
+        if value.is_empty() || value == peak.original_nfc {
+            return RewindEvaluate::Ignored;
+        }
+        if let Some(candidate) = peak
+            .candidates
+            .iter()
+            .find(|candidate| candidate.text == value)
+        {
+            let key = RuleContextKey {
+                input_method: peak.input_method,
+                source: candidate.source,
+                original_nfc: peak.original_nfc.clone(),
+                candidate_nfc: candidate.text.clone(),
+                left_token_nfc: peak.left_token_nfc.clone(),
+                source_rule_id: candidate
+                    .evidence
+                    .split('+')
+                    .next()
+                    .unwrap_or("")
+                    .to_string(),
+            };
+            RewindEvaluate::Matched {
+                key,
+                feedback: FeedbackEvent {
+                    seq,
+                    at_ms,
+                    kind: FeedbackKind::ImplicitCorrection {
+                        original: peak.original_nfc,
+                        replacement: value.to_string(),
+                    },
+                },
+            }
+        } else {
+            RewindEvaluate::Unmatched {
+                original_nfc: peak.original_nfc,
+                replacement_nfc: value.to_string(),
+                input_method: peak.input_method,
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn last_peak_original(&self) -> Option<&str> {
+        match &self.phase {
+            RewindPhase::Idle => None,
+            RewindPhase::Rewinding(peak) | RewindPhase::Typing(peak) => {
+                Some(peak.original_nfc.as_str())
+            }
+        }
     }
 }

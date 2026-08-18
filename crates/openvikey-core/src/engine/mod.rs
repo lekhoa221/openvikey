@@ -88,6 +88,13 @@ impl Engine {
         self.revision = self.revision.wrapping_add(1);
     }
 
+    /// Rebuild composition from raw keystrokes without a new [`InputEvent`].
+    pub fn restore_raw_keys(&mut self, raw: &str) {
+        self.raw_keys = raw.chars().collect();
+        self.recompute();
+        self.revision = self.revision.wrapping_add(1);
+    }
+
     fn recompute(&mut self) {
         self.rendered_cache = transform_raw(
             &self.raw_keys,

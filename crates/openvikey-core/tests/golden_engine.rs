@@ -397,3 +397,14 @@ fn test_insert_text_nfd_preserves_original_bytes_on_commit() {
         other => panic!("expected Commit, got {other:?}"),
     }
 }
+
+#[test]
+fn restore_raw_keys_rebuilds_rendered_and_bumps_revision() {
+    let mut engine = Engine::new(EngineConfig::default());
+    let before = engine.revision();
+    engine.restore_raw_keys("chaof");
+    assert_eq!(engine.raw_keys().iter().collect::<String>(), "chaof");
+    assert_eq!(engine.rendered(), "chào");
+    assert!(engine.revision() > before);
+    assert_eq!(engine.snapshot().raw_keys, "chaof");
+}

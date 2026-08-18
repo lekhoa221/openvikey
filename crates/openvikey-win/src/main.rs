@@ -7,19 +7,19 @@ use std::sync::{Arc, Mutex};
 use clap::{Parser, ValueEnum};
 use openvikey_core::engine::EngineConfig;
 use openvikey_core::lexicon::{Lexicon, LexiconArtifact};
-use openvikey_core::store::passphrase::{KdfConfig, PassphraseProvider};
 use openvikey_core::types::{InputMethod, TonePlacement};
-use openvikey_session::capture::{ensure_distinct_store_paths, load_personal_store};
-use openvikey_session::persistence::DebouncedSaver;
+use openvikey_session::capture::ensure_distinct_store_paths;
 use openvikey_session::session::{LabSession, SessionCursors};
+#[cfg(windows)]
+use openvikey_win::console::ConsoleControlHandler;
 #[cfg(windows)]
 use openvikey_win::focus::HostHooks;
 use openvikey_win::focus::{FocusCache, run_host_message_loop};
 use openvikey_win::host::{TypingHost, bind_persist_notify, bind_runtime};
 use openvikey_win::inject::{InjectProfile, ProfilingInjector, SendInputSender};
-use openvikey_win::passphrase::{read_hidden_passphrase, release_console};
 use openvikey_win::persist::{
-    HostShutdown, capture_payload_from_host, default_store_paths, model_payload_from_host,
+    HostShutdown, default_store_paths, ensure_open_store_cli_path, load_open_personal_store,
+    spawn_open_pair_saver,
 };
 #[cfg(windows)]
 use openvikey_win::tray::install_host_ui;
@@ -40,8 +40,10 @@ struct Cli {
     /// Explicitly enable transformation in local terminal hosts. Learning/capture stay disabled.
     #[arg(long)]
     allow_terminal: bool,
+    /// Open development model JSON path.
     #[arg(long)]
     model: Option<PathBuf>,
+    /// Open development capture JSON path.
     #[arg(long)]
     capture: Option<PathBuf>,
     #[arg(long, default_value_t = 0)]
@@ -82,16 +84,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         default_store_paths(std::env::var_os("LOCALAPPDATA").map(PathBuf::from));
     let model_path = cli.model.unwrap_or(default_model);
     let capture_path = cli.capture.unwrap_or(default_capture);
+    ensure_open_store_cli_path(&model_path)?;
+    ensure_open_store_cli_path(&capture_path)?;
     ensure_distinct_store_paths(&model_path, &capture_path)?;
 
     if let Some(parent) = model_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    let passphrase = read_hidden_passphrase()?;
-    let provider = PassphraseProvider::new(passphrase.as_str(), KdfConfig::default());
-
-    let (model, log) = load_personal_store(&model_path, &capture_path, &provider)?;
+    let (model, log) = load_open_personal_store(&model_path, &capture_path)?;
     let mut session = LabSession::new_with_model(
         EngineConfig {
             method: cli.method.into(),
@@ -120,46 +121,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let focus = Arc::new(FocusCache::new());
     bind_runtime(Arc::clone(&host), Arc::clone(&focus));
 
-    let model_saver = Arc::new(DebouncedSaver::spawn_encrypted(
+    let pair_saver = Arc::new(spawn_open_pair_saver(
         model_path.clone(),
-        provider.clone(),
-        {
-            let host = Arc::clone(&host);
-            move || model_payload_from_host(&host)
-        },
-    ));
-    let capture_saver = Arc::new(DebouncedSaver::spawn_encrypted(
         capture_path.clone(),
-        provider,
-        {
-            let host = Arc::clone(&host);
-            move || capture_payload_from_host(&host)
-        },
+        Arc::clone(&host),
     ));
 
-    let model_for_notify = Arc::clone(&model_saver);
-    let capture_for_notify = Arc::clone(&capture_saver);
+    let saver_for_notify = Arc::clone(&pair_saver);
     bind_persist_notify(Arc::new(move || {
-        let _ = model_for_notify.notify();
-        let _ = capture_for_notify.notify();
+        let _ = saver_for_notify.notify();
     }));
 
     let shutdown = Arc::new(HostShutdown::new());
 
     #[cfg(windows)]
-    let _hooks = HostHooks::install(Arc::clone(&focus))?;
+    let console_control = ConsoleControlHandler::install(Arc::clone(&shutdown))?;
+    #[cfg(windows)]
+    let hooks = HostHooks::install(Arc::clone(&focus))?;
 
     #[cfg(windows)]
-    let _host_ui = install_host_ui(&shutdown, initial_mode)?;
+    let host_ui = install_host_ui(&shutdown, initial_mode)?;
     #[cfg(not(windows))]
     let _ = initial_mode;
 
-    release_console();
     run_host_message_loop(&shutdown);
 
-    let _ = model_saver.flush();
-    let _ = capture_saver.flush();
-    drop(model_saver);
-    drop(capture_saver);
+    #[cfg(windows)]
+    drop(host_ui);
+    #[cfg(windows)]
+    drop(hooks);
+    pair_saver.flush()?;
+    #[cfg(windows)]
+    drop(console_control);
+    drop(pair_saver);
     Ok(())
 }

@@ -7,6 +7,7 @@
 *.ovk
 *.ovk.bak
 *.ovkmodel
+*.ovkdev.json*
 /data/personal/
 *.model.enc
 

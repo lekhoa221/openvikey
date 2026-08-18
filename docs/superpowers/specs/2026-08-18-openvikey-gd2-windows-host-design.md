@@ -58,7 +58,7 @@ GĐ2a  hook + Electron inject + học session
 | **2b** | Ô password/PIN không bị Telex; left-context đọc được khi TSF cho phép | Thêm DLL TSF **chỉ đọc** (InputScope + surrounding text). Hook vẫn gõ | `left_context` giàu hơn; `allow_transform=false` theo InputScope |
 | **2c** | App trong list TSF (UWP, một số game chống cheat) gõ được | TSF **nhập chính** cho những exe đó (composition Windows, có gạch chân) | Cùng reducer; adapter `ReplaceRange` → UTF-16 range |
 
-**Không thuộc GĐ2 (mọi pha):** macOS GĐ3, G3 corpus, PII export, sync/CRDT, GUI settings đầy đủ, DPAPI bắt buộc (passphrase Part 2 vẫn đủ), keymap Tab/Esc như lab.
+**Không thuộc GĐ2 (mọi pha):** macOS GĐ3, G3 corpus, PII export, sync/CRDT, GUI settings đầy đủ, production key management, keymap Tab/Esc như lab. Post-checkpoint ADR 0008 uses open JSON only for the Windows development host; Part 2 lab encryption remains.
 
 ---
 
@@ -83,7 +83,7 @@ GĐ2a  hook + Electron inject + học session
 - **`openvikey-core`:** không OS, không `unsafe`. Giữ `unsafe_code = forbid`.
 - **`openvikey-session`:** tách reducer Part 2 khỏi TTY (document, capture, session, persistence). Lab và win cùng phụ thuộc crate này.
 - **`openvikey-lab`:** CLI + REPL; re-export session để test cũ ít đổi.
-- **`openvikey-win`:** hook, injector, overlay, tray. `unsafe` chỉ trong module Win32. **Không** phụ thuộc `crossterm`/`clap` của lab nếu có thể dùng `clap` riêng.
+- **`openvikey-win`:** hook, injector, overlay, tray. `unsafe` chỉ trong module Win32. **Không** phụ thuộc `crossterm`/`clap` của lab nếu có thể dùng `clap` riêng. Development persistence is open JSON under ADR 0008.
 - **`openvikey-win-tsf` (2b/2c):** DLL C++ hoặc `windows` COM — **không** viết trong 2a.
 
 Workspace hiện `unsafe_code = "forbid"` toàn cục → crate win **override** `unsafe_code = "allow"` và giới hạn file.
@@ -134,3 +134,5 @@ Workspace hiện `unsafe_code = "forbid"` toàn cục → crate win **override**
 ## 6. ADR
 
 Quyết định kiến trúc GĐ2: [`docs/decisions/0007-gd2-windows-hybrid-host.md`](../../decisions/0007-gd2-windows-hybrid-host.md).
+
+Windows development persistence override: [`docs/decisions/0008-open-development-persistence.md`](../../decisions/0008-open-development-persistence.md).

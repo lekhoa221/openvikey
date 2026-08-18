@@ -1,6 +1,7 @@
 //! Windows hook host for OpenViKey (GD2a).
 
 pub mod classify;
+pub mod console;
 pub mod focus;
 pub mod hook;
 pub mod host;
@@ -8,7 +9,6 @@ pub mod inject;
 pub mod ll;
 pub mod mouse;
 pub mod overlay;
-pub mod passphrase;
 pub mod persist;
 pub mod policy;
 pub mod sync;

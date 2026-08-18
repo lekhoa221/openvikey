@@ -4,7 +4,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use openvikey_core::types::InputKind;
+use openvikey_core::engine::EngineConfig;
+use openvikey_core::lexicon::{Lexicon, LexiconEntry};
+use openvikey_core::types::{InputKind, InputMethod, TonePlacement};
+use openvikey_session::session::LabSession;
 use openvikey_win::hook::ll_return;
 use openvikey_win::host::{TypingHost, handle_key_locked, on_try_lock_fail};
 use openvikey_win::policy::{HostHotkey, KeyDecision, OVK_EXTRA, RawKey};
@@ -518,4 +521,84 @@ fn undo_inject_fail_restores_session() {
     assert_eq!(host.last_injected_hwnd, before_hwnd);
     assert_eq!(host.session.document_text(), before_doc);
     assert_eq!(host.session.clone_model(), before_model);
+}
+
+fn vni_chao_host() -> TypingHost {
+    let config = EngineConfig {
+        method: InputMethod::Vni,
+        tone_placement: TonePlacement::Modern,
+    };
+    let lexicon = Lexicon::from_entries(
+        [LexiconEntry {
+            token_nfc: "chào".to_string(),
+            frequency: 10,
+        }],
+        [],
+        Some("win-chao"),
+    );
+    TypingHost::new_with_session(LabSession::new(config, lexicon))
+}
+
+fn type_vni(host: &mut TypingHost, text: &str) {
+    for (index, ch) in text.chars().enumerate() {
+        let vk = if ch.is_ascii_alphabetic() {
+            u16::from(ch.to_ascii_uppercase() as u8)
+        } else {
+            u16::from(ch as u8)
+        };
+        host.handle_key(key(vk), i64::try_from(index).unwrap_or(0));
+    }
+}
+
+#[test]
+fn electron_punct_does_not_auto_telex_fix_but_space_does() {
+    let mut electron = vni_chao_host();
+    electron.set_hwnd(2, "chrome.exe".into(), 1);
+    type_vni(&mut electron, "ch2ao");
+    electron.recorded.clear();
+    electron.handle_key(key(0xBE), 10);
+    assert!(
+        !electron.recorded.iter().any(|cmd| matches!(
+            cmd,
+            InjectCommand::Replace { text_nfc, .. } if text_nfc == "chào"
+        )),
+        "electron period recorded {:?}",
+        electron.recorded
+    );
+
+    let mut win32 = vni_chao_host();
+    type_vni(&mut win32, "ch2ao");
+    win32.recorded.clear();
+    win32.handle_key(key(0x20), 10);
+    assert!(
+        win32.recorded.iter().any(|cmd| matches!(
+            cmd,
+            InjectCommand::Replace { text_nfc, .. } if text_nfc == "chào"
+        )),
+        "win32 space recorded {:?}",
+        win32.recorded
+    );
+}
+
+#[test]
+fn backspace_after_telex_fix_auto_restores_composition() {
+    let mut host = vni_chao_host();
+    type_vni(&mut host, "ch2ao");
+    host.handle_key(key(0x20), 10);
+    assert_eq!(host.last_injected_token, "chào");
+    host.recorded.clear();
+    let decision = host.handle_key(key(0x08), 11);
+    assert!(matches!(
+        decision,
+        KeyDecision::EatAndInject(InputKind::Backspace)
+    ));
+    assert_eq!(host.session.composition_text(), "ch2ao");
+    assert!(
+        host.recorded.iter().any(|cmd| matches!(
+            cmd,
+            InjectCommand::Replace { text_nfc, .. } if text_nfc == "ch2ao"
+        )),
+        "restore recorded {:?}",
+        host.recorded
+    );
 }

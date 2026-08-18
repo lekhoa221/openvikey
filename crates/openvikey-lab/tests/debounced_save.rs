@@ -64,3 +64,33 @@ fn lazy_snapshot_runs_on_worker_and_coalesces_notifies() {
         b"late-serialize"
     );
 }
+
+#[test]
+fn failed_task_stays_pending_until_flush_retries_it() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let saver = DebouncedSaver::spawn_task(Duration::from_millis(10), {
+        let calls = Arc::clone(&calls);
+        move || {
+            let call = calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                Err("one-shot failure".to_string())
+            } else {
+                Ok(())
+            }
+        }
+    });
+    saver.notify().unwrap();
+    for _ in 0..100 {
+        if calls.load(Ordering::SeqCst) >= 1 {
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    saver.flush().unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}

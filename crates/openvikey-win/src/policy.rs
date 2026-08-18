@@ -43,6 +43,7 @@ pub enum HostHotkey {
     AcceptTop,
     RejectTop,
     UndoLast,
+    ForgetLastRule,
     ToggleMode,
 }
 
@@ -189,17 +190,25 @@ pub fn is_terminal_exe(exe: &str) -> bool {
         .any(|terminal| name.eq_ignore_ascii_case(terminal))
 }
 
+#[must_use]
+pub fn is_denylisted(exe: &str) -> bool {
+    let name = executable_name(exe);
+    DENYLIST
+        .iter()
+        .any(|denied| name.eq_ignore_ascii_case(denied))
+}
+
+#[must_use]
+pub fn allows_learning(exe: &str) -> bool {
+    !is_terminal_exe(exe) && !is_denylisted(exe)
+}
+
 fn requires_terminal_opt_in(exe: &str) -> bool {
     let name = executable_name(exe);
     is_terminal_exe(exe)
         || AMBIGUOUS_TERMINAL_HOSTS
             .iter()
             .any(|host| name.eq_ignore_ascii_case(host))
-}
-
-fn is_denylisted(exe: &str) -> bool {
-    let name = executable_name(exe);
-    DENYLIST.iter().any(|d| name.eq_ignore_ascii_case(d))
 }
 
 fn note_toggle_chord(raw: &RawKey) {
@@ -227,9 +236,13 @@ fn match_hotkey_keydown(raw: &RawKey) -> Option<HostHotkey> {
     if !raw.control {
         return None;
     }
-    // Ctrl+. Accept
-    if raw.vk == 0xBE && !raw.shift {
-        return Some(HostHotkey::AcceptTop);
+    // Ctrl+Shift+. forget last rule; Ctrl+. Accept
+    if raw.vk == 0xBE {
+        return Some(if raw.shift {
+            HostHotkey::ForgetLastRule
+        } else {
+            HostHotkey::AcceptTop
+        });
     }
     // Ctrl+, Reject
     if raw.vk == 0xBC && !raw.shift {

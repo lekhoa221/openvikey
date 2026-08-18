@@ -3,6 +3,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
+use openvikey_core::correction::InterventionConfig;
 use openvikey_core::engine::EngineConfig;
 use openvikey_core::lexicon::{Lexicon, LexiconEntry};
 use openvikey_core::model::{AdaptiveModel, RuleContextKey};
@@ -18,7 +19,7 @@ use crate::overlay::overlay_lines;
 use crate::policy::{HostHotkey, HostState, KeyDecision, Mode, RawKey, decide};
 use crate::sync::{
     InjectCommand, commands_from_accept, commands_from_caret_break, commands_from_typed,
-    commands_from_undo,
+    commands_from_undo, grapheme_len,
 };
 
 struct HostRuntime {
@@ -323,8 +324,7 @@ impl TypingHost {
             self.reset_for_focus_change(at_ms);
             self.hwnd = hwnd;
         }
-        self.foreground_exe = exe;
-        self.profile = profile_for_exe(&self.foreground_exe);
+        self.apply_foreground_surface(exe);
     }
 
     /// Synchronize a Winevent generation, including A → blocked target → same A transitions.
@@ -334,8 +334,7 @@ impl TypingHost {
             self.hwnd = hwnd;
             self.focus_generation = generation;
         }
-        self.foreground_exe = exe;
-        self.profile = profile_for_exe(&self.foreground_exe);
+        self.apply_foreground_surface(exe);
     }
 
     fn reset_for_focus_change(&mut self, at_ms: i64) {
@@ -360,6 +359,9 @@ impl TypingHost {
                 }
             }
             HostHotkey::UndoLast => self.undo_last(at_ms),
+            HostHotkey::ForgetLastRule => {
+                let _ = self.session.forget_last_rule();
+            }
             HostHotkey::ToggleMode => {
                 self.apply_caret_break(at_ms);
                 self.last_injected_token.clear();
@@ -397,12 +399,12 @@ impl TypingHost {
         let decision = decide(&raw, &state);
         match &decision {
             KeyDecision::EatAndInject(kind) => {
-                let pass_backspace = matches!(kind, InputKind::Backspace)
+                let composition_was_empty = matches!(kind, InputKind::Backspace)
                     && self.session.composition_text().is_empty();
                 if self.apply_typed(kind.clone(), at_ms).is_err() {
                     return on_try_lock_fail(&decision);
                 }
-                if pass_backspace {
+                if composition_was_empty && self.session.composition_text().is_empty() {
                     self.last_injected_token.clear();
                     self.last_injected_hwnd = 0;
                     return KeyDecision::Pass;
@@ -482,6 +484,10 @@ impl TypingHost {
     }
 
     fn apply_typed(&mut self, kind: InputKind, at_ms: i64) -> Result<(), InjectError> {
+        let restoring_backspace = matches!(kind, InputKind::Backspace)
+            && self.session.composition_text().is_empty()
+            && !self.last_injected_token.is_empty();
+        let last_token = self.last_injected_token.clone();
         let checkpoint = self.session.checkpoint_for_inject(&kind);
         let allow_learning = self.allow_learning_for_foreground();
         let context = InputContext {
@@ -489,6 +495,23 @@ impl TypingHost {
             allow_learning,
         };
         let obs = self.session.inject(kind, context, at_ms);
+        if restoring_backspace && !obs.snapshot.rendered.is_empty() {
+            let cmds = [InjectCommand::Replace {
+                backspace_graphemes: grapheme_len(&last_token).saturating_add(1),
+                text_nfc: obs.snapshot.rendered.clone(),
+            }];
+            if let Err(error) = self.apply_commands(&cmds) {
+                self.session.restore_inject_checkpoint(checkpoint);
+                return Err(error);
+            }
+            if !allow_learning {
+                self.session.restore_persistent_state(&checkpoint);
+            }
+            self.sent.clone_from(&obs.snapshot.rendered);
+            self.last_injected_token.clone_from(&obs.snapshot.rendered);
+            self.last_injected_hwnd = self.hwnd;
+            return Ok(());
+        }
         let (cmds, sent) = commands_from_typed(&obs, &self.sent);
         if let Err(error) = self.apply_commands(&cmds) {
             self.session.restore_inject_checkpoint(checkpoint);
@@ -516,9 +539,27 @@ impl TypingHost {
         Ok(())
     }
 
+    fn apply_foreground_surface(&mut self, exe: String) {
+        self.foreground_exe = exe;
+        self.profile = profile_for_exe(&self.foreground_exe);
+        self.session
+            .set_intervention_config(self.intervention_for_foreground());
+    }
+
+    fn intervention_for_foreground(&self) -> InterventionConfig {
+        if crate::policy::is_terminal_exe(&self.foreground_exe)
+            || crate::policy::is_denylisted(&self.foreground_exe)
+        {
+            InterventionConfig::default()
+        } else if self.profile == InjectProfile::Electron {
+            InterventionConfig::electron()
+        } else {
+            InterventionConfig::win32()
+        }
+    }
+
     fn allow_learning_for_foreground(&self) -> bool {
-        self.profile == InjectProfile::Win32
-            && !crate::policy::is_terminal_exe(&self.foreground_exe)
+        self.mode == Mode::Viet && crate::policy::allows_learning(&self.foreground_exe)
     }
 
     fn apply_caret_break(&mut self, at_ms: i64) {

@@ -176,6 +176,7 @@ pub enum CandidateSource {
     Fuzzy,
     Abbreviation,
     Diacritics,
+    Personal,
 }
 
 /// Candidate word suggestion emitted by generators.

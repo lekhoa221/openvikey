@@ -1,5 +1,7 @@
 # OpenViKey GĐ2a — Hook + Electron Implementation Plan
 
+> **Historical implementation record:** Task 10 documents the original encrypted passphrase adapter. Post-checkpoint ADR 0008 removes the passphrase from `openvikey-win` and uses open `model.ovkdev.json` / `capture.ovkdev.json`; core and lab encryption remain intact.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Extract the Part 2 session reducer into `openvikey-session` and ship `openvikey-win` so Telex types into Notepad and Cursor via a keyboard hook, Enter still submits/newlines, and Auto replacements actually appear in the app.
@@ -14,7 +16,7 @@
 
 - Do not modify `crates/openvikey-core/src/engine/**`, `types.rs`, or `model.rs`.
 - Do not copy VKey/OpenKey/espanso source.
-- `unsafe` only in `hook.rs`, `mouse.rs`, `inject.rs`, `overlay.rs`, `tray.rs`, `passphrase.rs`, `focus.rs`.
+- `unsafe` only in `hook.rs`, `mouse.rs`, `inject.rs`, `overlay.rs`, `tray.rs`, `focus.rs`, and post-checkpoint `console.rs`; `passphrase.rs` is retired.
 - Do not `[lints] workspace = true` on `openvikey-win` (workspace `unsafe_code = "forbid"` cannot be allowed later).
 - Tab/Esc always `Pass`. Enter is `CommitAndPass`, never U+0020.
 - `OVK_EXTRA` → `Pass` (never eat injected keys). Physical keys while `is_sending` → `EatAndIgnore`.

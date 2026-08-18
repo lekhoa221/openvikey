@@ -7,6 +7,7 @@ use openvikey_core::correction::{
 };
 use openvikey_core::decision::{ActionCap, DecisionConfig, DecisionState, decide};
 use openvikey_core::feedback::LearningSession;
+use openvikey_core::generate::personal::PersonalGenerator;
 use openvikey_core::generate::{Generator, LeftContext};
 use openvikey_core::model::{AdaptiveModel, ModelConfig, ModelView, RuleContextKey};
 use openvikey_core::rank::{RankingContext, ScoreConfig, rank};
@@ -586,4 +587,110 @@ fn learning_disabled_does_not_mutate_model() {
         false,
     );
     assert_eq!(model.to_json_payload().unwrap(), before);
+}
+
+#[test]
+fn left_token_backoff_sums_mass_and_keeps_other_candidates_isolated() {
+    let toi = key("khogn", "không");
+    let mut rat = toi.clone();
+    rat.left_token_nfc = Some("rất".to_string());
+    let mut other = toi.clone();
+    other.candidate_nfc = "khổng".to_string();
+    other.source_rule_id = "seed:khogn-other".to_string();
+
+    let mut model = AdaptiveModel::default();
+    model.apply_feedback(
+        &toi,
+        &feedback(1, 100, FeedbackKind::Accept { candidate_id: 1 }),
+        true,
+    );
+    model.apply_feedback(
+        &rat,
+        &feedback(2, 100, FeedbackKind::Accept { candidate_id: 1 }),
+        true,
+    );
+    model.apply_feedback(
+        &other,
+        &feedback(3, 100, FeedbackKind::Accept { candidate_id: 2 }),
+        true,
+    );
+
+    assert_eq!(model.positive_mass(&toi, 100), 2.0);
+    assert_eq!(model.positive_mass(&rat, 100), 2.0);
+    assert_eq!(model.positive_mass(&other, 100), 1.0);
+}
+
+#[test]
+fn implicit_correction_adds_one_and_a_half_mass() {
+    let mut model = AdaptiveModel::default();
+    let rule = key("ko", "không");
+    model.apply_feedback(
+        &rule,
+        &feedback(
+            1,
+            0,
+            FeedbackKind::ImplicitCorrection {
+                original: "ko".into(),
+                replacement: "không".into(),
+            },
+        ),
+        true,
+    );
+    assert_eq!(model.positive_mass(&rule, 0), 1.5);
+}
+
+#[test]
+fn personal_store_promotes_on_second_repeat_and_old_payload_loads() {
+    let mut model = AdaptiveModel::default();
+    assert!(!model.record_personal_correction(InputMethod::Vni, "x3uong", "xưởng", true));
+    assert!(model.personal_promoted().is_empty());
+    assert!(model.record_personal_correction(InputMethod::Vni, "x3uong", "xưởng", true));
+    assert_eq!(
+        model.personal_promoted(),
+        vec![(InputMethod::Vni, "x3uong".into(), "xưởng".into())]
+    );
+
+    let legacy = br#"{"version":1,"config":{"half_life_ms":2592000000,"max_events_per_rule":512,"auto_undo_window":10},"entries":[]}"#;
+    let loaded = AdaptiveModel::from_json_payload(legacy).expect("legacy payload");
+    assert!(loaded.personal_promoted().is_empty());
+}
+
+#[test]
+fn left_token_backoff_uses_max_decision_state() {
+    let toi = key("khogn", "không");
+    let mut rat = toi.clone();
+    rat.left_token_nfc = Some("rất".to_string());
+    let mut model = AdaptiveModel::default();
+    model.record_decision(&toi, DecisionState::Auto, true);
+    assert_eq!(model.state(&rat, 0), DecisionState::Auto);
+}
+
+#[test]
+fn auto_settled_mass_caps_at_twenty_four_settlements() {
+    let mut model = AdaptiveModel::default();
+    let rule = key("ko", "không");
+    for edit_id in 1..=25 {
+        model.apply_feedback(
+            &rule,
+            &feedback(edit_id, 0, FeedbackKind::AutoSettled { edit_id }),
+            true,
+        );
+    }
+    assert!((model.positive_mass(&rule, 0) - 7.2).abs() < 1e-12);
+}
+
+#[test]
+fn personal_generator_looks_up_promoted_normalized() {
+    let generator = PersonalGenerator::for_method(
+        InputMethod::Vni,
+        &[(InputMethod::Vni, "x3uong".into(), "xưởng".into())],
+    );
+    let candidates = generator.generate(
+        &CompositionSnapshot::new(1, "x3uong".into(), "x3uong".into()),
+        &LeftContext::default(),
+    );
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].text, "xưởng");
+    assert_eq!(candidates[0].source, CandidateSource::Personal);
+    assert_eq!(candidates[0].id, 5_000_000);
 }

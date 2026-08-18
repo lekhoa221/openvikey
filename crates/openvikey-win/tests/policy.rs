@@ -147,6 +147,23 @@ fn ctrl_period_accepts_ctrl_z_does_not_undo() {
 }
 
 #[test]
+fn ctrl_shift_period_forgets_last_rule() {
+    let mut forget = key(0xBE);
+    forget.control = true;
+    forget.shift = true;
+    assert_eq!(
+        decide(&forget, &viet()),
+        KeyDecision::Hotkey(HostHotkey::ForgetLastRule)
+    );
+    let mut accept = key(0xBE);
+    accept.control = true;
+    assert_eq!(
+        decide(&accept, &viet()),
+        KeyDecision::Hotkey(HostHotkey::AcceptTop)
+    );
+}
+
+#[test]
 fn enter_is_commit_and_pass_newline() {
     assert_eq!(
         decide(&key(0x0D), &viet()),

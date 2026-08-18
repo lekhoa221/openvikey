@@ -1,25 +1,22 @@
-//! Passphrase buffer key helper (no console I/O in these tests).
-
-use openvikey_win::passphrase::apply_passphrase_key;
+//! The Windows development host must start without passphrase authentication.
 
 #[test]
-fn passphrase_backspace() {
-    let mut b = String::from("ab");
-    assert!(!apply_passphrase_key(&mut b, 0x08, None));
-    assert_eq!(b, "a");
-}
+fn windows_host_runtime_has_no_passphrase_prompt_or_provider() {
+    let main = std::fs::read_to_string("src/main.rs").unwrap();
+    let lib = std::fs::read_to_string("src/lib.rs").unwrap();
+    let manifest = std::fs::read_to_string("Cargo.toml").unwrap();
 
-#[test]
-fn passphrase_enter_finishes() {
-    let mut b = String::from("secret");
-    assert!(apply_passphrase_key(&mut b, 0x0D, None));
-    assert_eq!(b, "secret");
-}
-
-#[test]
-fn passphrase_char_appends() {
-    let mut b = String::new();
-    assert!(!apply_passphrase_key(&mut b, 0x41, Some('a')));
-    assert!(!apply_passphrase_key(&mut b, 0x42, Some('b')));
-    assert_eq!(b, "ab");
+    for forbidden in [
+        "read_hidden_passphrase",
+        "PassphraseProvider",
+        "spawn_encrypted",
+        "KdfConfig",
+    ] {
+        assert!(
+            !main.contains(forbidden),
+            "openvikey-win runtime must not depend on {forbidden}"
+        );
+    }
+    assert!(!lib.contains("pub mod passphrase"));
+    assert!(!manifest.contains("zeroize"));
 }

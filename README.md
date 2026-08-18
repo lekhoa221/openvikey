@@ -70,7 +70,11 @@ Windows system hook host (Notepad + Cursor/Electron). **Turn UniKey / other IMEs
 cargo run -p openvikey-win -- --method telex --allow-terminal
 ```
 
-Optional: `--model` / `--capture` (default `%LOCALAPPDATA%\OpenViKey\model.ovk` and `capture.ovk`), `--electron-gap-ms` for Electron SendInput spacing. Passphrase is read hidden on the console before the message loop.
+Optional: `--model` / `--capture` (default `%LOCALAPPDATA%\OpenViKey\model.ovkdev.json` and `capture.ovkdev.json`), `--electron-gap-ms` for Electron SendInput spacing. Custom store names must end in `.ovkdev.json` so Git ignores the plaintext and all recovery sidecars. The Windows development host starts without a passphrase and stores these two files as inspectable plaintext JSON. Existing encrypted `.ovk` files are left untouched.
+
+> **Development privacy warning:** `model.ovkdev.json`, `capture.ovkdev.json`, and their recovery sidecars are not encrypted. Do not share them or use this open-storage mode with sensitive text. Terminal/Electron learning and capture remain disabled.
+
+Exit from the tray or press **Ctrl+C** in the launching console for a graceful shutdown: input hooks stop first, then the coherent model/capture pair is flushed.
 
 Debug builds embed the project-authored development lexicon; it is **not release-quality corpus evidence**. Release builds fail closed and require an explicit `--lexicon` until G3 closes. `--allow-terminal` explicitly enables Pi/PowerShell/Windows Terminal while disabling learning, capture, and persistence there. SSH running inside a terminal cannot yet be detected in GĐ2a: toggle OpenViKey to English before entering terminal secrets. Direct SSH clients, password managers, `LogonUI.exe`, and `CredentialUIBroker.exe` remain blocked.
 
@@ -94,7 +98,7 @@ Suggestion smoke: type `ko` and confirm the overlay shows `không`, then press *
 
 ## Bảo mật & riêng tư
 
-Local-first, **zero backend**. Mô hình lưu trong container mã hoá (envelope: DEK + XChaCha20-Poly1305, DEK bọc bởi OS keychain và/hoặc passphrase Argon2id). **Không tự động gửi plaintext hay khoá đi đâu** — chỉ *ciphertext do bạn chủ động export* mới có thể rời máy. Đồng bộ đa máy (mang blob mã hoá đi) là tính năng *dự kiến*; v1 chạy single-device.
+Local-first, **zero backend**. Core và `openvikey-lab` vẫn hỗ trợ container mã hoá (envelope: DEK + XChaCha20-Poly1305, DEK bọc bởi passphrase Argon2id). Riêng `openvikey-win` hiện dùng **plaintext JSON có chủ đích trong giai đoạn phát triển** để bỏ prompt và dễ kiểm tra learning state; xem cảnh báo phía trên. Không có dữ liệu nào tự động rời máy.
 
 ## License
 

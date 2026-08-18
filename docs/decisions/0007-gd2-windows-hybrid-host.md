@@ -29,7 +29,7 @@ TSF-only would delay the owner’s daily Agent workflow and still miss apps wher
 
 - README / v1 spec wording “v2 = TSF” is outdated; they point at this ADR and the GĐ2 master spec.
 - `openvikey-win` must allow `unsafe` in FFI modules only. Antivirus heuristics will flag the hook; document, don’t pretend TSF-only avoids that for 2a.
-- Lab `session` remains valid for headless learning tests. Same encrypted files if paths/passphrase match.
+- Lab `session` remains valid for headless learning tests. The original adapter shared encrypted files when paths/passphrases matched; post-checkpoint ADR 0008 gives `openvikey-win` distinct open JSON paths while lab retains encrypted stores.
 - GĐ2 does not close G3 (lexicon size).
 
 ## Amendment (2026-08-18)

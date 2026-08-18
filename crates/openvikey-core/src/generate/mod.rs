@@ -2,11 +2,12 @@
 //!
 //! Wave 0 locks the seam: a generator sees a composition snapshot and
 //! left context only. It must not take a model. Concrete generators
-//! (abbrev / telex_fix / fuzzy / diacritics) arrive in M5 and M7.
+//! (abbrev / telex_fix / fuzzy / diacritics / personal) stay table-driven.
 
 pub mod abbrev;
 pub mod diacritics;
 pub mod fuzzy;
+pub mod personal;
 pub mod telex_fix;
 mod vietnamese;
 

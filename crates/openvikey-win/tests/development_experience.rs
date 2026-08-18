@@ -137,8 +137,31 @@ fn ko_then_ctrl_period_replaces_with_khong_through_ll_and_injector() {
 fn opted_in_terminal_transforms_without_learning_or_capture() {
     let session = LabSession::new(EngineConfig::default(), development_lexicon());
     let mut host = TypingHost::new_with_session(session);
-    host.foreground_exe = "WindowsTerminal.exe".into();
     host.allow_terminal = true;
+    host.set_hwnd(10, "WindowsTerminal.exe".into(), 1);
+    let before = host.session.save_snapshot();
+
+    type_ascii(&mut host, "ko");
+    let mut accept = key(0xBE);
+    accept.control = true;
+    assert_eq!(
+        host.handle_key(accept, 10),
+        KeyDecision::Hotkey(HostHotkey::AcceptTop),
+        "terminal should still transform"
+    );
+
+    let after = host.session.save_snapshot();
+    assert_eq!(after.model, before.model);
+    assert_eq!(after.cursors, before.cursors);
+    assert_eq!(after.last_at_ms, before.last_at_ms);
+    assert!(after.capture_records.is_empty());
+}
+
+#[test]
+fn electron_browser_learns_on_accept() {
+    let session = LabSession::new(EngineConfig::default(), development_lexicon());
+    let mut host = TypingHost::new_with_session(session);
+    host.set_hwnd(10, "chrome.exe".into(), 1);
     let before = host.session.save_snapshot();
 
     type_ascii(&mut host, "ko");
@@ -150,10 +173,8 @@ fn opted_in_terminal_transforms_without_learning_or_capture() {
     );
 
     let after = host.session.save_snapshot();
-    assert_eq!(after.model, before.model);
-    assert_eq!(after.cursors, before.cursors);
-    assert_eq!(after.last_at_ms, before.last_at_ms);
-    assert!(after.capture_records.is_empty());
+    assert_ne!(after.model, before.model);
+    assert!(!after.capture_records.is_empty());
 }
 
 #[test]

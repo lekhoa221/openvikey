@@ -2,10 +2,14 @@
 
 #![allow(clippy::float_cmp)]
 
-use openvikey_core::feedback::{ImplicitCorrectionMiner, LearningSession};
+use openvikey_core::feedback::{
+    CompositionPeak, CompositionRewindMiner, ImplicitCorrectionMiner, LearningSession,
+    RewindEvaluate,
+};
 use openvikey_core::model::{AdaptiveModel, ModelView, RuleContextKey};
 use openvikey_core::types::{
-    CandidateSource, EditRange, FeedbackKind, InputMethod, RangeBasis, ReplaceRangeAction,
+    Candidate, CandidateSource, EditRange, FeedbackKind, InputMethod, RangeBasis,
+    ReplaceRangeAction,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -68,13 +72,13 @@ fn auto_settles_once_after_ten_subsequent_input_or_edit_events() {
         );
         assert_eq!(session.model().positive_mass(&rule(), 200), 0.0);
     }
-    let settled = session.observe_input_or_edit(10, 110, true);
+    let settled = session.observe_input_or_edit(10, 4100, true);
     assert_eq!(settled.len(), 1);
     assert_eq!(settled[0].kind, FeedbackKind::AutoSettled { edit_id: 42 });
-    assert_eq!(session.model().positive_mass(&rule(), 110), 0.3);
-    let mass_at_111 = session.model().positive_mass(&rule(), 111);
-    assert!(session.observe_input_or_edit(11, 111, true).is_empty());
-    assert_eq!(session.model().positive_mass(&rule(), 111), mass_at_111);
+    assert_eq!(session.model().positive_mass(&rule(), 4100), 0.3);
+    let mass_at_4111 = session.model().positive_mass(&rule(), 4111);
+    assert!(session.observe_input_or_edit(11, 4111, true).is_empty());
+    assert_eq!(session.model().positive_mass(&rule(), 4111), mass_at_4111);
 }
 
 #[test]
@@ -114,4 +118,81 @@ fn learning_disabled_still_undoes_but_does_not_update_model() {
     session.record_auto_edit(rule(), edit(), 100, false);
     assert!(session.undo(10, 1, 110, false).is_some());
     assert_eq!(session.model().to_json_payload().unwrap(), before);
+}
+
+fn peak(original: &str, candidate: &str, started_at_ms: i64) -> CompositionPeak {
+    CompositionPeak {
+        original_nfc: original.to_string(),
+        raw_keys: original.to_string(),
+        candidates: vec![Candidate {
+            id: 1,
+            text: candidate.to_string(),
+            source: CandidateSource::Abbreviation,
+            evidence: "seed:ko".to_string(),
+            base_score: 0.8,
+            final_score: 0.8,
+        }],
+        left_token_nfc: None,
+        input_method: InputMethod::Telex,
+        started_at_ms,
+    }
+}
+
+#[test]
+fn rewind_miner_keeps_last_peak_only() {
+    let mut miner = CompositionRewindMiner::default();
+    miner.on_backspace(peak("ko", "không", 0));
+    miner.on_key();
+    miner.on_backspace(peak("kx", "kẻ", 5));
+    miner.on_key();
+    match miner.evaluate("không", 1, 20) {
+        RewindEvaluate::Unmatched {
+            original_nfc,
+            replacement_nfc,
+            ..
+        } => {
+            assert_eq!(original_nfc, "kx");
+            assert_eq!(replacement_nfc, "không");
+        }
+        other => panic!("expected unmatched last peak, got {other:?}"),
+    }
+}
+
+#[test]
+fn rewind_miner_times_out_after_ten_seconds() {
+    let mut miner = CompositionRewindMiner::default();
+    miner.on_backspace(peak("ko", "không", 0));
+    miner.on_key();
+    assert!(matches!(
+        miner.evaluate("không", 1, 10_001),
+        RewindEvaluate::Ignored
+    ));
+}
+
+#[test]
+fn rewind_miner_matches_peak_candidate() {
+    let mut miner = CompositionRewindMiner::default();
+    miner.on_backspace(peak("ko", "không", 0));
+    miner.on_key();
+    match miner.evaluate("không", 3, 50) {
+        RewindEvaluate::Matched { key, .. } => {
+            assert_eq!(key.original_nfc, "ko");
+            assert_eq!(key.candidate_nfc, "không");
+            assert!(key.left_token_nfc.is_none());
+        }
+        other => panic!("expected match, got {other:?}"),
+    }
+}
+
+#[test]
+fn auto_does_not_settle_before_three_seconds() {
+    let mut session = LearningSession::new(AdaptiveModel::default(), 8);
+    session.record_auto_edit(rule(), edit(), 100, true);
+    for seq in 1..=10 {
+        assert!(session.observe_input_or_edit(seq, 200, true).is_empty());
+    }
+    assert_eq!(session.model().positive_mass(&rule(), 200), 0.0);
+    let settled = session.observe_input_or_edit(11, 4100, true);
+    assert_eq!(settled.len(), 1);
+    assert_eq!(session.model().positive_mass(&rule(), 4100), 0.3);
 }

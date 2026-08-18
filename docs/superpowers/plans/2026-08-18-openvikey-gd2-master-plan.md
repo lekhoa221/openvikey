@@ -48,7 +48,7 @@ Each plan produces a **runnable** `openvikey-win` (2b/2c add a DLL next to it). 
 
 **File map:** extract `openvikey-session`; add `openvikey-win` (`policy`, `sync`, `inject`, `classify`, `hook`, `overlay`, `tray`, `host`).
 
-**Task shape (detail in the 2a plan v3):** (1) extract session crate, (2) policy including OVK Pass / Backspace / Ctrl+C / Caps / Enter `CommitAndPass`, (3) sync from `obs.action` + punctuation delimiter, (4) `SendingGuard` + `Arc<AtomicBool>` + partial SendInput, (5) classify, (6) host + AcceptVisual/Undo + `SessionSaveSnapshot` + HWND, (7) hook return semantics, no key queue, (8) mouse + focus cache, (9) overlay + tray, (10) passphrase + persist + main, (11) deny + `no_key_log` includes `host.rs` + manual Notepad/Cursor gate. P95 is `#[ignore]`, not CI.
+**Task shape (detail in the historical 2a plan v3):** (1) extract session crate, (2) policy including OVK Pass / Backspace / Ctrl+C / Caps / Enter `CommitAndPass`, (3) sync from `obs.action` + punctuation delimiter, (4) `SendingGuard` + `Arc<AtomicBool>` + partial SendInput, (5) classify, (6) host + AcceptVisual/Undo + `SessionSaveSnapshot` + HWND, (7) hook return semantics, no key queue, (8) mouse + focus cache, (9) overlay + tray, (10) persist + main, (11) deny + `no_key_log` includes `host.rs` + manual Notepad/Cursor gate. P95 is `#[ignore]`, not CI. Post-checkpoint, ADR 0008 replaces the Windows passphrase prompt with open development JSON stores; core/lab encryption remains.
 
 **Not in 2a:** TSF, InputScope, bait char, autostart, Authenticode.
 
@@ -96,5 +96,6 @@ Each plan produces a **runnable** `openvikey-win` (2b/2c add a DLL next to it). 
 
 ## Pointers
 
-- ADR: [`docs/decisions/0007-gd2-windows-hybrid-host.md`](../../decisions/0007-gd2-windows-hybrid-host.md)
+- Host ADR: [`docs/decisions/0007-gd2-windows-hybrid-host.md`](../../decisions/0007-gd2-windows-hybrid-host.md)
+- Development persistence ADR: [`docs/decisions/0008-open-development-persistence.md`](../../decisions/0008-open-development-persistence.md)
 - Part 2 lab session remains the non-OS harness; README keeps that sentence.

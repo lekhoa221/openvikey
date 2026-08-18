@@ -5,13 +5,71 @@
 use crate::decision::{DecisionConfig, DecisionState, decide};
 use crate::feedback::LearningSession;
 use crate::generate::{Generator, LeftContext, collect_candidates};
+use crate::lexicon::Lexicon;
 use crate::model::{ModelView, RuleContextKey};
 use crate::rank::{RankingContext, ScoreConfig, rank};
 use crate::types::{
-    Candidate, CompositionSnapshot, EditRange, EngineAction, InputContext, InputMethod,
-    ReplaceRangeAction,
+    Candidate, CandidateSource, CompositionSnapshot, EditRange, EngineAction, InputContext,
+    InputMethod, ReplaceRangeAction,
 };
 use unicode_segmentation::UnicodeSegmentation;
+
+/// Which token-ending delimiters may trigger TelexFix policy auto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolicyDelimiters {
+    SpaceOnly,
+    SpaceAndPunctuation,
+}
+
+impl PolicyDelimiters {
+    #[must_use]
+    pub fn allows(self, delimiter: Option<char>) -> bool {
+        match delimiter {
+            Some(' ') => true,
+            Some(ch)
+                if matches!(self, Self::SpaceAndPunctuation)
+                    && matches!(ch, '.' | ',' | ';' | ':' | '?' | '!') =>
+            {
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Session-owned intervention policy. Not part of [`InputContext`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InterventionConfig {
+    pub telex_fix_policy_auto: bool,
+    pub policy_delimiters: PolicyDelimiters,
+}
+
+impl Default for InterventionConfig {
+    fn default() -> Self {
+        Self {
+            telex_fix_policy_auto: false,
+            policy_delimiters: PolicyDelimiters::SpaceAndPunctuation,
+        }
+    }
+}
+
+impl InterventionConfig {
+    #[must_use]
+    pub fn win32() -> Self {
+        Self {
+            telex_fix_policy_auto: true,
+            policy_delimiters: PolicyDelimiters::SpaceAndPunctuation,
+        }
+    }
+
+    #[must_use]
+    pub fn electron() -> Self {
+        Self {
+            telex_fix_policy_auto: true,
+            policy_delimiters: PolicyDelimiters::SpaceOnly,
+        }
+    }
+}
 
 /// Result of one generate → rank → decision pass.
 #[derive(Debug, Clone, PartialEq)]
@@ -213,4 +271,53 @@ fn rule_key(
 
 fn primary_rule_id(evidence: &str) -> &str {
     evidence.split('+').next().unwrap_or("")
+}
+
+fn is_telex_fix_candidate(candidate: &Candidate) -> bool {
+    candidate.source == CandidateSource::TelexFix
+        || candidate
+            .evidence
+            .split('+')
+            .any(|part| part.contains("telex-fix:") || part.contains("vni-fix:"))
+}
+
+/// TelexFix cold-start auto: unique reconstruction, lexicon gates, delimiter policy.
+#[must_use]
+pub fn telex_fix_policy_applies(
+    snapshot: &CompositionSnapshot,
+    candidates: &[Candidate],
+    delimiter: Option<char>,
+    config: InterventionConfig,
+    lexicon: &Lexicon,
+    allow_transform: bool,
+) -> bool {
+    if !allow_transform || !config.telex_fix_policy_auto {
+        return false;
+    }
+    if !config.policy_delimiters.allows(delimiter) {
+        return false;
+    }
+    let Some(top) = candidates.first() else {
+        return false;
+    };
+    if !is_telex_fix_candidate(top) {
+        return false;
+    }
+    let telex_count = candidates
+        .iter()
+        .filter(|candidate| is_telex_fix_candidate(candidate))
+        .count();
+    if telex_count != 1 {
+        return false;
+    }
+    if candidates
+        .get(1)
+        .is_some_and(|second| second.text == top.text)
+    {
+        return false;
+    }
+    if lexicon.contains(&snapshot.normalized) {
+        return false;
+    }
+    lexicon.contains(&top.text)
 }

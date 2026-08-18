@@ -2,11 +2,13 @@
 
 #![allow(clippy::float_cmp)]
 
+use openvikey_core::correction::InterventionConfig;
 use openvikey_core::engine::EngineConfig;
 use openvikey_core::lexicon::{Lexicon, LexiconEntry};
 use openvikey_core::model::{AdaptiveModel, ModelView, RuleContextKey};
 use openvikey_core::types::{
-    CandidateSource, FeedbackEvent, FeedbackKind, InputContext, InputKind, InputMethod,
+    CandidateSource, EngineAction, FeedbackEvent, FeedbackKind, InputContext, InputKind,
+    InputMethod,
 };
 use openvikey_lab::capture::{
     CAPTURE_VERSION, CaptureHeader, CaptureLog, SessionStoreError, load_personal_store, replay,
@@ -423,9 +425,9 @@ fn auto_settles_after_ten_following_events() {
             physical: None,
         },
         InputContext::default(),
-        49,
+        4000,
     );
-    assert!(session.model().positive_mass(&rule, 50) >= before + 0.29);
+    assert!(session.model().positive_mass(&rule, 4000) >= before + 0.29);
 }
 
 #[test]
@@ -896,4 +898,183 @@ fn capture_trim_keeps_the_newest_records() {
         })
         .collect();
     assert_eq!(seqs, vec![3, 4, 5]);
+}
+
+fn type_keys(session: &mut LabSession, text: &str, start_ms: i64) {
+    session.type_text(text, InputContext::default(), start_ms);
+}
+
+fn space_at(session: &mut LabSession, at_ms: i64) {
+    session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        at_ms,
+    );
+}
+
+fn backspace_n(session: &mut LabSession, count: usize, start_ms: i64) {
+    for index in 0..count {
+        session.inject(
+            InputKind::Backspace,
+            InputContext::default(),
+            start_ms.saturating_add(i64::try_from(index).unwrap_or(0)),
+        );
+    }
+}
+
+fn chao_lexicon() -> Lexicon {
+    Lexicon::from_entries(
+        [LexiconEntry {
+            token_nfc: "chào".to_string(),
+            frequency: 10,
+        }],
+        [],
+        Some("session-chao"),
+    )
+}
+
+#[test]
+fn composition_rewind_first_word_learns_abbrev_from_keys() {
+    let mut session = telex_session();
+    type_keys(&mut session, "ko", 0);
+    backspace_n(&mut session, 2, 2);
+    type_keys(&mut session, "khoong", 4);
+    assert_eq!(session.composition_text(), "không");
+    space_at(&mut session, 20);
+    assert!(
+        (session.model().positive_mass(&ko_rule(), 20) - 1.5).abs() < 1e-12,
+        "mass {}",
+        session.model().positive_mass(&ko_rule(), 20)
+    );
+}
+
+#[test]
+fn composition_rewind_two_rewinds_keeps_last_peak_only() {
+    let mut session = telex_session();
+    type_keys(&mut session, "ko", 0);
+    backspace_n(&mut session, 1, 2);
+    type_keys(&mut session, "x", 3);
+    backspace_n(&mut session, 2, 4);
+    type_keys(&mut session, "khoong", 6);
+    space_at(&mut session, 20);
+    assert_eq!(session.model().positive_mass(&ko_rule(), 20), 0.0);
+}
+
+#[test]
+fn composition_rewind_caret_break_cancels_learning() {
+    let mut session = telex_session();
+    type_keys(&mut session, "ko", 0);
+    backspace_n(&mut session, 1, 2);
+    session.inject(InputKind::CursorMoved, InputContext::default(), 3);
+    type_keys(&mut session, "khoong", 4);
+    space_at(&mut session, 20);
+    assert_eq!(session.model().positive_mass(&ko_rule(), 20), 0.0);
+}
+
+#[test]
+fn empty_commit_after_rewind_to_empty_does_not_attach_to_next_word() {
+    let mut session = telex_session();
+    type_keys(&mut session, "ko", 0);
+    backspace_n(&mut session, 2, 2);
+    space_at(&mut session, 4);
+    type_keys(&mut session, "xin", 5);
+    space_at(&mut session, 20);
+    assert_eq!(session.model().positive_mass(&ko_rule(), 20), 0.0);
+}
+
+#[test]
+fn personal_pair_promotes_on_second_composition_session() {
+    let mut session = telex_session();
+    for round in 0..2 {
+        let base = i64::from(round) * 40;
+        type_keys(&mut session, "aaa", base);
+        backspace_n(&mut session, 3, base + 3);
+        type_keys(&mut session, "bbb", base + 6);
+        space_at(&mut session, base + 20);
+    }
+    type_keys(&mut session, "aaa", 100);
+    assert!(
+        session.candidate_texts().iter().any(|text| text == "bbb"),
+        "personal overlay missing; got {:?}",
+        session.candidate_texts()
+    );
+}
+
+#[test]
+fn telex_fix_policy_auto_on_space_and_undo_restores_raw_keys() {
+    let mut session = LabSession::new(vni_config(), chao_lexicon());
+    type_keys(&mut session, "ch2ao", 0);
+    let last = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        10,
+    );
+    match &last.action {
+        Some(EngineAction::ReplaceRange(action)) => {
+            assert_eq!(action.replacement, "chào");
+        }
+        other => panic!("expected TelexFix replace, got {other:?}"),
+    }
+    session.inject(InputKind::Backspace, InputContext::default(), 11);
+    assert_eq!(session.composition_text(), "ch2ao");
+    assert!(!session.document_text().contains("chào"));
+    let after_mass = session.model().negative_mass(
+        &RuleContextKey {
+            input_method: InputMethod::Vni,
+            source: CandidateSource::TelexFix,
+            original_nfc: "ch2ao".into(),
+            candidate_nfc: "chào".into(),
+            left_token_nfc: None,
+            source_rule_id: "vni-fix:move-tone-2".into(),
+        },
+        12,
+    );
+    assert!(
+        after_mass < 0.1,
+        "immediate restore must not apply Undo mass, got {after_mass}"
+    );
+}
+
+#[test]
+fn electron_telex_fix_auto_is_space_only() {
+    let mut session = LabSession::new(vni_config(), chao_lexicon());
+    session.set_intervention_config(InterventionConfig::electron());
+    type_keys(&mut session, "ch2ao", 0);
+    let punct = session.inject(
+        InputKind::Boundary { delimiter: '.' },
+        InputContext::default(),
+        10,
+    );
+    assert!(
+        !matches!(punct.action, Some(EngineAction::ReplaceRange(_))),
+        "electron punct must not auto, got {:?}",
+        punct.action
+    );
+
+    let mut spaced = LabSession::new(vni_config(), chao_lexicon());
+    spaced.set_intervention_config(InterventionConfig::electron());
+    type_keys(&mut spaced, "ch2ao", 0);
+    let space = spaced.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        10,
+    );
+    match &space.action {
+        Some(EngineAction::ReplaceRange(action)) => {
+            assert_eq!(action.replacement, "chào");
+        }
+        other => panic!("expected electron space auto, got {other:?}"),
+    }
+}
+
+#[test]
+fn forget_last_rule_clears_rewind_mass() {
+    let mut session = telex_session();
+    type_keys(&mut session, "ko", 0);
+    backspace_n(&mut session, 2, 2);
+    type_keys(&mut session, "khoong", 4);
+    space_at(&mut session, 20);
+    assert!(session.model().positive_mass(&ko_rule(), 20) >= 1.5);
+    assert!(session.forget_last_rule());
+    assert_eq!(session.model().positive_mass(&ko_rule(), 20), 0.0);
 }

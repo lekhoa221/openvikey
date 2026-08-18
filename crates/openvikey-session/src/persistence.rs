@@ -33,6 +33,7 @@ enum Pending {
 }
 
 type SnapshotFn = Box<dyn FnMut() -> Result<Vec<u8>, String> + Send>;
+type TaskFn = Box<dyn FnMut() -> Result<(), String> + Send>;
 
 pub struct DebouncedSaver {
     sender: Sender<Message>,
@@ -59,7 +60,7 @@ impl DebouncedSaver {
         debounce: Duration,
         save: impl FnMut(Vec<u8>) -> Result<(), String> + Send + 'static,
     ) -> Self {
-        Self::spawn_with(debounce, None, save)
+        Self::spawn_with(debounce, None, None, save)
     }
 
     #[must_use]
@@ -68,12 +69,22 @@ impl DebouncedSaver {
         snapshot: impl FnMut() -> Result<Vec<u8>, String> + Send + 'static,
         save: impl FnMut(Vec<u8>) -> Result<(), String> + Send + 'static,
     ) -> Self {
-        Self::spawn_with(debounce, Some(Box::new(snapshot)), save)
+        Self::spawn_with(debounce, Some(Box::new(snapshot)), None, save)
+    }
+
+    /// Spawn a notify-only worker whose debounced task owns one coherent save operation.
+    #[must_use]
+    pub fn spawn_task(
+        debounce: Duration,
+        task: impl FnMut() -> Result<(), String> + Send + 'static,
+    ) -> Self {
+        Self::spawn_with(debounce, None, Some(Box::new(task)), |_| Ok(()))
     }
 
     fn spawn_with(
         debounce: Duration,
         mut snapshot: Option<SnapshotFn>,
+        mut task: Option<TaskFn>,
         mut save: impl FnMut(Vec<u8>) -> Result<(), String> + Send + 'static,
     ) -> Self {
         let (sender, receiver) = mpsc::channel();
@@ -86,8 +97,12 @@ impl DebouncedSaver {
                     match receiver.recv_timeout(debounce) {
                         Ok(message) => message,
                         Err(RecvTimeoutError::Timeout) => {
-                            last_error =
-                                persist_pending(&mut pending, snapshot.as_mut(), &mut save);
+                            last_error = persist_pending(
+                                &mut pending,
+                                snapshot.as_mut(),
+                                task.as_mut(),
+                                &mut save,
+                            );
                             continue;
                         }
                         Err(RecvTimeoutError::Disconnected) => break,
@@ -103,14 +118,23 @@ impl DebouncedSaver {
                     Message::Notify => pending = Pending::Dirty,
                     Message::Flush(reply) => {
                         if !matches!(pending, Pending::None) {
-                            last_error =
-                                persist_pending(&mut pending, snapshot.as_mut(), &mut save);
+                            last_error = persist_pending(
+                                &mut pending,
+                                snapshot.as_mut(),
+                                task.as_mut(),
+                                &mut save,
+                            );
                         }
                         let result = last_error.take().map_or(Ok(()), Err);
                         let _ = reply.send(result);
                     }
                     Message::Shutdown => {
-                        let _ = persist_pending(&mut pending, snapshot.as_mut(), &mut save);
+                        let _ = persist_pending(
+                            &mut pending,
+                            snapshot.as_mut(),
+                            task.as_mut(),
+                            &mut save,
+                        );
                         break;
                     }
                 }
@@ -149,20 +173,50 @@ impl DebouncedSaver {
 fn persist_pending(
     pending: &mut Pending,
     snapshot: Option<&mut SnapshotFn>,
+    task: Option<&mut TaskFn>,
     save: &mut impl FnMut(Vec<u8>) -> Result<(), String>,
 ) -> Option<String> {
-    let payload = match std::mem::replace(pending, Pending::None) {
-        Pending::None => return None,
-        Pending::Bytes(bytes) => bytes,
-        Pending::Dirty => match snapshot {
-            Some(snapshot) => match snapshot() {
-                Ok(bytes) => bytes,
-                Err(error) => return Some(error),
-            },
-            None => return Some("lazy snapshot is missing".to_string()),
-        },
-    };
-    save(payload).err()
+    match std::mem::replace(pending, Pending::None) {
+        Pending::None => None,
+        Pending::Bytes(bytes) => {
+            let retry = bytes.clone();
+            match save(bytes) {
+                Ok(()) => None,
+                Err(error) => {
+                    *pending = Pending::Bytes(retry);
+                    Some(error)
+                }
+            }
+        }
+        Pending::Dirty => {
+            if let Some(task) = task {
+                return match task() {
+                    Ok(()) => None,
+                    Err(error) => {
+                        *pending = Pending::Dirty;
+                        Some(error)
+                    }
+                };
+            }
+            let Some(snapshot) = snapshot else {
+                *pending = Pending::Dirty;
+                return Some("lazy snapshot is missing".to_string());
+            };
+            match snapshot() {
+                Ok(bytes) => match save(bytes) {
+                    Ok(()) => None,
+                    Err(error) => {
+                        *pending = Pending::Dirty;
+                        Some(error)
+                    }
+                },
+                Err(error) => {
+                    *pending = Pending::Dirty;
+                    Some(error)
+                }
+            }
+        }
+    }
 }
 
 impl Drop for DebouncedSaver {

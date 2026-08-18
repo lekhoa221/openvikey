@@ -5,21 +5,28 @@ use crate::capture::{
     trim_capture_to,
 };
 use crate::document::{CommittedUnit, DocumentBuffer};
-use openvikey_core::correction::{AutoEditContext, CorrectionSlice, run_learning_correction_slice};
+use openvikey_core::correction::{
+    AutoEditContext, CorrectionSlice, InterventionConfig, run_learning_correction_slice,
+    telex_fix_policy_applies,
+};
 use openvikey_core::decision::{DecisionConfig, DecisionState};
 use openvikey_core::engine::{Engine, EngineConfig};
-use openvikey_core::feedback::{ImplicitCorrectionMiner, LearningSession};
+use openvikey_core::feedback::{
+    CompositionPeak, CompositionRewindMiner, ImplicitCorrectionMiner, LearningSession,
+    RewindEvaluate,
+};
 use openvikey_core::generate::abbrev::AbbrevGenerator;
 use openvikey_core::generate::diacritics::DiacriticsGenerator;
 use openvikey_core::generate::fuzzy::FuzzyGenerator;
+use openvikey_core::generate::personal::PersonalGenerator;
 use openvikey_core::generate::telex_fix::TelexFixGenerator;
 use openvikey_core::generate::{Generator, LeftContext};
 use openvikey_core::lexicon::Lexicon;
 use openvikey_core::model::{AdaptiveModel, ModelError, RuleContextKey};
 use openvikey_core::rank::ScoreConfig;
 use openvikey_core::types::{
-    Candidate, CompositionSnapshot, EditRange, EngineAction, FeedbackEvent, FeedbackKind,
-    InputContext, InputEvent, InputKind, InputMethod, Modifiers, RangeBasis,
+    Candidate, CandidateSource, CompositionSnapshot, EditRange, EngineAction, FeedbackEvent,
+    FeedbackKind, InputContext, InputEvent, InputKind, InputMethod, Modifiers, RangeBasis,
 };
 use serde::Serialize;
 use unicode_segmentation::UnicodeSegmentation;
@@ -58,6 +65,17 @@ pub struct AcceptVisual {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UndoVisual {
     pub show_nfc: String,
+    pub restored_composition: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LastLearned {
+    Rule(RuleContextKey),
+    Personal {
+        input_method: InputMethod,
+        original_nfc: String,
+        replacement_nfc: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -90,6 +108,10 @@ pub struct LabSession {
     last_at_ms: i64,
     capture: Vec<CaptureRecord>,
     capturing: bool,
+    rewind: CompositionRewindMiner,
+    intervention: InterventionConfig,
+    pending_restore_raw: Option<String>,
+    last_learned: Option<LastLearned>,
 }
 
 impl LabSession {
@@ -133,7 +155,20 @@ impl LabSession {
             last_at_ms: 0,
             capture: Vec::new(),
             capturing: true,
+            rewind: CompositionRewindMiner::default(),
+            intervention: InterventionConfig::win32(),
+            pending_restore_raw: None,
+            last_learned: None,
         }
+    }
+
+    pub fn set_intervention_config(&mut self, config: InterventionConfig) {
+        self.intervention = config;
+    }
+
+    #[must_use]
+    pub fn intervention_config(&self) -> InterventionConfig {
+        self.intervention
     }
 
     pub fn type_text(
@@ -193,8 +228,59 @@ impl LabSession {
         ) {
             self.invalidate_caret();
         }
+        if matches!(event.kind, InputKind::InsertText { .. }) {
+            self.rewind.invalidate();
+        }
 
         let before = self.engine.snapshot();
+        if before.is_empty() && !matches!(event.kind, InputKind::Backspace) {
+            self.pending_restore_raw = None;
+        }
+        let peak_candidates = self
+            .last_slice
+            .as_ref()
+            .map(|slice| slice.candidates.clone());
+        if matches!(event.kind, InputKind::Backspace)
+            && !before.is_empty()
+            && allow_learning
+            && let Some(candidates) = peak_candidates
+        {
+            self.rewind.on_backspace(CompositionPeak {
+                original_nfc: before.normalized.clone(),
+                raw_keys: before.raw_keys.clone(),
+                candidates,
+                left_token_nfc: self.left_context.prev_token_nfc.clone(),
+                input_method: self.engine.config().method,
+                started_at_ms: event.at_ms,
+            });
+        } else if matches!(event.kind, InputKind::Key { .. }) && self.rewind.is_active() {
+            self.rewind.on_key();
+        }
+        if matches!(event.kind, InputKind::Backspace)
+            && before.is_empty()
+            && self.rewind.is_active()
+        {
+            self.rewind.invalidate();
+        }
+
+        if matches!(event.kind, InputKind::Backspace)
+            && before.is_empty()
+            && self.try_restore_policy_undo(event.at_ms)
+        {
+            let snapshot = self.engine.snapshot();
+            return SessionObservation {
+                event_seq: event.seq,
+                snapshot: snapshot.clone(),
+                engine_actions: vec![EngineAction::UpdateComposition {
+                    revision: snapshot.revision,
+                    text: snapshot.rendered.clone(),
+                }],
+                candidates: Vec::new(),
+                decision: None,
+                action: None,
+            };
+        }
+
         let engine_actions = self.engine.process(&event);
         self.pop_document_on_empty_backspace(
             &event.kind,
@@ -236,6 +322,9 @@ impl LabSession {
                 self.commit_token(&text, delimiter, &slice, &event, allow_learning, method);
                 used_slice = true;
             } else {
+                if text.is_empty() {
+                    self.rewind.invalidate();
+                }
                 self.push_plain_commit(&text, delimiter, method, &event, allow_learning);
                 self.clear_auto_anchor();
             }
@@ -278,6 +367,7 @@ impl LabSession {
         self.learning
             .model_mut()
             .apply_feedback(&key, &feedback, allow_learning);
+        self.last_learned = Some(LastLearned::Rule(key));
         self.clear_auto_anchor();
         let candidate_nfc = top.text.clone();
         if was_composing {
@@ -356,7 +446,10 @@ impl LabSession {
         self.clear_auto_anchor();
         self.sync_left_context();
         self.last_slice = None;
-        Some(UndoVisual { show_nfc })
+        Some(UndoVisual {
+            show_nfc,
+            restored_composition: false,
+        })
     }
 
     #[must_use]
@@ -532,7 +625,10 @@ impl LabSession {
         let telex_fix = TelexFixGenerator::new(method, self.engine.config().tone_placement);
         let fuzzy = FuzzyGenerator::new(&self.lexicon, 5);
         let diacritics = DiacriticsGenerator::new(&self.lexicon, 5);
-        let generators: [&dyn Generator; 4] = [&self.abbrev, &telex_fix, &fuzzy, &diacritics];
+        let personal =
+            PersonalGenerator::for_method(method, &self.learning.model().personal_promoted());
+        let generators: [&dyn Generator; 5] =
+            [&self.abbrev, &telex_fix, &fuzzy, &diacritics, &personal];
         let auto_edit = (at_commit && !snapshot.is_empty()).then_some(AutoEditContext {
             edit_id: self.next_edit_id,
             range: EditRange {
@@ -543,7 +639,7 @@ impl LabSession {
             },
             delimiter,
         });
-        run_learning_correction_slice(
+        let mut slice = run_learning_correction_slice(
             snapshot,
             &self.left_context,
             event.context,
@@ -554,7 +650,53 @@ impl LabSession {
             &self.score_config,
             &self.decision_config,
             auto_edit,
-        )
+        );
+        if at_commit
+            && !matches!(&slice.action, Some(EngineAction::ReplaceRange(_)))
+            && telex_fix_policy_applies(
+                snapshot,
+                &slice.candidates,
+                delimiter,
+                self.intervention,
+                &self.lexicon,
+                event.context.allow_transform,
+            )
+        {
+            if let (Some(top), Some(edit)) = (slice.candidates.first().cloned(), auto_edit) {
+                let action = openvikey_core::types::ReplaceRangeAction {
+                    edit_id: edit.edit_id,
+                    range: edit.range,
+                    original: snapshot.rendered.clone(),
+                    replacement: top.text.clone(),
+                    delimiter: edit.delimiter,
+                };
+                let rule = RuleContextKey {
+                    input_method: method,
+                    source: CandidateSource::TelexFix,
+                    original_nfc: snapshot.normalized.clone(),
+                    candidate_nfc: top.text.clone(),
+                    left_token_nfc: self.left_context.prev_token_nfc.clone(),
+                    source_rule_id: top
+                        .evidence
+                        .split('+')
+                        .find(|part| part.contains("-fix:move-tone-"))
+                        .or_else(|| top.evidence.split('+').next())
+                        .unwrap_or("")
+                        .to_string(),
+                };
+                self.learning.record_auto_edit(
+                    rule.clone(),
+                    action.clone(),
+                    event.at_ms,
+                    event.context.allow_learning,
+                );
+                self.pending_restore_raw = Some(snapshot.raw_keys.clone());
+                self.last_learned = Some(LastLearned::Rule(rule));
+                slice.decision = Some(DecisionState::Auto);
+                slice.action = Some(EngineAction::ReplaceRange(action));
+            }
+        }
+        slice
     }
 
     fn commit_token(
@@ -575,16 +717,23 @@ impl LabSession {
             self.clear_auto_anchor();
             text.to_string()
         };
+        let leftover = self.leftover_committed_prefix();
         let left_at_commit = self.left_context.prev_token_nfc.clone();
         self.document.push_commit(CommittedUnit::new(
-            token_text,
+            token_text.clone(),
             delimiter,
             self.last_original_nfc.clone(),
             left_at_commit,
             method,
             slice.candidates.clone(),
         ));
-        self.finish_implicit(text, event.seq, event.at_ms, allow_learning);
+        self.finish_implicit(
+            &token_text,
+            event.seq,
+            event.at_ms,
+            allow_learning,
+            leftover,
+        );
         self.sync_left_context();
     }
 
@@ -596,6 +745,7 @@ impl LabSession {
         event: &InputEvent,
         allow_learning: bool,
     ) {
+        let leftover = self.leftover_committed_prefix();
         let left_at_commit = self.left_context.prev_token_nfc.clone();
         self.document.push_commit(CommittedUnit::new(
             text.to_string(),
@@ -606,7 +756,7 @@ impl LabSession {
             Vec::new(),
         ));
         if !text.is_empty() {
-            self.finish_implicit(text, event.seq, event.at_ms, allow_learning);
+            self.finish_implicit(text, event.seq, event.at_ms, allow_learning, leftover);
         }
         self.sync_left_context();
     }
@@ -623,9 +773,40 @@ impl LabSession {
     fn clear_auto_anchor(&mut self) {
         self.last_auto_revision = None;
         self.last_auto_token = None;
+        self.pending_restore_raw = None;
     }
 
-    fn finish_implicit(&mut self, replacement: &str, seq: u64, at_ms: i64, allow_learning: bool) {
+    fn leftover_committed_prefix(&self) -> bool {
+        self.document.last().is_some_and(|unit| {
+            !unit.remaining_nfc.is_empty() && unit.remaining_nfc != unit.full_token_nfc
+        })
+    }
+
+    fn finish_implicit(
+        &mut self,
+        replacement: &str,
+        seq: u64,
+        at_ms: i64,
+        allow_learning: bool,
+        leftover: bool,
+    ) {
+        if leftover {
+            self.miner.invalidate_due_to_caret_break();
+            self.mining_snapshot = None;
+            self.rewind.invalidate();
+            return;
+        }
+        self.finish_committed_implicit(replacement, seq, at_ms, allow_learning);
+        self.finish_rewind_implicit(replacement, seq, at_ms, allow_learning);
+    }
+
+    fn finish_committed_implicit(
+        &mut self,
+        replacement: &str,
+        seq: u64,
+        at_ms: i64,
+        allow_learning: bool,
+    ) {
         let Some(feedback) = self.miner.finish_replacement(replacement, seq, at_ms) else {
             return;
         };
@@ -658,10 +839,101 @@ impl LabSession {
         self.learning
             .model_mut()
             .apply_feedback(&key, &feedback, true);
+        self.last_learned = Some(LastLearned::Rule(key));
+    }
+
+    fn finish_rewind_implicit(
+        &mut self,
+        replacement: &str,
+        seq: u64,
+        at_ms: i64,
+        allow_learning: bool,
+    ) {
+        match self.rewind.evaluate(replacement, seq, at_ms) {
+            RewindEvaluate::Ignored => {}
+            RewindEvaluate::Matched { key, feedback } => {
+                if allow_learning {
+                    self.learning
+                        .model_mut()
+                        .apply_feedback(&key, &feedback, true);
+                    self.last_learned = Some(LastLearned::Rule(key));
+                }
+            }
+            RewindEvaluate::Unmatched {
+                original_nfc,
+                replacement_nfc,
+                input_method,
+            } => {
+                if allow_learning {
+                    self.learning.model_mut().record_personal_correction(
+                        input_method,
+                        original_nfc.clone(),
+                        replacement_nfc.clone(),
+                        true,
+                    );
+                    self.last_learned = Some(LastLearned::Personal {
+                        input_method,
+                        original_nfc,
+                        replacement_nfc,
+                    });
+                }
+            }
+        }
+    }
+
+    fn try_restore_policy_undo(&mut self, at_ms: i64) -> bool {
+        let Some(raw) = self.pending_restore_raw.clone() else {
+            return false;
+        };
+        if !self.auto_token_is_last() {
+            return false;
+        }
+        let Some(revision) = self.last_auto_revision else {
+            return false;
+        };
+        let _ = at_ms;
+        if self
+            .learning
+            .undo(revision, self.next_seq, at_ms, false)
+            .is_none()
+        {
+            return false;
+        }
+        let _ = self.take_seq();
+        self.document.pop_last();
+        self.engine.restore_raw_keys(&raw);
+        self.pending_restore_raw = None;
+        self.clear_auto_anchor();
+        self.sync_left_context();
+        self.last_slice = None;
+        true
+    }
+
+    pub fn forget_last_rule(&mut self) -> bool {
+        match self.last_learned.take() {
+            Some(LastLearned::Rule(key)) => {
+                self.learning.model_mut().forget_rule(&key);
+                true
+            }
+            Some(LastLearned::Personal {
+                input_method,
+                original_nfc,
+                replacement_nfc,
+            }) => {
+                self.learning.model_mut().forget_personal_pair(
+                    input_method,
+                    &original_nfc,
+                    &replacement_nfc,
+                );
+                true
+            }
+            None => false,
+        }
     }
 
     fn invalidate_caret(&mut self) {
         self.miner.invalidate_due_to_caret_break();
+        self.rewind.invalidate();
         self.learning.invalidate_due_to_caret_break();
         self.mining_snapshot = None;
         self.clear_auto_anchor();
@@ -725,6 +997,10 @@ impl LabSession {
             last_at_ms: self.last_at_ms,
             capture: self.capture.clone(),
             learning: self.learning.clone(),
+            rewind: self.rewind.clone(),
+            intervention: self.intervention,
+            pending_restore_raw: self.pending_restore_raw.clone(),
+            last_learned: self.last_learned.clone(),
         }
     }
 
@@ -755,6 +1031,10 @@ impl LabSession {
         self.last_at_ms = checkpoint.last_at_ms;
         self.capture = checkpoint.capture;
         self.learning = checkpoint.learning;
+        self.rewind = checkpoint.rewind;
+        self.intervention = checkpoint.intervention;
+        self.pending_restore_raw = checkpoint.pending_restore_raw;
+        self.last_learned = checkpoint.last_learned;
     }
 }
 
@@ -776,6 +1056,10 @@ pub struct SessionInjectCheckpoint {
     last_at_ms: i64,
     capture: Vec<CaptureRecord>,
     learning: LearningSession,
+    rewind: CompositionRewindMiner,
+    intervention: InterventionConfig,
+    pending_restore_raw: Option<String>,
+    last_learned: Option<LastLearned>,
 }
 
 /// Unicode punctuation the engine's ASCII boundary table does not treat as commit.

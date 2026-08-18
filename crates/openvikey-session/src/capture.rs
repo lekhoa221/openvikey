@@ -189,9 +189,9 @@ pub fn replay_with_model(
 
 #[derive(Debug, Error)]
 pub enum SessionStoreError {
-    #[error("encrypted model is missing its capture log")]
+    #[error("personal model is missing its capture log")]
     MissingCaptureLog,
-    #[error("capture log exists but the encrypted model is missing")]
+    #[error("capture log exists but the personal model is missing")]
     OrphanCaptureLog,
     #[error("unsupported capture log version")]
     UnsupportedVersion,
@@ -201,7 +201,7 @@ pub enum SessionStoreError {
     EditCursorBehindModel,
     #[error("model and capture paths must be distinct")]
     SameStorePath,
-    #[error("encrypted model does not match its capture log")]
+    #[error("personal model does not match its capture log")]
     InconsistentStore,
     #[error("invalid capture log payload: {0}")]
     CapturePayload(String),
@@ -263,7 +263,7 @@ pub fn load_personal_store(
         let (Some(model_bytes), Some(log_bytes)) = (model_bytes, log_bytes) else {
             continue;
         };
-        match pair_if_consistent(model_bytes, log_bytes) {
+        match decode_personal_store_pair(model_bytes, log_bytes) {
             Ok(loaded) => return Ok(loaded),
             Err(SessionStoreError::EditCursorBehindModel) => saw_edit_cursor = true,
             Err(
@@ -298,7 +298,8 @@ fn decrypt_store_file(
     }
 }
 
-fn pair_if_consistent(
+/// Decode and validate one model/capture payload pair, independent of its storage envelope.
+pub fn decode_personal_store_pair(
     model_bytes: &[u8],
     log_bytes: &[u8],
 ) -> Result<(AdaptiveModel, CaptureLog), SessionStoreError> {

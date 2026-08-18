@@ -14,7 +14,9 @@ pub enum ActionCap {
 }
 
 /// Learned / scored action for one rule-context.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
 pub enum DecisionState {
     #[default]
     Ignore,
@@ -49,11 +51,11 @@ impl Default for DecisionConfig {
 }
 
 impl CandidateSource {
-    /// Diacritics are suggestion-only in v1.
+    /// Diacritics and Personal are suggestion-only in this milestone.
     #[must_use]
     pub fn max_action(self) -> ActionCap {
         match self {
-            Self::Diacritics => ActionCap::Suggest,
+            Self::Diacritics | Self::Personal => ActionCap::Suggest,
             Self::TelexFix | Self::Fuzzy | Self::Abbreviation => ActionCap::Auto,
         }
     }

@@ -1,7 +1,7 @@
 # OpenViKey GĐ2a — Hook + Electron inject (thiết kế)
 
 - **Ngày:** 2026-08-18
-- **Trạng thái:** v3 — sửa P0/P1 review hook-return, Enter đồng bộ, policy bàn phím thật; chưa code
+- **Trạng thái:** implemented; v3 + post-checkpoint open-persistence amendment (ADR 0008)
 - **Master GĐ2:** [`2026-08-18-openvikey-gd2-windows-host-design.md`](./2026-08-18-openvikey-gd2-windows-host-design.md)
 - **Part 2 reducer:** [`2026-08-17-openvikey-part2-personal-capture-design.md`](./2026-08-17-openvikey-part2-personal-capture-design.md)
 - **Plan:** [`../plans/2026-08-18-openvikey-gd2a-implementation-plan.md`](../plans/2026-08-18-openvikey-gd2a-implementation-plan.md)
@@ -88,6 +88,7 @@ crates/openvikey-session/   # copy document, capture, session, persistence; unsa
 crates/openvikey-lab/       # re-export; không xóa file
 crates/openvikey-win/
   src/lib.rs
+  src/console.rs            # Ctrl+C/console-close → cooperative shutdown + final flush
   src/policy.rs
   src/sync.rs
   src/inject.rs             # unsafe SendInput only
@@ -98,7 +99,7 @@ crates/openvikey-win/
   src/mouse.rs              # unsafe LL mouse; chỉ LBUTTONDOWN → callback caret-break
   src/overlay.rs
   src/tray.rs
-  src/passphrase.rs         # ReadConsoleW, không crossterm
+  src/passphrase.rs         # retired placeholder; Windows host không còn export module này
   src/main.rs
   tests/{policy,sync,inject,classify,host,hook,hook_thread_discipline,focus,overlay,tray,passphrase,persist,no_key_log}.rs
 ```
@@ -292,7 +293,7 @@ Partial `SendInput` (`n < events.len()`) → `Err(InjectError::Partial { sent: n
 
 ## 6. Session, persist, threading
 
-- Keyboard callback: `try_lock` + `LabSession` + `SendInput` **đồng bộ**. Không `lock()`, không sleep, không `to_json`/`seal`.
+- Keyboard callback: `try_lock` + `LabSession` + `SendInput` **đồng bộ**. Không `lock()`, không sleep, không serialize/persist.
 - `notify()` sau khi **nhả** mutex.
 - Một API snapshot:
 
@@ -309,14 +310,14 @@ impl LabSession {
 }
 ```
 
-Một `try_lock`/`lock` trên **saver thread**: `save_snapshot()`, unlock, rồi `model.to_json_payload()`, SHA-256, dựng `CaptureLog { header, records }`, `to_payload()`, seal. **Không** gọi `capture_log()` trên đường save (hàm đó đang `model_payload()` dưới ý lock).
+Một paired debounced saver trên **saver thread**: một lần `save_snapshot()`, unlock, rồi `model.to_json_payload()`, SHA-256, dựng `CaptureLog { header, records }`, `to_payload()`, atomic pair recovery write. **Không** gọi `capture_log()` trên đường save (hàm đó đang `model_payload()` dưới ý lock). Windows development host writes open JSON under ADR 0008; core/lab encrypted stores remain unchanged.
 
 - Discipline grep: `hook.rs`/`mouse.rs` cấm `lock(`, `sleep`, `model_payload`, `to_payload`. `try_lock` chỉ trong `host.rs`.
 - P95: `tests/host_perf.rs` `#[ignore]` — không gate CI. Correctness không dùng `Instant`.
 
 ---
 
-## 7. Overlay, tray, CLI, passphrase
+## 7. Overlay, tray, CLI, open development persistence
 
 Overlay/tray như v1 (display-only; left click tray = toggle).
 
@@ -327,9 +328,9 @@ openvikey-win --method telex|vni --lexicon <path>
   [--model PATH] [--capture PATH] [--electron-gap-ms 0]
 ```
 
-Default model/capture: `%LOCALAPPDATA%\OpenViKey\model.ovk` / `capture.ovk`.
+Default Windows development model/capture: `%LOCALAPPDATA%\OpenViKey\model.ovkdev.json` / `capture.ovkdev.json`; custom names must keep the `.ovkdev.json` suffix so Git ignores all plaintext sidecars.
 
-Passphrase: `ReadConsoleW` + tắt `ENABLE_ECHO_INPUT` trên stdin console. **Không** `crossterm`. AllocConsole nếu cần, FreeConsole sau khi vào message loop.
+Per ADR 0008, `openvikey-win` does not prompt for a passphrase and writes inspectable plaintext JSON with atomic `.bak` recovery. Existing encrypted `.ovk` stores are left untouched. This is a development policy, not a production security claim; core and `openvikey-lab` retain passphrase envelopes.
 
 Release: cấm `println!`/`eprintln!` trong `hook.rs`, `inject.rs`, **`host.rs`**.
 

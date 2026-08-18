@@ -90,6 +90,7 @@ fn generator_reads_snapshot_and_left_context_not_a_model() {
 #[test]
 fn diacritics_source_cannot_exceed_suggest() {
     assert_eq!(CandidateSource::Diacritics.max_action(), ActionCap::Suggest);
+    assert_eq!(CandidateSource::Personal.max_action(), ActionCap::Suggest);
     assert_eq!(CandidateSource::Abbreviation.max_action(), ActionCap::Auto);
 }
 

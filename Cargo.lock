@@ -462,7 +462,6 @@ dependencies = [
  "thiserror",
  "unicode-segmentation",
  "windows",
- "zeroize",
 ]
 
 [[package]]
