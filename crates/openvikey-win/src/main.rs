@@ -12,6 +12,7 @@ use openvikey_session::capture::ensure_distinct_store_paths;
 use openvikey_session::session::{LabSession, SessionCursors};
 #[cfg(windows)]
 use openvikey_win::console::ConsoleControlHandler;
+use openvikey_win::context_bridge::ContextBridgeServer;
 #[cfg(windows)]
 use openvikey_win::focus::HostHooks;
 use openvikey_win::focus::{FocusCache, run_host_message_loop};
@@ -126,6 +127,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let focus = Arc::new(FocusCache::new());
     let context = Arc::new(ContextProjectionSlot::new());
     bind_runtime_with_context(Arc::clone(&host), Arc::clone(&focus), Arc::clone(&context));
+    let context_bridge = ContextBridgeServer::start(Arc::clone(&focus), context)?;
 
     let pair_saver = Arc::new(spawn_open_pair_saver(
         model_path.clone(),
@@ -151,6 +153,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = initial_mode;
 
     run_host_message_loop(&shutdown);
+
+    drop(context_bridge);
 
     #[cfg(windows)]
     drop(host_ui);

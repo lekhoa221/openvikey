@@ -107,6 +107,22 @@ struct PersonalCountRow {
     count: u32,
 }
 
+/// Stable, read-only projection used by development inspection tools.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ModelInspectionRow {
+    pub input_method: InputMethod,
+    pub source: CandidateSource,
+    pub original_nfc: String,
+    pub candidate_nfc: String,
+    pub left_token_nfc: Option<String>,
+    pub source_rule_id: String,
+    pub state: DecisionState,
+    pub evidence_count: usize,
+    pub positive_evidence: f64,
+    pub negative_evidence: f64,
+    pub last_evidence_at_ms: Option<i64>,
+}
+
 /// User-taught original→replacement pairs that are not engine candidates yet.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PersonalCorrectionStore {
@@ -308,6 +324,53 @@ impl AdaptiveModel {
         }
         model.entries.sort_by(|a, b| a.key.cmp(&b.key));
         Ok(model)
+    }
+
+    /// Return owned rows without exposing mutable model internals.
+    #[must_use]
+    pub fn inspection_rows(&self) -> Vec<ModelInspectionRow> {
+        let mut rows = self
+            .entries
+            .iter()
+            .map(|entry| ModelInspectionRow {
+                input_method: entry.key.input_method,
+                source: entry.key.source,
+                original_nfc: entry.key.original_nfc.clone(),
+                candidate_nfc: entry.key.candidate_nfc.clone(),
+                left_token_nfc: entry.key.left_token_nfc.clone(),
+                source_rule_id: entry.key.source_rule_id.clone(),
+                state: entry.state,
+                evidence_count: entry.evidence.len(),
+                positive_evidence: entry.evidence.iter().map(|item| item.positive_add).sum(),
+                negative_evidence: entry.evidence.iter().map(|item| item.negative_add).sum(),
+                last_evidence_at_ms: entry.evidence.iter().map(|item| item.at_ms).max(),
+            })
+            .collect::<Vec<_>>();
+        rows.extend(self.personal.counts.iter().map(|personal| {
+            let promoted = self.personal.promoted.iter().any(|row| {
+                row.input_method == personal.input_method
+                    && row.original_nfc == personal.original_nfc
+                    && row.replacement_nfc == personal.replacement_nfc
+            });
+            ModelInspectionRow {
+                input_method: personal.input_method,
+                source: CandidateSource::Personal,
+                original_nfc: personal.original_nfc.clone(),
+                candidate_nfc: personal.replacement_nfc.clone(),
+                left_token_nfc: None,
+                source_rule_id: "personal-correction".into(),
+                state: if promoted {
+                    DecisionState::Suggest
+                } else {
+                    DecisionState::Ignore
+                },
+                evidence_count: usize::try_from(personal.count).unwrap_or(usize::MAX),
+                positive_evidence: f64::from(personal.count),
+                negative_evidence: 0.0,
+                last_evidence_at_ms: None,
+            }
+        }));
+        rows
     }
 
     fn entry_mut(&mut self, key: &RuleContextKey) -> &mut RuleEntry {

@@ -16,6 +16,9 @@ pub const MAX_TOKEN_BYTES: usize = 128;
 /// Wire protocol major understood by both the TSF DLL and Windows host.
 pub const CONTEXT_PROTOCOL_VERSION: u16 = 1;
 
+/// User-ACL-protected local endpoint for protocol v1.
+pub const CONTEXT_PIPE_NAME: &str = r"\\.\pipe\OpenViKey.Context.v1";
+
 /// Host treatment of the active TSF edit context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContextState {
@@ -253,6 +256,7 @@ mod tests {
 
         cache.focus_changed(foreground(2));
         assert_eq!(cache.project(&foreground(2)), ContextProjection::Pending);
+        assert!(cache.ingest(normal_snapshot()).is_err());
         assert_eq!(
             cache.project(&foreground(1)),
             ContextProjection::Unsupported

@@ -1,7 +1,7 @@
 # OpenViKey GĐ2b — TSF read-only context (thiết kế)
 
 - **Ngày:** 2026-08-19
-- **Trạng thái:** v0.3 — contract khóa; Rust COM registration/activation gate xanh; OS auto-activation và read-context smoke còn chờ
+- **Trạng thái:** v0.4 — implementation tự động xanh; OS profile selection, real-app matrix và x86 gate còn chờ
 - **Governing master:** [`2026-08-18-openvikey-gd2-windows-host-design.md`](./2026-08-18-openvikey-gd2-windows-host-design.md)
 - **Khảo sát:** [`2026-08-19-openvikey-gd2b-tsf-context-survey.md`](./2026-08-19-openvikey-gd2b-tsf-context-survey.md)
 - **Baseline:** `c8233e7`
@@ -10,9 +10,10 @@
 
 - `windows-rs` class factory tạo được `ITfTextInputProcessorEx`; `ActivateEx`/`Deactivate` chạy với `CLSID_TF_ThreadMgr` thật; object count trở về zero và `DllCanUnloadNow == S_OK`.
 - x64 `cdylib` và registration helper build được.
-- Elevated helper register/unregister **20 vòng** thành công; rollback sạch sau mỗi vòng. Final development state được đăng ký lại dưới HKCU COM và TSF profile, với profile `Enable=0` để không tự thay đổi input method của máy.
+- Elevated helper register/unregister **20 vòng** thành công; rollback sạch sau mỗi vòng. Profile hiện đăng ký cho cả `0x0409` và `0x042A`; final smoke cleanup đặt per-user `Enable=0` cho cả hai để không tự thay đổi input method của máy.
 - `CoCreateInstance(CLSID_OPENVIKEY_TSF)` qua registered server, `ActivateEx`/`Deactivate` với thread manager thật và sink advise/unadvise đều thành công.
-- **Chọn Rust** cho TSF DLL; Gate A phần registration/lifecycle đã đóng. Windows tự activate service trong app thật, đọc InputScope/surrounding text và unload khi app thoát vẫn là manual evidence bắt buộc trước khi kết thúc GĐ2b.
+- Rust TSF sink, classify-before-read adapter, bounded publisher, host pipe/cache, policy/rebase và Data Inspector đã có test tự động. Data Inspector mở/lọc/refresh hai file mà byte trước/sau không đổi.
+- **Chọn Rust** cho TSF DLL; lifecycle COM trực tiếp đã đóng. Trên máy review, `ActivateProfile` chỉ làm OpenViKey active trong helper; process status riêng và Notepad vẫn giữ profile bàn phím cũ. Chọn OpenViKey qua Windows language switcher, normal/sensitive real-app reads và unload khi app thoát vẫn là manual evidence bắt buộc trước khi kết thúc GĐ2b.
 
 ## 0. Mục tiêu và success criteria
 
@@ -316,7 +317,7 @@ Win32, WPF, WinUI, Chrome, Edge password fields; Notepad/Cursor/contenteditable 
 
 ### Gate E — architecture
 
-x64 là minimum development gate. Trước khi gọi GĐ2b production-complete, phải build/register/smoke x86 DLL hoặc ghi rõ x86 unsupported trong release contract.
+x64 là minimum development gate. Release contract hiện tại của GĐ2b là **development x64 only; x86 processes unsupported**. Không được gọi production-complete hoặc xóa nhãn unsupported cho đến khi build/register/smoke x86 DLL song song có evidence.
 
 ## 12. Verification và done boundary
 

@@ -98,6 +98,28 @@ Suggestion smoke (VNI): type `ch2ao` then Space and confirm the host replaces it
 - [ ] Notepad: Enter inserts a newline after Vietnamese is visible
 - [ ] Cursor: Enter submits the prompt **after** visible Vietnamese (post-inject)
 
+## GĐ2b development tools
+
+Inspect the plaintext development model/capture pair without opening a saver or changing either file:
+
+```bash
+cargo run -p openvikey-win --bin openvikey-data-inspector -- --source fuzzy --original paht
+```
+
+The inspector uses the host's model/capture schema and provenance validator. `--model` and `--capture` accept explicit `.ovkdev.json` paths; optional filters are `--original`, `--candidate`, `--source`, and `--left-token`. Run the command again for a manual refresh. Missing, invalid, or hash-mismatched pairs fail closed. The tool has no write, repair, delete, import, export, or settings commands.
+
+The x64 TSF DLL and its registration helper are development artifacts; x86 processes are unsupported in the current GĐ2b development contract. Registration is explicit and requires an elevated terminal; host startup never changes TSF registration. `status` reports the active keyboard profile and OpenViKey's two development profiles. On the review machine, programmatic `activate` was visible only inside the helper process and did not replace desktop selection; choose OpenViKey from the Windows language switcher for a real-app smoke. Always return the test machine to its prior input profile and run `deactivate` afterward.
+
+```powershell
+cargo build -p openvikey-win-tsf
+target\debug\openvikey-tsf-register.exe register (Resolve-Path target\debug\openvikey_win_tsf.dll)
+target\debug\openvikey-tsf-register.exe status
+target\debug\openvikey-tsf-register.exe activate
+target\debug\openvikey-tsf-register.exe deactivate
+```
+
+GĐ2b remains a hybrid: the GĐ2a hook owns key input; TSF only supplies read-only InputScope/left-context snapshots. The UniKey/VNIKey-style settings window is still GĐ2d, after GĐ2c stabilizes per-app TSF input behavior.
+
 ## Bảo mật & riêng tư
 
 Local-first, **zero backend**. Core và `openvikey-lab` vẫn hỗ trợ container mã hoá (envelope: DEK + XChaCha20-Poly1305, DEK bọc bởi passphrase Argon2id). Riêng `openvikey-win` hiện dùng **plaintext JSON có chủ đích trong giai đoạn phát triển** để bỏ prompt và dễ kiểm tra learning state; xem cảnh báo phía trên. Không có dữ liệu nào tự động rời máy.

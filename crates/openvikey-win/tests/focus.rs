@@ -63,6 +63,18 @@ fn focus_cache_roundtrip() {
 }
 
 #[test]
+fn focus_cache_exposes_pid_tid_hwnd_and_generation_for_context_matching() {
+    let cache = FocusCache::new();
+    cache.set_with_identity(15, "notepad.exe", 10, 11);
+
+    let identity = cache.try_get_identity().expect("identity");
+    assert_eq!(identity.pid, 10);
+    assert_eq!(identity.tid, 11);
+    assert_eq!(identity.hwnd, Some(15));
+    assert_eq!(identity.generation, 1);
+}
+
+#[test]
 fn foreground_generation_changes_even_when_hwnd_returns_to_the_same_app() {
     let cache = FocusCache::new();
     cache.set(1, "notepad.exe");

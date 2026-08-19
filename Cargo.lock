@@ -479,6 +479,7 @@ dependencies = [
 name = "openvikey-win-tsf"
 version = "0.1.0"
 dependencies = [
+ "openvikey-win",
  "openvikey-win-context",
  "windows",
  "windows-core",

@@ -2,6 +2,7 @@
 
 pub mod classify;
 pub mod console;
+pub mod context_bridge;
 pub mod focus;
 pub mod hook;
 pub mod host;

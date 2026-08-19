@@ -10,6 +10,9 @@ struct SourceEntry {
     focus_generation: Option<u64>,
     focus_hwnd: Option<u64>,
     snapshot: Option<ContextSnapshot>,
+    last_context_seq: u64,
+    last_observed_seq: u64,
+    awaiting_fresh_observation: bool,
 }
 
 /// Rejection reason at the stateful cache boundary.
@@ -60,6 +63,9 @@ impl ContextCache {
                 focus_generation: None,
                 focus_hwnd: None,
                 snapshot: None,
+                last_context_seq: 0,
+                last_observed_seq: 0,
+                awaiting_fresh_observation: false,
             },
         );
         Ok(())
@@ -71,6 +77,7 @@ impl ContextCache {
             entry.focus_generation = Some(foreground.generation);
             entry.focus_hwnd = foreground.hwnd;
             entry.snapshot = None;
+            entry.awaiting_fresh_observation = true;
         }
     }
 
@@ -91,12 +98,15 @@ impl ContextCache {
         {
             return Err(ContextCacheError::WindowMismatch);
         }
-        if let Some(previous) = &entry.snapshot
-            && (snapshot.context_seq < previous.context_seq
-                || snapshot.observed_seq < previous.observed_seq)
+        if (entry.awaiting_fresh_observation && snapshot.observed_seq <= entry.last_observed_seq)
+            || snapshot.context_seq < entry.last_context_seq
+            || snapshot.observed_seq < entry.last_observed_seq
         {
             return Err(ContextCacheError::RecedingSequence);
         }
+        entry.last_context_seq = snapshot.context_seq;
+        entry.last_observed_seq = snapshot.observed_seq;
+        entry.awaiting_fresh_observation = false;
         entry.snapshot = Some(snapshot);
         Ok(())
     }

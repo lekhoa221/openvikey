@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::classify::profile_for_exe;
 use crate::inject::InjectProfile;
+use openvikey_win_context::ForegroundIdentity;
 use windows::Win32::Foundation::{CloseHandle, E_FAIL, HANDLE, HWND};
 use windows::Win32::System::Threading::{
     OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
@@ -19,6 +20,8 @@ struct Snapshot {
     exe: String,
     profile: InjectProfile,
     generation: u64,
+    pid: u32,
+    tid: u32,
 }
 
 /// Lock-free-ish foreground snapshot: winevent thread writes; hook thread `try_read`s.
@@ -36,12 +39,25 @@ impl FocusCache {
                 exe: String::new(),
                 profile: InjectProfile::Win32,
                 generation: 0,
+                pid: 0,
+                tid: 0,
             }),
         }
     }
 
     /// Update foreground HWND and executable name (winevent thread).
     pub fn set(&self, hwnd: isize, exe: &str) {
+        let mut pid = 0_u32;
+        let tid = if hwnd == 0 {
+            0
+        } else {
+            unsafe { GetWindowThreadProcessId(HWND(hwnd as _), Some(&raw mut pid)) }
+        };
+        self.set_with_identity(hwnd, exe, pid, tid);
+    }
+
+    /// Update foreground data with an already sampled process/thread identity.
+    pub fn set_with_identity(&self, hwnd: isize, exe: &str, pid: u32, tid: u32) {
         let profile = profile_for_exe(exe);
         if let Ok(mut guard) = self.inner.write() {
             guard.hwnd = hwnd;
@@ -49,6 +65,8 @@ impl FocusCache {
             guard.exe.push_str(exe);
             guard.profile = profile;
             guard.generation = guard.generation.wrapping_add(1);
+            guard.pid = pid;
+            guard.tid = tid;
         }
     }
 
@@ -81,6 +99,19 @@ impl FocusCache {
     pub fn try_get_generation(&self) -> Option<(isize, String, u64)> {
         let guard = self.inner.try_read().ok()?;
         Some((guard.hwnd, guard.exe.clone(), guard.generation))
+    }
+
+    /// Non-blocking identity read for context-cache projection off the hook path.
+    #[must_use]
+    pub fn try_get_identity(&self) -> Option<ForegroundIdentity> {
+        let guard = self.inner.try_read().ok()?;
+        let hwnd = u64::try_from(guard.hwnd).ok().filter(|hwnd| *hwnd != 0);
+        Some(ForegroundIdentity {
+            pid: guard.pid,
+            tid: guard.tid,
+            hwnd,
+            generation: guard.generation,
+        })
     }
 }
 

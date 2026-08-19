@@ -55,3 +55,9 @@ The three technical host-integration slices remain GĐ2a–2c. A fourth product 
 - GĐ2d owns method/tone settings, V/E and suggestion controls, hotkeys, learned-rule inspection/deletion, app routing, autostart, and settings import/export.
 - The UI must consume versioned host/config/model-inspection APIs and must not own a second hook, TSF pipeline, session state, or persistence implementation.
 - Installer, product icons, and signing are release gates after the 2d control surface stabilizes.
+
+## Amendment v5 (2026-08-19)
+
+GĐ2b now has an executable Rust TSF read adapter, bounded latest-value named-pipe bridge, foreground-generation cache, sensitive-policy transition, external left-token rebase, and a read-only Data Inspector. Automated tests cover codec/cache ordering, real pipe connect/disconnect, bounded worker shutdown, classify-before-text-read, zero sensitive persistence mutation, and byte-for-byte inspector reads.
+
+The remaining closure gate is operational rather than hidden by automation: Windows must show and select the registered OpenViKey keyboard profile before a real app loads the in-process DLL. On the review machine, `ActivateProfile` selected OpenViKey only inside the helper process; a separate status process and Notepad retained the previous profile. Password/PIN app matrix, normal-field read evidence, and unload evidence stay open until the Windows language switcher manual gate is passed.

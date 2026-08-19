@@ -9,7 +9,7 @@ use std::sync::{Mutex, PoisonError};
 use serde::{Deserialize, Serialize};
 
 use crate::host::TypingHost;
-use openvikey_core::model::AdaptiveModel;
+use openvikey_core::model::{AdaptiveModel, ModelInspectionRow};
 use openvikey_core::store::StoreError;
 use openvikey_session::capture::{
     CAPTURE_VERSION, CaptureHeader, CaptureLog, SessionStoreError, decode_personal_store_pair,
@@ -59,6 +59,91 @@ pub enum PersistError {
     Model(String),
     #[error("capture serialize: {0}")]
     Capture(String),
+}
+
+/// Case-insensitive substring filters for the development inspector.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InspectionFilter {
+    pub original: Option<String>,
+    pub candidate: Option<String>,
+    pub source: Option<String>,
+    pub left_token: Option<String>,
+}
+
+/// Validated store metadata shown independently of filters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct InspectionSummary {
+    pub model_rows: usize,
+    pub capture_records: usize,
+    pub next_seq: u64,
+    pub next_edit_id: u64,
+    pub last_capture_at_ms: i64,
+}
+
+/// One immutable inspection result.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct InspectionReport {
+    pub summary: InspectionSummary,
+    pub rows: Vec<ModelInspectionRow>,
+}
+
+#[derive(Debug, Error)]
+pub enum InspectStoreError {
+    #[error("model file is missing: {0}")]
+    MissingModel(PathBuf),
+    #[error("capture file is missing: {0}")]
+    MissingCapture(PathBuf),
+    #[error("could not read inspection input: {0}")]
+    Read(#[from] std::io::Error),
+    #[error("model/capture schema or provenance validation failed: {0}")]
+    InvalidPair(String),
+}
+
+/// Read and validate the exact primary files without recovery, repair or writes.
+pub fn inspect_open_personal_store(
+    model_path: &Path,
+    capture_path: &Path,
+    filter: &InspectionFilter,
+) -> Result<InspectionReport, InspectStoreError> {
+    if !model_path.is_file() {
+        return Err(InspectStoreError::MissingModel(model_path.to_path_buf()));
+    }
+    if !capture_path.is_file() {
+        return Err(InspectStoreError::MissingCapture(
+            capture_path.to_path_buf(),
+        ));
+    }
+    let model_bytes = fs::read(model_path)?;
+    let capture_bytes = fs::read(capture_path)?;
+    let (model, capture) = decode_personal_store_pair(&model_bytes, &capture_bytes)
+        .map_err(|error| InspectStoreError::InvalidPair(error.to_string()))?;
+    let all_rows = model.inspection_rows();
+    let summary = InspectionSummary {
+        model_rows: all_rows.len(),
+        capture_records: capture.records.len(),
+        next_seq: capture.header.next_seq,
+        next_edit_id: capture.header.next_edit_id,
+        last_capture_at_ms: capture.header.last_at_ms,
+    };
+    let rows = all_rows
+        .into_iter()
+        .filter(|row| inspection_row_matches(row, filter))
+        .collect();
+    Ok(InspectionReport { summary, rows })
+}
+
+fn inspection_row_matches(row: &ModelInspectionRow, filter: &InspectionFilter) -> bool {
+    contains_filter(&row.original_nfc, filter.original.as_deref())
+        && contains_filter(&row.candidate_nfc, filter.candidate.as_deref())
+        && contains_filter(&format!("{:?}", row.source), filter.source.as_deref())
+        && contains_filter(
+            row.left_token_nfc.as_deref().unwrap_or_default(),
+            filter.left_token.as_deref(),
+        )
+}
+
+fn contains_filter(value: &str, filter: Option<&str>) -> bool {
+    filter.is_none_or(|filter| value.to_lowercase().contains(&filter.to_lowercase()))
 }
 
 /// Resolve the development host's open JSON stores under `%LOCALAPPDATA%\OpenViKey`.

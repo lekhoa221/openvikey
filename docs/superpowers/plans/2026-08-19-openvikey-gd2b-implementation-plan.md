@@ -68,9 +68,9 @@
 **Files:** shared frame codec in `openvikey-win-context`; TSF client and host server adapters; lifecycle tests.
 
 - [x] Red → green: length-prefixed codec rejects unknown version, oversize, malformed identity and invalid state/token pairs.
-- [ ] Implement user-local named-pipe server with current-user/SYSTEM ACL and finite I/O.
-- [ ] Implement TSF bounded latest-value publisher; COM callbacks only enqueue with no unbounded allocation or wait.
-- [ ] Test host absent/restart, client reconnect/disconnect, focus storm and clean cancellation.
+- [x] Implement user-local named-pipe server with current-user/SYSTEM ACL and finite I/O.
+- [x] Implement TSF bounded latest-value publisher; COM callbacks only enqueue with no unbounded allocation or wait.
+- [x] Test host absent/restart, client reconnect/disconnect, focus storm and clean cancellation.
 
 **Gate:** stale/malformed frames never reach hook projection and DLL deactivation never waits indefinitely for I/O.
 
@@ -78,11 +78,11 @@
 
 **Files:** `crates/openvikey-win-tsf/src/lib.rs` plus Windows-only integration tests.
 
-- [ ] Implement focus/context sink lifecycle and request `TF_ES_READ | TF_ES_ASYNCDONTCARE`.
-- [ ] Read `GUID_PROP_INPUTSCOPE` first; if sensitive, publish immediately with no `ITfRange::GetText` call.
-- [ ] For normal context only, read at most 128 UTF-16 code units left of caret and use the shared extractor.
-- [ ] Publish Pending/Normal/Sensitive/Unavailable with source/context sequences and optional active-view HWND.
-- [ ] Instrument tests so sensitive scope proves text-read count is zero.
+- [x] Implement focus/context sink lifecycle and request `TF_ES_READ | TF_ES_ASYNCDONTCARE`.
+- [x] Read `GUID_PROP_INPUTSCOPE` first; if sensitive, publish immediately with no `ITfRange::GetText` call.
+- [x] For normal context only, read at most 128 UTF-16 code units left of caret and use the shared extractor.
+- [x] Publish Pending/Normal/Sensitive/Unavailable with source/context sequences and optional active-view HWND.
+- [x] Instrument tests so sensitive scope proves text-read count is zero.
 
 **Gate:** real-app smoke reads a normal Notepad token; password/PIN cases publish Sensitive without surrounding text.
 
@@ -90,19 +90,19 @@
 
 **Files:** smallest new binary crate or bin target reusing public read-only persistence inspection APIs; README/runbook; tests.
 
-- [ ] Red → green: load default or explicit `.ovkdev.json` paths with the same schema/provenance validation as host.
-- [ ] Show summary and filters for original, candidate, source, left token, evidence/count and time.
-- [ ] Manual refresh; clear warnings for missing/invalid/provenance mismatch.
-- [ ] Prove byte-for-byte that opening/filtering/refreshing does not change either input file.
+- [x] Red → green: load default or explicit `.ovkdev.json` paths with the same schema/provenance validation as host.
+- [x] Show summary and filters for original, candidate, source, left token, evidence/count and time.
+- [x] Manual refresh; clear warnings for missing/invalid/provenance mismatch.
+- [x] Prove byte-for-byte that opening/filtering/refreshing does not change either input file.
 
 **Gate:** useful CLI/TUI inspection exists; settings mutation and polished UniKey-style window remain GĐ2d.
 
 ## Task 7 — Release evidence and closure
 
-- [ ] Run fmt, workspace clippy `-D warnings`, workspace tests/all-features and `cargo deny check`.
+- [x] Run fmt, workspace clippy `-D warnings`, workspace tests/all-features and `cargo deny check`.
 - [ ] Manual matrix: Notepad/Cursor normal; Win32/WPF/WinUI/Chrome/Edge password/PIN; unsupported app fallback; host restart/focus storm.
 - [ ] Record TSF active/scopes/policy and model/capture before-after for every sensitive case.
-- [ ] Decide and document x86 support boundary; never imply x86 support without build/register/smoke evidence.
+- [x] Decide and document x86 support boundary; current development contract is x64-only and explicitly marks x86 unsupported.
 - [ ] Update README, ADR 0007, governing design and this checklist from live evidence.
 
 **Done:** hook typing remains GĐ2a; explicit sensitive fields pass untouched with zero surrounding-text read and zero learning/capture mutation; normal TSF context rebases one bounded token; unsupported apps fall back; Data Inspector is read-only; no password is introduced.
