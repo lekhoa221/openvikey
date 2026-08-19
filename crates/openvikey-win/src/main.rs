@@ -100,6 +100,8 @@ fn startup_trace(stage: &str) {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     startup_trace("enter");
     #[cfg(windows)]
+    openvikey_win::control::init_dpi_awareness();
+    #[cfg(windows)]
     let Some(_instance) = SingleInstance::acquire()? else {
         return Ok(());
     };

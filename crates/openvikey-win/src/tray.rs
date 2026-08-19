@@ -60,11 +60,11 @@ mod shell_tray {
     use windows::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CS_HREDRAW, CS_VREDRAW, CreateIcon, CreatePopupMenu, CreateWindowExW,
         DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, GetCursorPos, HCURSOR, HICON,
-        MF_CHECKED, MF_STRING, PostQuitMessage, RegisterClassW, SetForegroundWindow,
+        MF_CHECKED, MF_SEPARATOR, MF_STRING, PostQuitMessage, RegisterClassW, SetForegroundWindow,
         TPM_RIGHTBUTTON, TrackPopupMenu, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_RBUTTONUP,
         WNDCLASSW, WS_POPUP,
     };
-    use windows::core::{PCWSTR, Result, w};
+    use windows::core::{HSTRING, PCWSTR, Result, w};
 
     use crate::persist::HostShutdown;
     use crate::policy::Mode;
@@ -78,10 +78,16 @@ mod shell_tray {
     const ID_VNI: usize = 5;
     const ID_AUTOSTART: usize = 6;
     const ID_FORGET_LAST: usize = 7;
+    const ID_MODE_VIET: usize = 8;
+    const ID_MODE_ENG: usize = 9;
+    const ID_LEARNED: usize = 10;
+    const ID_TERMINAL: usize = 11;
 
     /// Custom tray callback messages (not unit-tested in CI).
     pub const WM_TRAYICON: u32 = 0x8000;
     pub const WM_OPEN_SETTINGS: u32 = 0x8001;
+
+    const WM_LBUTTONDBLCLK: u32 = 0x0203;
 
     /// Shell tray icon showing V/E mode in the tooltip.
     pub struct TrayIcon {
@@ -209,12 +215,14 @@ mod shell_tray {
         lparam: LPARAM,
     ) -> LRESULT {
         if msg == WM_OPEN_SETTINGS {
-            crate::control::show_control_window(hwnd);
+            crate::control::show_settings_window(Some(0));
             return LRESULT(0);
         }
         if msg == WM_TRAYICON {
             let mouse = u32::try_from(lparam.0.cast_unsigned()).unwrap_or(0);
-            if mouse == WM_LBUTTONUP {
+            if mouse == WM_LBUTTONDBLCLK {
+                crate::control::show_settings_window(Some(0));
+            } else if mouse == WM_LBUTTONUP {
                 if let Some(shutdown) = peek_shutdown()
                     && super::apply_tray_event(super::TrayEvent::LeftClick, &shutdown)
                         == Some(crate::policy::HostHotkey::ToggleMode)
@@ -229,7 +237,19 @@ mod shell_tray {
         if msg == WM_COMMAND {
             let id = wparam.0 & 0xFFFF;
             if id == ID_SETTINGS {
-                crate::control::show_control_window(hwnd);
+                crate::control::show_settings_window(Some(0));
+                return LRESULT(0);
+            }
+            if id == ID_LEARNED {
+                crate::control::show_settings_window(Some(1));
+                return LRESULT(0);
+            }
+            if id == ID_MODE_VIET {
+                crate::host::set_mode_runtime(Mode::Viet, now_ms());
+                return LRESULT(0);
+            }
+            if id == ID_MODE_ENG {
+                crate::host::set_mode_runtime(Mode::English, now_ms());
                 return LRESULT(0);
             }
             if id == ID_TELEX || id == ID_VNI {
@@ -243,6 +263,12 @@ mod shell_tray {
             }
             if id == ID_AUTOSTART {
                 let _ = crate::startup::set_enabled(!crate::startup::enabled());
+                return LRESULT(0);
+            }
+            if id == ID_TERMINAL {
+                let snapshot = crate::host::tray_snapshot();
+                let current = snapshot.is_some_and(|s| s.allow_terminal);
+                crate::host::set_allow_terminal_runtime(!current);
                 return LRESULT(0);
             }
             if id == ID_FORGET_LAST {
@@ -281,19 +307,32 @@ mod shell_tray {
         let Ok(menu) = (unsafe { CreatePopupMenu() }) else {
             return;
         };
-        let suggestion_flags = if crate::host::suggestions_visible() {
+        let snapshot = crate::host::tray_snapshot();
+        let current_mode = snapshot.map_or(Mode::Viet, |value| value.mode);
+        let mode_viet_flags = if current_mode == Mode::Viet {
             MF_STRING | MF_CHECKED
         } else {
             MF_STRING
         };
-        let current_method =
-            crate::host::control_snapshot().map(|value| value.engine_config.method);
-        let telex_flags = if current_method == Some(openvikey_core::types::InputMethod::Telex) {
+        let mode_eng_flags = if current_mode == Mode::English {
             MF_STRING | MF_CHECKED
         } else {
             MF_STRING
         };
-        let vni_flags = if current_method == Some(openvikey_core::types::InputMethod::Vni) {
+
+        let current_method = snapshot.map(|value| value.method);
+        let current_method_name = match current_method {
+            Some(openvikey_core::types::InputMethod::Telex) => "Kiểu gõ: Telex",
+            _ => "Kiểu gõ: VNI",
+        };
+        let wide_method_name = HSTRING::from(current_method_name);
+
+        let suggestion_flags = if snapshot.is_some_and(|s| s.show_suggestions) {
+            MF_STRING | MF_CHECKED
+        } else {
+            MF_STRING
+        };
+        let terminal_flags = if snapshot.is_some_and(|s| s.allow_terminal) {
             MF_STRING | MF_CHECKED
         } else {
             MF_STRING
@@ -303,18 +342,37 @@ mod shell_tray {
         } else {
             MF_STRING
         };
+
+        let _ = unsafe { AppendMenuW(menu, mode_viet_flags, ID_MODE_VIET, w!("Tiếng Việt")) };
+        let _ = unsafe { AppendMenuW(menu, mode_eng_flags, ID_MODE_ENG, w!("Tiếng Anh")) };
+        let _ = unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()) };
+        let next_method_id = if current_method == Some(openvikey_core::types::InputMethod::Telex) {
+            ID_VNI
+        } else {
+            ID_TELEX
+        };
         let _ = unsafe {
             AppendMenuW(
                 menu,
                 MF_STRING,
-                ID_SETTINGS,
-                w!("Cài đặt và rule đã học..."),
+                next_method_id,
+                PCWSTR(wide_method_name.as_ptr()),
             )
         };
-        let _ = unsafe { AppendMenuW(menu, telex_flags, ID_TELEX, w!("Kiểu gõ Telex")) };
-        let _ = unsafe { AppendMenuW(menu, vni_flags, ID_VNI, w!("Kiểu gõ VNI")) };
         let _ =
             unsafe { AppendMenuW(menu, suggestion_flags, ID_SUGGESTIONS, w!("Hiện gợi ý")) };
+        let _ = unsafe {
+            AppendMenuW(
+                menu,
+                terminal_flags,
+                ID_TERMINAL,
+                w!("Cho phép trong Terminal"),
+            )
+        };
+        let _ = unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()) };
+        let _ = unsafe { AppendMenuW(menu, MF_STRING, ID_SETTINGS, w!("Cài đặt...")) };
+        let _ = unsafe { AppendMenuW(menu, MF_STRING, ID_LEARNED, w!("Rule đã học...")) };
+        let _ = unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()) };
         let _ = unsafe {
             AppendMenuW(
                 menu,
@@ -323,9 +381,8 @@ mod shell_tray {
                 w!("Khởi động cùng Windows"),
             )
         };
-        let _ =
-            unsafe { AppendMenuW(menu, MF_STRING, ID_FORGET_LAST, w!("Quên rule vừa học")) };
         let _ = unsafe { AppendMenuW(menu, MF_STRING, ID_EXIT, w!("Thoát")) };
+
         let mut pt = POINT::default();
         let _ = unsafe { GetCursorPos(&raw mut pt) };
         unsafe {

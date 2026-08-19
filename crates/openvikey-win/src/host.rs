@@ -30,8 +30,8 @@ struct HostRuntime {
     sending: Arc<AtomicBool>,
     mode: Arc<AtomicU8>,
     show_suggestions: Arc<AtomicBool>,
+    allow_terminal: Arc<AtomicBool>,
     context: Arc<ContextProjectionSlot>,
-    allow_terminal: bool,
     persist: OnceLock<Arc<dyn Fn() + Send + Sync>>,
 }
 
@@ -141,7 +141,7 @@ pub fn bind_runtime_with_context(
             Arc::clone(&guard.sending),
             Arc::clone(&guard.mode_flag),
             Arc::clone(&guard.suggestions_flag),
-            guard.allow_terminal,
+            Arc::clone(&guard.allow_terminal_flag),
         ),
         Err(poisoned) => {
             let guard = poisoned.into_inner();
@@ -149,7 +149,7 @@ pub fn bind_runtime_with_context(
                 Arc::clone(&guard.sending),
                 Arc::clone(&guard.mode_flag),
                 Arc::clone(&guard.suggestions_flag),
-                guard.allow_terminal,
+                Arc::clone(&guard.allow_terminal_flag),
             )
         }
     };
@@ -159,8 +159,8 @@ pub fn bind_runtime_with_context(
         sending,
         mode,
         show_suggestions,
-        context,
         allow_terminal,
+        context,
         persist: OnceLock::new(),
     });
 }
@@ -207,7 +207,7 @@ fn sample_host_state(
                 mode: mode_from_u8(rt.mode.load(Ordering::SeqCst)),
                 foreground_exe,
                 is_sending: rt.sending.load(Ordering::SeqCst),
-                allow_terminal: rt.allow_terminal,
+                allow_terminal: rt.allow_terminal.load(Ordering::SeqCst),
                 caps_lock,
                 alt,
                 meta,
@@ -383,12 +383,43 @@ pub fn suggestions_visible() -> bool {
         .is_none_or(|rt| rt.show_suggestions.load(Ordering::SeqCst))
 }
 
+/// Lightweight snapshot for tray menus to prevent blocking typing mutex with large learned models.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostTraySnapshot {
+    pub mode: Mode,
+    pub method: InputMethod,
+    pub show_suggestions: bool,
+    pub allow_terminal: bool,
+}
+
+#[must_use]
+pub fn tray_snapshot() -> Option<HostTraySnapshot> {
+    let rt = RUNTIME.get()?;
+    let mode = mode_from_u8(rt.mode.load(Ordering::SeqCst));
+    let show_suggestions = rt.show_suggestions.load(Ordering::SeqCst);
+    let allow_terminal = rt.allow_terminal.load(Ordering::SeqCst);
+    let method = if let Ok(guard) = rt.host.try_lock() {
+        guard.session.engine_config().method
+    } else {
+        let local_app_data = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
+        let path = crate::settings::default_settings_path(local_app_data.as_ref());
+        crate::settings::load_settings(&path).map_or(InputMethod::Vni, |s| s.input_method)
+    };
+    Some(HostTraySnapshot {
+        mode,
+        method,
+        show_suggestions,
+        allow_terminal,
+    })
+}
+
 /// Read-only product-control snapshot from the one live session.
 #[derive(Debug, Clone)]
 pub struct ControlSnapshot {
     pub mode: Mode,
     pub engine_config: EngineConfig,
     pub show_suggestions: bool,
+    pub allow_terminal: bool,
     pub foreground_exe: String,
     pub learning_allowed: bool,
     pub learned_rows: Vec<ModelInspectionRow>,
@@ -402,10 +433,34 @@ pub fn control_snapshot() -> Option<ControlSnapshot> {
         mode: guard.mode,
         engine_config: guard.session.engine_config(),
         show_suggestions: guard.show_suggestions,
+        allow_terminal: guard.allow_terminal,
         foreground_exe: guard.foreground_exe.clone(),
         learning_allowed: guard.allow_learning_for_foreground(),
         learned_rows: guard.session.model().inspection_rows(),
     })
+}
+
+/// Change Mode (Viet/English) from the settings/tray thread.
+pub fn set_mode_runtime(mode: Mode, at_ms: i64) {
+    let Some(rt) = RUNTIME.get() else {
+        return;
+    };
+    let mut guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
+    if guard.mode == mode {
+        return;
+    }
+    guard.apply_caret_break(at_ms);
+    guard.last_injected_token.clear();
+    guard.last_injected_hwnd = 0;
+    guard.mode = mode;
+    guard.mode_flag.store(mode_to_u8(mode), Ordering::SeqCst);
+    let lines = guard.overlay_display_lines();
+    drop(guard);
+    after_unlock(&lines, Some(mode), false);
+    let local_app_data = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
+    let _ = crate::settings::mutate_saved_settings(local_app_data.as_ref(), |s| {
+        s.last_mode_viet = mode == Mode::Viet;
+    });
 }
 
 /// Change Telex/VNI from the tray/settings thread.
@@ -423,6 +478,70 @@ pub fn set_input_method_runtime(method: InputMethod, at_ms: i64) {
     let lines = guard.overlay_display_lines();
     drop(guard);
     after_unlock(&lines, None, true);
+    let local_app_data = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
+    let _ = crate::settings::mutate_saved_settings(local_app_data.as_ref(), |s| {
+        s.input_method = method;
+    });
+}
+
+/// Change tone placement (Modern/Traditional) from the settings thread.
+pub fn set_tone_placement_runtime(tone: TonePlacement, at_ms: i64) {
+    let Some(rt) = RUNTIME.get() else {
+        return;
+    };
+    let mut guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut config = guard.session.engine_config();
+    if config.tone_placement == tone {
+        return;
+    }
+    config.tone_placement = tone;
+    guard.set_engine_config(config, at_ms);
+    let lines = guard.overlay_display_lines();
+    drop(guard);
+    after_unlock(&lines, None, true);
+    let local_app_data = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
+    let _ = crate::settings::mutate_saved_settings(local_app_data.as_ref(), |s| {
+        s.tone_placement = tone;
+    });
+}
+
+/// Set suggestion overlay visibility from settings.
+pub fn set_show_suggestions_runtime(show: bool) {
+    let Some(rt) = RUNTIME.get() else {
+        return;
+    };
+    let mut guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
+    guard.set_show_suggestions(show);
+    let lines = guard.overlay_display_lines();
+    let ui_path = guard.ui_path.clone();
+    drop(guard);
+    after_unlock(&lines, None, false);
+    if let Some(path) = ui_path {
+        let _ = crate::persist::save_ui_prefs(
+            &path,
+            crate::persist::UiPrefs {
+                show_suggestions: show,
+            },
+        );
+    }
+    let local_app_data = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
+    let _ = crate::settings::mutate_saved_settings(local_app_data.as_ref(), |s| {
+        s.show_suggestions = show;
+    });
+}
+
+/// Set terminal transformation permission from settings.
+pub fn set_allow_terminal_runtime(allow: bool) {
+    let Some(rt) = RUNTIME.get() else {
+        return;
+    };
+    let mut guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
+    guard.allow_terminal = allow;
+    guard.allow_terminal_flag.store(allow, Ordering::SeqCst);
+    let local_app_data = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
+    let _ = crate::settings::mutate_saved_settings(local_app_data.as_ref(), |s| {
+        s.allow_terminal = allow;
+    });
 }
 
 /// Forget the latest learned rule through the same session that owns typing.
@@ -467,6 +586,7 @@ pub struct TypingHost {
     pub mode: Mode,
     pub mode_flag: Arc<AtomicU8>,
     pub allow_terminal: bool,
+    pub allow_terminal_flag: Arc<AtomicBool>,
     pub caps_lock: bool,
     pub alt: bool,
     pub meta: bool,
@@ -535,6 +655,7 @@ impl TypingHost {
             mode: Mode::Viet,
             mode_flag: Arc::new(AtomicU8::new(0)),
             allow_terminal: false,
+            allow_terminal_flag: Arc::new(AtomicBool::new(false)),
             caps_lock: false,
             alt: false,
             meta: false,

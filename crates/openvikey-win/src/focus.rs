@@ -390,7 +390,8 @@ pub fn run_host_message_loop(shutdown: &crate::persist::HostShutdown) {
     #[cfg(windows)]
     {
         use windows::Win32::UI::WindowsAndMessaging::{
-            DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage, WM_QUIT,
+            DispatchMessageW, IsDialogMessageW, IsWindow, IsWindowVisible, MSG, PM_REMOVE,
+            PeekMessageW, TranslateMessage, WM_QUIT,
         };
         while !shutdown.is_requested() {
             let mut msg = MSG::default();
@@ -401,8 +402,19 @@ pub fn run_host_message_loop(shutdown: &crate::persist::HostShutdown) {
                     break;
                 }
                 unsafe {
-                    let _ = TranslateMessage(&raw const msg);
-                    DispatchMessageW(&raw const msg);
+                    let settings_hwnd = crate::control::active_settings_window_handle();
+                    let handled = if !settings_hwnd.is_invalid()
+                        && IsWindow(Some(settings_hwnd)).as_bool()
+                        && IsWindowVisible(settings_hwnd).as_bool()
+                    {
+                        IsDialogMessageW(settings_hwnd, &raw const msg).as_bool()
+                    } else {
+                        false
+                    };
+                    if !handled {
+                        let _ = TranslateMessage(&raw const msg);
+                        DispatchMessageW(&raw const msg);
+                    }
                 }
             } else {
                 std::thread::sleep(std::time::Duration::from_millis(10));
