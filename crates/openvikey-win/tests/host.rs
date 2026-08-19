@@ -8,9 +8,10 @@ use openvikey_core::lexicon::{Lexicon, LexiconEntry};
 use openvikey_core::types::{InputKind, InputMethod, TonePlacement};
 use openvikey_session::session::LabSession;
 use openvikey_win::hook::ll_return;
-use openvikey_win::host::{TypingHost, handle_key_locked, on_try_lock_fail};
+use openvikey_win::host::{ContextProjectionSlot, TypingHost, handle_key_locked, on_try_lock_fail};
 use openvikey_win::policy::{HostHotkey, KeyDecision, OVK_EXTRA, RawKey};
 use openvikey_win::sync::InjectCommand;
+use openvikey_win_context::{ContextProjection, ContextState};
 
 fn key(vk: u16) -> RawKey {
     RawKey {
@@ -453,6 +454,38 @@ fn save_snapshot_via_host_session() {
     let host = TypingHost::new_telex_fixture();
     let snap = host.session.save_snapshot();
     let _ = snap.model.to_json_payload().unwrap();
+}
+
+#[test]
+fn sensitive_transition_clears_internal_context_without_inject_or_persistence() {
+    let mut host = TypingHost::new_telex_fixture();
+    host.handle_key(key(0x58), 1);
+    host.recorded.clear();
+    let before = host.session.save_snapshot();
+
+    host.apply_context_projection(ContextProjection::Sensitive, 2);
+
+    assert!(host.recorded.is_empty());
+    assert!(host.session.composition_text().is_empty());
+    assert_eq!(host.session.save_snapshot(), before);
+    assert_eq!(host.handle_key(key(0x41), 3), KeyDecision::Pass);
+    assert_eq!(host.session.save_snapshot(), before);
+}
+
+#[test]
+fn projection_slot_publishes_state_and_owned_token() {
+    let slot = ContextProjectionSlot::new();
+    slot.publish(ContextProjection::Normal {
+        left_token_nfc: Some("chào".to_owned()),
+    });
+
+    assert_eq!(slot.try_state(), Some(ContextState::Normal));
+    assert_eq!(
+        slot.try_projection(),
+        Some(ContextProjection::Normal {
+            left_token_nfc: Some("chào".to_owned())
+        })
+    );
 }
 
 #[test]

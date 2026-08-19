@@ -15,7 +15,9 @@ use openvikey_win::console::ConsoleControlHandler;
 #[cfg(windows)]
 use openvikey_win::focus::HostHooks;
 use openvikey_win::focus::{FocusCache, run_host_message_loop};
-use openvikey_win::host::{TypingHost, bind_persist_notify, bind_runtime};
+use openvikey_win::host::{
+    ContextProjectionSlot, TypingHost, bind_persist_notify, bind_runtime_with_context,
+};
 use openvikey_win::inject::{InjectProfile, ProfilingInjector, SendInputSender};
 use openvikey_win::persist::{
     HostShutdown, default_store_paths, default_ui_path, ensure_open_store_cli_path,
@@ -122,7 +124,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
     let host = Arc::new(Mutex::new(typing));
     let focus = Arc::new(FocusCache::new());
-    bind_runtime(Arc::clone(&host), Arc::clone(&focus));
+    let context = Arc::new(ContextProjectionSlot::new());
+    bind_runtime_with_context(Arc::clone(&host), Arc::clone(&focus), Arc::clone(&context));
 
     let pair_saver = Arc::new(spawn_open_pair_saver(
         model_path.clone(),

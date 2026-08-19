@@ -1,7 +1,7 @@
 # OpenViKey GĐ2b — TSF read-only context (thiết kế)
 
 - **Ngày:** 2026-08-19
-- **Trạng thái:** v0.2 — contract khóa; Rust COM lifecycle xanh; OS profile activation còn chờ elevated smoke
+- **Trạng thái:** v0.3 — contract khóa; Rust COM registration/activation gate xanh; OS auto-activation và read-context smoke còn chờ
 - **Governing master:** [`2026-08-18-openvikey-gd2-windows-host-design.md`](./2026-08-18-openvikey-gd2-windows-host-design.md)
 - **Khảo sát:** [`2026-08-19-openvikey-gd2b-tsf-context-survey.md`](./2026-08-19-openvikey-gd2b-tsf-context-survey.md)
 - **Baseline:** `c8233e7`
@@ -10,9 +10,9 @@
 
 - `windows-rs` class factory tạo được `ITfTextInputProcessorEx`; `ActivateEx`/`Deactivate` chạy với `CLSID_TF_ThreadMgr` thật; object count trở về zero và `DllCanUnloadNow == S_OK`.
 - x64 `cdylib` và registration helper build được.
-- Per-user COM subtree rollback sạch.
-- Cả `ITfInputProcessorProfiles::Register` và API Vista+ `ITfInputProcessorProfileMgr::RegisterProfile` trả `E_FAIL` trong process hiện tại vì phiên Codex không elevated. Helper đã kết thúc bằng unregister; không còn CLSID key dưới HKCU.
-- Vì lifecycle Rust đã xanh, **chọn Rust** cho TSF DLL. Registration/Notepad activation vẫn là manual gate bắt buộc và chưa được coi là đóng.
+- Elevated helper register/unregister **20 vòng** thành công; rollback sạch sau mỗi vòng. Final development state được đăng ký lại dưới HKCU COM và TSF profile, với profile `Enable=0` để không tự thay đổi input method của máy.
+- `CoCreateInstance(CLSID_OPENVIKEY_TSF)` qua registered server, `ActivateEx`/`Deactivate` với thread manager thật và sink advise/unadvise đều thành công.
+- **Chọn Rust** cho TSF DLL; Gate A phần registration/lifecycle đã đóng. Windows tự activate service trong app thật, đọc InputScope/surrounding text và unload khi app thoát vẫn là manual evidence bắt buộc trước khi kết thúc GĐ2b.
 
 ## 0. Mục tiêu và success criteria
 
@@ -180,7 +180,7 @@ Registration là lệnh explicit, idempotent và symmetric:
 - unregister profile/category/COM entries;
 - host startup không tự sửa registry.
 
-Phase 0 đã chọn Rust `windows 0.62.2` sau direct lifecycle test. C++ shim chỉ được mở lại nếu elevated OS activation cho thấy lỗi ownership/unload không tái hiện ở direct test.
+Phase 0 đã chọn Rust `windows 0.62.2` sau direct lifecycle test, 20 vòng elevated registration và registered COM activation. C++ shim chỉ được mở lại nếu OS auto-activation cho thấy lỗi ownership/unload không tái hiện ở các test này.
 
 ## 5. Read edit session
 

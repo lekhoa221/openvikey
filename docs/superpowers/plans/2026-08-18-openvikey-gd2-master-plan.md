@@ -25,7 +25,7 @@
 
 ```text
 Plan 2a  ──implements──►  spec gd2a-hook-electron
-Plan 2b  ──implements──►  spec gd2b-tsf-context     (survey complete; spec not written yet)
+Plan 2b  ──implements──►  spec gd2b-tsf-context     (implementation in progress)
 Plan 2c  ──implements──►  spec gd2c-tsf-primary     (not written yet)
 Plan 2d  ──implements──►  spec gd2d-windows-ui      (not written yet)
 
@@ -39,7 +39,7 @@ Each plan produces a **runnable** `openvikey-win` (2b/2c add a DLL next to it). 
 | Plan | Spec | Implementation plan | Runnable outcome |
 |---|---|---|---|
 | **2a** | [`../specs/2026-08-18-openvikey-gd2a-hook-electron-design.md`](../specs/2026-08-18-openvikey-gd2a-hook-electron-design.md) | **This folder:** `2026-08-18-openvikey-gd2a-implementation-plan.md` (full TDD) | `openvikey-win` types into Notepad + Cursor via hook |
-| **2b** | [`../specs/2026-08-19-openvikey-gd2b-tsf-context-design.md`](../specs/2026-08-19-openvikey-gd2b-tsf-context-design.md) | *write after Phase 0 registration gate* `...-gd2b-implementation-plan.md` | Same exe; TSF DLL **read-only**; hook still types |
+| **2b** | [`../specs/2026-08-19-openvikey-gd2b-tsf-context-design.md`](../specs/2026-08-19-openvikey-gd2b-tsf-context-design.md) | [`2026-08-19-openvikey-gd2b-implementation-plan.md`](./2026-08-19-openvikey-gd2b-implementation-plan.md) | Same exe; TSF DLL **read-only**; hook still types |
 | **2c** | *write at start of pha* `YYYY-MM-DD-openvikey-gd2c-tsf-primary-design.md` | *write after that spec* `...-gd2c-implementation-plan.md` | Per-exe TSF primary input; hook skipped for those processes |
 | **2d** | *write at start of pha* `YYYY-MM-DD-openvikey-gd2d-windows-ui-design.md` | *write after that spec* `...-gd2d-implementation-plan.md` | UniKey-style settings/control window over the stable 2a–2c host |
 
@@ -57,7 +57,7 @@ Each plan produces a **runnable** `openvikey-win` (2b/2c add a DLL next to it). 
 
 ---
 
-## Plan 2b — will look like (do not execute yet)
+## Plan 2b — executing
 
 **Goal:** Password/PIN fields do not get Telex; `left_context` can use surrounding text when TSF exposes it.
 
@@ -65,9 +65,9 @@ Each plan produces a **runnable** `openvikey-win` (2b/2c add a DLL next to it). 
 
 **Pre-design survey:** [`../specs/2026-08-19-openvikey-gd2b-tsf-context-survey.md`](../specs/2026-08-19-openvikey-gd2b-tsf-context-survey.md). It locks the scope and required Phase 0 evidence, not the final implementation choices.
 
-**Likely files:** `crates/openvikey-win-tsf/` (C++ or `windows` COM), `src/context_bridge.rs` in win, tests with mock `ITfContext`.
+**Selected implementation:** Rust `windows 0.62.2`; pure shared contracts in `openvikey-win-context`, COM DLL in `openvikey-win-tsf`, host bridge/cache in `openvikey-win`.
 
-**Likely tasks:** (1) InputScope mock → flags, (2) DLL register/unregister documented, (3) wire flags into host policy and `InputContext`, (4) surrounding token → `LeftContext`, (5) manual Chrome password, (6) new TSF/context ADR or amendment to ADR 0007, (7) a development-only read-only Data Inspector for `model.ovkdev.json` and `capture.ovkdev.json` with refresh/filter.
+**Executable tasks:** See the linked GĐ2b plan. Phase 0 registration/lifecycle and initial sensitive policy are complete; protocol/cache, session rebase, bridge, read adapter, compatibility matrix and Data Inspector remain.
 
 **Done when:** denylist 2a still works; explicit password/PIN scope makes hook `Pass` before it eats the key and produces zero context read/capture/model mutation; no double typing; the development Data Inspector can inspect normal learning/capture data without becoming the production settings shell. Development persistence remains plaintext `.ovkdev.json`; no password/passphrase is introduced in 2b.
 

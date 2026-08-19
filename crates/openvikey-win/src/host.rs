@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 
 use openvikey_core::correction::InterventionConfig;
 use openvikey_core::engine::EngineConfig;
@@ -12,7 +12,7 @@ use openvikey_core::types::{
     EngineAction, FeedbackEvent, FeedbackKind, InputContext, InputKind, InputMethod, TonePlacement,
 };
 use openvikey_session::session::{LabSession, SessionCursors};
-use openvikey_win_context::ContextState;
+use openvikey_win_context::{ContextProjection, ContextState};
 
 use crate::classify::profile_for_exe;
 use crate::focus::FocusCache;
@@ -29,11 +29,50 @@ struct HostRuntime {
     sending: Arc<AtomicBool>,
     mode: Arc<AtomicU8>,
     show_suggestions: Arc<AtomicBool>,
+    context: Arc<ContextProjectionSlot>,
     allow_terminal: bool,
     persist: OnceLock<Arc<dyn Fn() + Send + Sync>>,
 }
 
 static RUNTIME: OnceLock<HostRuntime> = OnceLock::new();
+
+/// Latest validated context shared with the hook through non-blocking reads.
+pub struct ContextProjectionSlot {
+    inner: RwLock<ContextProjection>,
+}
+
+impl ContextProjectionSlot {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: RwLock::new(ContextProjection::Unsupported),
+        }
+    }
+
+    pub fn publish(&self, projection: ContextProjection) {
+        let mut guard = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        *guard = projection;
+    }
+
+    /// Non-blocking state-only read for the low-level hook policy.
+    #[must_use]
+    pub fn try_state(&self) -> Option<ContextState> {
+        let guard = self.inner.try_read().ok()?;
+        Some(projection_state(&guard))
+    }
+
+    /// Non-blocking owned projection used only after the typing mutex is acquired.
+    #[must_use]
+    pub fn try_projection(&self) -> Option<ContextProjection> {
+        self.inner.try_read().ok().map(|guard| guard.clone())
+    }
+}
+
+impl Default for ContextProjectionSlot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 fn mode_to_u8(mode: Mode) -> u8 {
     match mode {
@@ -52,6 +91,15 @@ fn mode_from_u8(value: u8) -> Mode {
 
 /// Bind host + focus for LL callbacks (call once before installing hooks).
 pub fn bind_runtime(host: Arc<Mutex<TypingHost>>, focus: Arc<FocusCache>) {
+    bind_runtime_with_context(host, focus, Arc::new(ContextProjectionSlot::new()));
+}
+
+/// Bind host, focus, and the validated TSF projection cache for LL callbacks.
+pub fn bind_runtime_with_context(
+    host: Arc<Mutex<TypingHost>>,
+    focus: Arc<FocusCache>,
+    context: Arc<ContextProjectionSlot>,
+) {
     let (sending, mode, show_suggestions, allow_terminal) = match host.lock() {
         Ok(guard) => (
             Arc::clone(&guard.sending),
@@ -75,6 +123,7 @@ pub fn bind_runtime(host: Arc<Mutex<TypingHost>>, focus: Arc<FocusCache>) {
         sending,
         mode,
         show_suggestions,
+        context,
         allow_terminal,
         persist: OnceLock::new(),
     });
@@ -115,7 +164,7 @@ fn lock_free_host_state(caps_lock: bool, alt: bool, meta: bool) -> HostState {
             caps_lock,
             alt,
             meta,
-            context_state: ContextState::Unsupported,
+            context_state: rt.context.try_state().unwrap_or(ContextState::Unavailable),
         };
     }
     HostState {
@@ -159,6 +208,14 @@ fn dispatch_locked_key(
     let Ok(mut guard) = host.try_lock() else {
         return on_try_lock_fail(&decision);
     };
+    let context_projection = if let Some(rt) = RUNTIME.get() {
+        let Some(projection) = rt.context.try_projection() else {
+            return KeyDecision::Pass;
+        };
+        Some(projection)
+    } else {
+        None
+    };
     if let Some(sync) = sync {
         if let Some((hwnd, exe, generation)) = sync.focus.try_get_generation() {
             guard.sync_focus(u64::try_from(hwnd).unwrap_or(0), exe, generation, at_ms);
@@ -166,6 +223,9 @@ fn dispatch_locked_key(
         guard.caps_lock = sync.caps_lock;
         guard.alt = sync.alt;
         guard.meta = sync.meta;
+    }
+    if let Some(projection) = context_projection {
+        guard.apply_context_projection(projection, at_ms);
     }
     let out = guard.handle_key(raw, at_ms);
     let lines = guard.overlay_display_lines();
@@ -268,6 +328,8 @@ pub struct TypingHost {
     pub hwnd: u64,
     pub focus_generation: u64,
     pub foreground_exe: String,
+    /// Latest host-validated TSF context projection for the active surface.
+    pub context_projection: ContextProjection,
     pub mode: Mode,
     pub mode_flag: Arc<AtomicU8>,
     pub allow_terminal: bool,
@@ -335,6 +397,7 @@ impl TypingHost {
             hwnd: 1,
             focus_generation: 0,
             foreground_exe: "notepad.exe".into(),
+            context_projection: ContextProjection::Unsupported,
             mode: Mode::Viet,
             mode_flag: Arc::new(AtomicU8::new(0)),
             allow_terminal: false,
@@ -385,6 +448,37 @@ impl TypingHost {
         self.last_injected_hwnd = 0;
         self.inject_caret_break_without_persistence(at_ms);
         self.session.clear_document_context();
+    }
+
+    /// Apply a host-validated context transition before the next physical key.
+    pub fn apply_context_projection(&mut self, projection: ContextProjection, at_ms: i64) {
+        if self.context_projection == projection {
+            return;
+        }
+        let entering_blocked = !projection_blocks_input(&self.context_projection)
+            && projection_blocks_input(&projection);
+        if entering_blocked {
+            self.sent.clear();
+            self.last_injected_token.clear();
+            self.last_injected_hwnd = 0;
+            self.inject_caret_break_without_persistence(at_ms);
+            self.session.clear_document_context();
+        }
+        match &projection {
+            ContextProjection::Normal { left_token_nfc } => {
+                self.session.rebase_left_context(left_token_nfc.clone());
+            }
+            ContextProjection::Unsupported
+                if !matches!(self.context_projection, ContextProjection::Unsupported) =>
+            {
+                self.session.clear_document_context();
+            }
+            ContextProjection::Unsupported
+            | ContextProjection::Pending
+            | ContextProjection::Sensitive
+            | ContextProjection::Unavailable => {}
+        }
+        self.context_projection = projection;
     }
 
     pub fn handle_hotkey(&mut self, hotkey: HostHotkey, at_ms: i64) {
@@ -455,7 +549,7 @@ impl TypingHost {
             caps_lock: self.caps_lock,
             alt: self.alt,
             meta: self.meta,
-            context_state: ContextState::Unsupported,
+            context_state: projection_state(&self.context_projection),
         };
         let decision = decide(&raw, &state);
         match &decision {
@@ -653,6 +747,23 @@ impl TypingHost {
         self.recorded.extend(cmds.iter().cloned());
         Ok(())
     }
+}
+
+fn projection_state(projection: &ContextProjection) -> ContextState {
+    match projection {
+        ContextProjection::Unsupported => ContextState::Unsupported,
+        ContextProjection::Pending => ContextState::Pending,
+        ContextProjection::Normal { .. } => ContextState::Normal,
+        ContextProjection::Sensitive => ContextState::Sensitive,
+        ContextProjection::Unavailable => ContextState::Unavailable,
+    }
+}
+
+fn projection_blocks_input(projection: &ContextProjection) -> bool {
+    matches!(
+        projection,
+        ContextProjection::Pending | ContextProjection::Sensitive | ContextProjection::Unavailable
+    )
 }
 
 /// When `try_lock` fails: map from the already-known lock-free [`KeyDecision`].

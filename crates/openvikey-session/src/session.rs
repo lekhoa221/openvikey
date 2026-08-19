@@ -29,7 +29,10 @@ use openvikey_core::types::{
     FeedbackKind, InputContext, InputEvent, InputKind, InputMethod, Modifiers, RangeBasis,
 };
 use serde::Serialize;
+use unicode_normalization::UnicodeNormalization;
 use unicode_segmentation::UnicodeSegmentation;
+
+const MAX_EXTERNAL_LEFT_TOKEN_BYTES: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionCursors {
@@ -484,6 +487,21 @@ impl LabSession {
         self.last_slice = None;
         self.last_original_nfc.clear();
         self.last_left_token = None;
+    }
+
+    /// Replace document-derived context with one bounded token observed by the host.
+    ///
+    /// Rebasing is a caret boundary: it invalidates edit/learning anchors but does
+    /// not emit an input event, capture record, or persistence mutation.
+    #[allow(clippy::needless_pass_by_value)] // Public host seam owns the snapshot token.
+    pub fn rebase_left_context(&mut self, token_nfc: Option<String>) {
+        let external_token = token_nfc
+            .as_deref()
+            .and_then(|text| text.unicode_words().next_back())
+            .map(|token| token.nfc().collect::<String>())
+            .filter(|token| token.len() <= MAX_EXTERNAL_LEFT_TOKEN_BYTES);
+        self.clear_document_context();
+        self.left_context.prev_token_nfc = external_token;
     }
 
     #[must_use]

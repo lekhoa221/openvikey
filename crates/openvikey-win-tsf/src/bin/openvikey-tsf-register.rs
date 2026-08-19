@@ -19,7 +19,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             register_server(&path)
         }
         "unregister" => unregister_server(),
-        _ => return Err("expected register or unregister".into()),
+        "cycle20" => {
+            let path = dll_path.ok_or("cycle20 requires an absolute DLL path")?;
+            for _ in 0..20 {
+                register_server(&path)?;
+                unregister_server()?;
+            }
+            Ok(())
+        }
+        _ => return Err("expected register, unregister, or cycle20".into()),
     };
     unsafe {
         CoUninitialize();

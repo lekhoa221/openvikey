@@ -12,9 +12,11 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl};
 use windows::Win32::UI::TextServices::{
-    ITfTextInputProcessor_Impl, ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl, ITfThreadMgr,
+    ITfContext, ITfDocumentMgr, ITfSource, ITfTextInputProcessor_Impl, ITfTextInputProcessorEx,
+    ITfTextInputProcessorEx_Impl, ITfThreadMgr, ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl,
 };
 use windows::core::{ComObject, Error, GUID, HRESULT, IUnknown, Interface, Ref, implement};
+use windows_core::ComObjectInterface;
 
 pub mod registration;
 
@@ -117,10 +119,11 @@ impl IClassFactory_Impl for ClassFactory_Impl {
     }
 }
 
-#[implement(ITfTextInputProcessorEx)]
+#[implement(ITfTextInputProcessorEx, ITfThreadMgrEventSink)]
 struct TextService {
     _object: ObjectGuard<'static>,
     thread_manager: Mutex<Option<ITfThreadMgr>>,
+    thread_sink: Mutex<Option<(ITfSource, u32)>>,
 }
 
 impl TextService {
@@ -128,28 +131,52 @@ impl TextService {
         Self {
             _object: SERVER_STATE.acquire_object(),
             thread_manager: Mutex::new(None),
+            thread_sink: Mutex::new(None),
         }
     }
+}
 
-    fn activate(&self, thread_manager: &Ref<ITfThreadMgr>) -> windows::core::Result<()> {
-        let manager = thread_manager
-            .cloned()
-            .ok_or_else(|| Error::from_hresult(E_POINTER))?;
-        let mut current = self
-            .thread_manager
-            .lock()
-            .map_err(|_| Error::from_hresult(E_POINTER))?;
-        *current = Some(manager);
-        Ok(())
-    }
+fn activate_service(
+    service: &TextService_Impl,
+    thread_manager: &Ref<ITfThreadMgr>,
+) -> windows::core::Result<()> {
+    let manager = thread_manager
+        .cloned()
+        .ok_or_else(|| Error::from_hresult(E_POINTER))?;
+    let source: ITfSource = manager.cast()?;
+    let sink =
+        <TextService_Impl as ComObjectInterface<ITfThreadMgrEventSink>>::as_interface_ref(service)
+            .to_owned();
+    let sink_unknown: IUnknown = sink.cast()?;
+    let cookie = unsafe { source.AdviseSink(&ITfThreadMgrEventSink::IID, &sink_unknown)? };
+
+    *service
+        .thread_manager
+        .lock()
+        .map_err(|_| Error::from_hresult(E_POINTER))? = Some(manager);
+    *service
+        .thread_sink
+        .lock()
+        .map_err(|_| Error::from_hresult(E_POINTER))? = Some((source, cookie));
+    Ok(())
 }
 
 impl ITfTextInputProcessor_Impl for TextService_Impl {
     fn Activate(&self, ptim: Ref<ITfThreadMgr>, _tid: u32) -> windows::core::Result<()> {
-        self.activate(&ptim)
+        activate_service(self, &ptim)
     }
 
     fn Deactivate(&self) -> windows::core::Result<()> {
+        if let Some((source, cookie)) = self
+            .thread_sink
+            .lock()
+            .map_err(|_| Error::from_hresult(E_POINTER))?
+            .take()
+        {
+            unsafe {
+                source.UnadviseSink(cookie)?;
+            }
+        }
         let mut current = self
             .thread_manager
             .lock()
@@ -166,7 +193,33 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
         _tid: u32,
         _dwflags: u32,
     ) -> windows::core::Result<()> {
-        self.activate(&ptim)
+        activate_service(self, &ptim)
+    }
+}
+
+impl ITfThreadMgrEventSink_Impl for TextService_Impl {
+    fn OnInitDocumentMgr(&self, _pdim: Ref<ITfDocumentMgr>) -> windows::core::Result<()> {
+        Ok(())
+    }
+
+    fn OnUninitDocumentMgr(&self, _pdim: Ref<ITfDocumentMgr>) -> windows::core::Result<()> {
+        Ok(())
+    }
+
+    fn OnSetFocus(
+        &self,
+        _pdimfocus: Ref<ITfDocumentMgr>,
+        _pdimprevfocus: Ref<ITfDocumentMgr>,
+    ) -> windows::core::Result<()> {
+        Ok(())
+    }
+
+    fn OnPushContext(&self, _pic: Ref<ITfContext>) -> windows::core::Result<()> {
+        Ok(())
+    }
+
+    fn OnPopContext(&self, _pic: Ref<ITfContext>) -> windows::core::Result<()> {
+        Ok(())
     }
 }
 
@@ -287,6 +340,36 @@ mod tests {
         drop(processor);
 
         assert_eq!(DllCanUnloadNow(), S_OK);
+        unsafe {
+            CoUninitialize();
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the development TSF server to be registered"]
+    fn registered_com_server_activates_text_processor() {
+        unsafe {
+            CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap();
+        }
+        let processor: ITfTextInputProcessorEx = unsafe {
+            CoCreateInstance(
+                &CLSID_OPENVIKEY_TSF,
+                None::<&IUnknown>,
+                CLSCTX_INPROC_SERVER,
+            )
+            .unwrap()
+        };
+        let thread_manager: ITfThreadMgr = unsafe {
+            CoCreateInstance(&CLSID_TF_ThreadMgr, None::<&IUnknown>, CLSCTX_INPROC_SERVER).unwrap()
+        };
+        let client_id = unsafe { thread_manager.Activate().unwrap() };
+        unsafe {
+            processor.ActivateEx(&thread_manager, client_id, 0).unwrap();
+            processor.Deactivate().unwrap();
+            thread_manager.Deactivate().unwrap();
+        }
+        drop(thread_manager);
+        drop(processor);
         unsafe {
             CoUninitialize();
         }
