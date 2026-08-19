@@ -3,7 +3,8 @@
 use std::sync::{Arc, Mutex};
 
 use openvikey_win::focus::{
-    FocusCache, bind_callback_cache, peek_callback_cache, unbind_callback_cache,
+    FocusCache, bind_callback_cache, canonical_foreground_exe, peek_callback_cache,
+    unbind_callback_cache,
 };
 use openvikey_win::mouse::mouse_decision;
 use openvikey_win::policy::KeyDecision;
@@ -56,6 +57,22 @@ fn callback_cache_rebinds_after_unbind() {
 }
 
 #[test]
+fn windows_terminal_class_overrides_a_provider_owned_executable() {
+    assert_eq!(
+        canonical_foreground_exe("pi.exe", "CASCADIA_HOSTING_WINDOW_CLASS"),
+        "WindowsTerminal.exe"
+    );
+    assert_eq!(
+        canonical_foreground_exe("powershell.exe", "ConsoleWindowClass"),
+        "conhost.exe"
+    );
+    assert_eq!(
+        canonical_foreground_exe("notepad.exe", "Notepad"),
+        "notepad.exe"
+    );
+}
+
+#[test]
 fn focus_cache_roundtrip() {
     let cache = FocusCache::new();
     cache.set(1, "notepad.exe");
@@ -72,6 +89,19 @@ fn focus_cache_exposes_pid_tid_hwnd_and_generation_for_context_matching() {
     assert_eq!(identity.tid, 11);
     assert_eq!(identity.hwnd, Some(15));
     assert_eq!(identity.generation, 1);
+}
+
+#[test]
+fn field_transition_changes_generation_without_changing_the_window() {
+    let cache = FocusCache::new();
+    cache.set_with_identity(15, "browser.exe", 10, 11);
+    let before = cache.try_get_identity().unwrap();
+
+    let after = cache.try_mark_field_transition().unwrap();
+
+    assert_eq!(after.pid, before.pid);
+    assert_eq!(after.hwnd, before.hwnd);
+    assert!(after.generation > before.generation);
 }
 
 #[test]

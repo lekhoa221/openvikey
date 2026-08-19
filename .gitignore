@@ -1,6 +1,6 @@
 # Rust
 /target/
-/target-gd2b/
+/target-*/
 **/*.rs.bk
 *.pdb
 
@@ -26,3 +26,10 @@ desktop.ini
 # Build / logs
 *.log
 /dist/
+
+# Local scratch / temporary
+/old.html
+/opus_sub.txt
+/tmpvlsp/
+/nul
+/.agents/

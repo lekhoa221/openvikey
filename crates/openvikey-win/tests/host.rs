@@ -11,7 +11,7 @@ use openvikey_win::hook::ll_return;
 use openvikey_win::host::{ContextProjectionSlot, TypingHost, handle_key_locked, on_try_lock_fail};
 use openvikey_win::policy::{HostHotkey, KeyDecision, OVK_EXTRA, RawKey};
 use openvikey_win::sync::InjectCommand;
-use openvikey_win_context::{ContextProjection, ContextState};
+use openvikey_win_context::{ContextProjection, ContextState, ForegroundIdentity};
 
 fn key(vk: u16) -> RawKey {
     RawKey {
@@ -102,6 +102,24 @@ fn space_commit_updates_last_injected_token() {
         host.handle_key(key(vk), 1);
     }
     assert_eq!(host.last_injected_token, "xin");
+}
+
+#[test]
+fn changing_input_method_clears_composition_before_using_the_new_method() {
+    let mut host = TypingHost::new_telex_fixture();
+    host.handle_key(key(0x41), 1);
+    assert!(!host.session.composition_text().is_empty());
+
+    host.set_engine_config(
+        openvikey_core::engine::EngineConfig {
+            method: openvikey_core::types::InputMethod::Vni,
+            tone_placement: openvikey_core::types::TonePlacement::Modern,
+        },
+        2,
+    );
+
+    assert!(host.session.composition_text().is_empty());
+    assert!(host.sent.is_empty());
 }
 
 #[test]
@@ -475,11 +493,20 @@ fn sensitive_transition_clears_internal_context_without_inject_or_persistence() 
 #[test]
 fn projection_slot_publishes_state_and_owned_token() {
     let slot = ContextProjectionSlot::new();
-    slot.publish(ContextProjection::Normal {
-        left_token_nfc: Some("chào".to_owned()),
-    });
+    let foreground = ForegroundIdentity {
+        pid: 10,
+        tid: 11,
+        hwnd: Some(12),
+        generation: 13,
+    };
+    slot.publish(
+        foreground,
+        ContextProjection::Normal {
+            left_token_nfc: Some("chào".to_owned()),
+        },
+    );
 
-    assert_eq!(slot.try_state(), Some(ContextState::Normal));
+    assert_eq!(slot.try_state_for(&foreground), Some(ContextState::Normal));
     assert_eq!(
         slot.try_projection(),
         Some(ContextProjection::Normal {

@@ -50,7 +50,7 @@ Vấn đề gốc: gõ nhanh hay sai (đảo chữ, nuốt/đặt dấu sai ch�
 ### 2.3 Nền tảng & lộ trình
 - **Đích cuối:** Windows + macOS, chung `openvikey-core`.
 - **GĐ1 (v1 — spec này):** headless brain, chứng minh sự "thông minh".
-- **GĐ2:** Windows **hybrid** — hook nhập chính (2a), TSF ngữ cảnh (2b), TSF nhập chính theo app (2c), settings/control UI kiểu UniKey (2d). Không TSF-only. Chi tiết: [`2026-08-18-openvikey-gd2-windows-host-design.md`](./2026-08-18-openvikey-gd2-windows-host-design.md).
+- **GĐ2 / Windows hiện hành:** app **standalone kiểu UniKey** — hook + `SendInput` nhập chính, tray/settings và learning trong một `OpenViKey.exe`; không cần TSF profile/`Win + Space`. TSF GĐ2b được giữ optional/research, GĐ2c không còn trên critical path. Chi tiết: [`2026-08-19-openvikey-windows-standalone-design.md`](./2026-08-19-openvikey-windows-standalone-design.md).
 - **GĐ3:** macOS — **spike: IMKInputController (InputMethodKit) vs CGEventTap** (chưa quyết, §10).
 
 ### 2.4 Non-goals (vĩnh viễn)

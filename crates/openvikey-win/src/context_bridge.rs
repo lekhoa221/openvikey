@@ -351,7 +351,6 @@ impl ContextBridgeState {
                     .map_err(ContextBridgeStateError::Cache)?;
                 if let Some(foreground) = self.foreground
                     && foreground.pid == source_pid
-                    && foreground.tid == source_tid
                 {
                     self.cache.focus_changed(foreground);
                 }
@@ -377,8 +376,9 @@ impl ContextBridgeState {
     }
 
     fn publish_projection(&self) {
-        if let Some(foreground) = &self.foreground {
-            self.projection.publish(self.cache.project(foreground));
+        if let Some(foreground) = self.foreground {
+            self.projection
+                .publish(foreground, self.cache.project(&foreground));
         }
     }
 }

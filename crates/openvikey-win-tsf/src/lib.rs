@@ -9,19 +9,23 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use windows::Win32::Foundation::{
-    CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_POINTER, S_FALSE, S_OK,
+    CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_POINTER, HWND, S_FALSE, S_OK,
 };
-use windows::Win32::System::Com::{CoTaskMemFree, IClassFactory, IClassFactory_Impl};
+use windows::Win32::System::Com::{
+    CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree, IClassFactory, IClassFactory_Impl,
+};
 use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
-use windows::Win32::System::Variant::{VARIANT, VT_UNKNOWN, VariantClear};
+use windows::Win32::System::Variant::{VARIANT, VT_I4, VT_UNKNOWN, VariantClear};
+use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation};
 use windows::Win32::UI::TextServices::{
-    GUID_PROP_INPUTSCOPE, ITfContext, ITfDocumentMgr, ITfEditRecord, ITfEditSession,
-    ITfEditSession_Impl, ITfInputScope, ITfRange, ITfSource, ITfTextEditSink, ITfTextEditSink_Impl,
-    ITfTextInputProcessor_Impl, ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl,
-    ITfThreadMgr, ITfThreadMgrEventSink, ITfThreadMgrEventSink_Impl, InputScope, TF_AE_START,
-    TF_ANCHOR_END, TF_ANCHOR_START, TF_DEFAULT_SELECTION, TF_ES_ASYNCDONTCARE, TF_ES_READ,
-    TF_SELECTION,
+    GUID_COMPARTMENT_KEYBOARD_DISABLED, GUID_PROP_INPUTSCOPE, ITfCompartmentMgr, ITfContext,
+    ITfDocumentMgr, ITfEditRecord, ITfEditSession, ITfEditSession_Impl, ITfInputScope, ITfRange,
+    ITfSource, ITfTextEditSink, ITfTextEditSink_Impl, ITfTextInputProcessor_Impl,
+    ITfTextInputProcessorEx, ITfTextInputProcessorEx_Impl, ITfThreadMgr, ITfThreadMgrEventSink,
+    ITfThreadMgrEventSink_Impl, InputScope, TF_AE_START, TF_ANCHOR_END, TF_ANCHOR_START,
+    TF_DEFAULT_SELECTION, TF_ES_ASYNCDONTCARE, TF_ES_READ, TF_SELECTION,
 };
+use windows::Win32::UI::WindowsAndMessaging::{GA_ROOT, GetAncestor};
 use windows::core::{ComObject, Error, GUID, HRESULT, IUnknown, Interface, Ref, implement};
 use windows_core::ComObjectInterface;
 
@@ -40,6 +44,14 @@ pub const CLSID_OPENVIKEY_TSF: GUID = GUID::from_u128(0x741b179e_bf99_4ea2_bddf_
 pub const GUID_OPENVIKEY_PROFILE: GUID = GUID::from_u128(0x4da5e768_2736_4c63_aa94_6399134889a7);
 
 trait TsfReadBoundary {
+    fn automation_password(&self) -> bool {
+        false
+    }
+
+    fn keyboard_disabled(&self) -> bool {
+        false
+    }
+
     fn input_scopes(&self) -> windows::core::Result<Option<Vec<i32>>>;
     fn left_text(&self) -> windows::core::Result<String>;
     fn hwnd(&self) -> Option<u64>;
@@ -47,6 +59,13 @@ trait TsfReadBoundary {
 
 fn read_owned_context(boundary: &impl TsfReadBoundary) -> ReadContextResult {
     let hwnd = boundary.hwnd();
+    if boundary.automation_password() || boundary.keyboard_disabled() {
+        return ReadContextResult {
+            state: ContextState::Sensitive,
+            left_token_nfc: None,
+            hwnd,
+        };
+    }
     let state = match boundary.input_scopes() {
         Ok(scopes) => classify_input_scopes(scopes.as_deref().unwrap_or_default()),
         Err(_) => {
@@ -85,13 +104,44 @@ struct ComReadBoundary {
 }
 
 impl TsfReadBoundary for ComReadBoundary {
+    fn automation_password(&self) -> bool {
+        let automation: windows::core::Result<IUIAutomation> =
+            unsafe { CoCreateInstance(&CUIAutomation, None::<&IUnknown>, CLSCTX_INPROC_SERVER) };
+        automation
+            .and_then(|automation| unsafe { automation.GetFocusedElement() })
+            .and_then(|element| unsafe { element.CurrentIsPassword() })
+            .is_ok_and(windows_core::BOOL::as_bool)
+    }
+
+    fn keyboard_disabled(&self) -> bool {
+        let Ok(manager) = self.context.cast::<ITfCompartmentMgr>() else {
+            return false;
+        };
+        let Ok(compartment) =
+            (unsafe { manager.GetCompartment(&GUID_COMPARTMENT_KEYBOARD_DISABLED) })
+        else {
+            return false;
+        };
+        let Ok(mut value) = (unsafe { compartment.GetValue() }) else {
+            return false;
+        };
+        let inner = unsafe { &*value.Anonymous.Anonymous };
+        let disabled = inner.vt == VT_I4 && unsafe { inner.Anonymous.lVal } != 0;
+        let _ = unsafe { VariantClear(&raw mut value) };
+        disabled
+    }
+
     fn input_scopes(&self) -> windows::core::Result<Option<Vec<i32>>> {
         let property = match unsafe { self.context.GetAppProperty(&GUID_PROP_INPUTSCOPE) } {
             Ok(property) => property,
             Err(error) if error.code() == windows::Win32::Foundation::E_FAIL => return Ok(None),
             Err(error) => return Err(error),
         };
-        let mut value = unsafe { property.GetValue(self.edit_cookie, &self.range)? };
+        let mut value = match unsafe { property.GetValue(self.edit_cookie, &self.range) } {
+            Ok(value) => value,
+            Err(error) if error.code() == windows::Win32::Foundation::E_FAIL => return Ok(None),
+            Err(error) => return Err(error),
+        };
         let scope_result = input_scope_from_variant(&mut value);
         let clear_result = unsafe { VariantClear(&raw mut value) };
         let scope = scope_result?;
@@ -120,9 +170,18 @@ impl TsfReadBoundary for ComReadBoundary {
     fn hwnd(&self) -> Option<u64> {
         let view = unsafe { self.context.GetActiveView().ok()? };
         let hwnd = unsafe { view.GetWnd().ok()? };
-        let raw = hwnd.0 as usize;
-        (raw != 0).then(|| u64::try_from(raw).unwrap_or(u64::MAX))
+        top_level_hwnd(hwnd)
     }
+}
+
+fn top_level_hwnd(hwnd: HWND) -> Option<u64> {
+    if hwnd.is_invalid() {
+        return None;
+    }
+    let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let selected = if root.is_invalid() { hwnd } else { root };
+    let raw = selected.0 as usize;
+    (raw != 0).then(|| u64::try_from(raw).unwrap_or(u64::MAX))
 }
 
 fn input_scope_from_variant(value: &mut VARIANT) -> windows::core::Result<Option<ITfInputScope>> {
@@ -233,8 +292,7 @@ fn selection_range(context: &ITfContext, edit_cookie: u32) -> windows::core::Res
 fn active_view_hwnd(context: &ITfContext) -> Option<u64> {
     let view = unsafe { context.GetActiveView().ok()? };
     let hwnd = unsafe { view.GetWnd().ok()? };
-    let raw = hwnd.0 as usize;
-    (raw != 0).then(|| u64::try_from(raw).unwrap_or(u64::MAX))
+    top_level_hwnd(hwnd)
 }
 
 static SERVER_STATE: ServerState = ServerState::new();
@@ -680,7 +738,7 @@ mod tests {
     use std::cell::Cell;
     use std::ffi::c_void;
     use std::ptr;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     use openvikey_win::context_bridge::ContextBridgeServer;
@@ -700,13 +758,27 @@ mod tests {
 
     use super::{CLSID_OPENVIKEY_TSF, DllCanUnloadNow, DllGetClassObject, ServerState};
 
+    static SERVER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     struct CountingReadBoundary {
+        automation_password: bool,
+        keyboard_disabled: bool,
         scopes: Vec<i32>,
+        scope_reads: Cell<u32>,
         text_reads: Cell<u32>,
     }
 
     impl super::TsfReadBoundary for CountingReadBoundary {
+        fn automation_password(&self) -> bool {
+            self.automation_password
+        }
+
+        fn keyboard_disabled(&self) -> bool {
+            self.keyboard_disabled
+        }
+
         fn input_scopes(&self) -> windows::core::Result<Option<Vec<i32>>> {
+            self.scope_reads.set(self.scope_reads.get() + 1);
             Ok(Some(self.scopes.clone()))
         }
 
@@ -720,10 +792,73 @@ mod tests {
         }
     }
 
+    struct MissingScopeBoundary;
+
+    impl super::TsfReadBoundary for MissingScopeBoundary {
+        fn input_scopes(&self) -> windows::core::Result<Option<Vec<i32>>> {
+            Ok(None)
+        }
+
+        fn left_text(&self) -> windows::core::Result<String> {
+            Ok("xin chào".to_owned())
+        }
+
+        fn hwnd(&self) -> Option<u64> {
+            Some(42)
+        }
+    }
+
+    #[test]
+    fn missing_input_scope_is_normal_and_reads_left_context() {
+        let result = super::read_owned_context(&MissingScopeBoundary);
+
+        assert_eq!(result.state, ContextState::Normal);
+        assert_eq!(result.left_token_nfc.as_deref(), Some("chào"));
+    }
+
+    #[test]
+    fn automation_password_returns_sensitive_before_scope_or_text_read() {
+        let boundary = CountingReadBoundary {
+            automation_password: true,
+            keyboard_disabled: false,
+            scopes: Vec::new(),
+            scope_reads: Cell::new(0),
+            text_reads: Cell::new(0),
+        };
+
+        let result = super::read_owned_context(&boundary);
+
+        assert_eq!(result.state, ContextState::Sensitive);
+        assert_eq!(result.left_token_nfc, None);
+        assert_eq!(boundary.scope_reads.get(), 0);
+        assert_eq!(boundary.text_reads.get(), 0);
+    }
+
+    #[test]
+    fn keyboard_disabled_returns_sensitive_before_scope_or_text_read() {
+        let boundary = CountingReadBoundary {
+            automation_password: false,
+            keyboard_disabled: true,
+            scopes: Vec::new(),
+            scope_reads: Cell::new(0),
+            text_reads: Cell::new(0),
+        };
+
+        let result = super::read_owned_context(&boundary);
+
+        assert_eq!(result.state, ContextState::Sensitive);
+        assert_eq!(result.left_token_nfc, None);
+        assert_eq!(boundary.scope_reads.get(), 0);
+        assert_eq!(boundary.text_reads.get(), 0);
+    }
+
     #[test]
     fn sensitive_scope_returns_before_any_surrounding_text_read() {
         let boundary = CountingReadBoundary {
+            automation_password: false,
+            keyboard_disabled: false,
             scopes: vec![31],
+            scope_reads: Cell::new(0),
             text_reads: Cell::new(0),
         };
 
@@ -737,6 +872,7 @@ mod tests {
 
     #[test]
     fn publisher_connects_replaces_latest_and_stops_bounded() {
+        let _server_test = SERVER_TEST_LOCK.lock().unwrap();
         let process_id = unsafe { GetCurrentProcessId() };
         let thread_id = unsafe { GetCurrentThreadId() };
         let pipe_name = format!(r"\\.\pipe\OpenViKey.Publisher.test.{process_id}.{thread_id}");
@@ -805,6 +941,7 @@ mod tests {
 
     #[test]
     fn class_factory_creates_and_activates_text_processor() {
+        let _server_test = SERVER_TEST_LOCK.lock().unwrap();
         unsafe {
             CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap();
         }
@@ -849,6 +986,7 @@ mod tests {
     #[test]
     #[ignore = "requires the development TSF server to be registered"]
     fn registered_com_server_activates_text_processor() {
+        let _server_test = SERVER_TEST_LOCK.lock().unwrap();
         unsafe {
             CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap();
         }

@@ -1,8 +1,10 @@
 # ADR 0007: GĐ2 Windows hybrid host (hook first, TSF later)
 
 - **Date:** 2026-08-18
-- **Status:** Accepted
-- **Gate:** GĐ2 Windows system integration
+- **Status:** Superseded as default product direction by [ADR 0010](./0010-windows-standalone-default.md)
+- **Gate:** Historical GĐ2 Windows hybrid integration
+
+> Historical record: GĐ2a/GĐ2b implementation evidence remains valid, but TSF is no longer on the default product path.
 
 ## Context
 

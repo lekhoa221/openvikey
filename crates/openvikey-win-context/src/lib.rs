@@ -264,6 +264,21 @@ mod tests {
     }
 
     #[test]
+    fn cache_accepts_a_same_process_tsf_thread_when_root_window_matches() {
+        let mut cache = ContextCache::new();
+        cache.connect(10, 99, 12).unwrap();
+        cache.focus_changed(foreground(1));
+        let mut observation = normal_snapshot();
+        observation.source_tid = 99;
+        cache.ingest(observation).unwrap();
+
+        assert!(matches!(
+            cache.project(&foreground(1)),
+            ContextProjection::Normal { .. }
+        ));
+    }
+
+    #[test]
     fn cache_rejects_wrong_window_instance_and_receding_sequence() {
         let mut cache = ContextCache::new();
         cache.connect(10, 11, 12).unwrap();

@@ -11,12 +11,14 @@ description = "Windows hook host for OpenViKey"
 openvikey-core = { path = "../openvikey-core" }
 openvikey-session = { path = "../openvikey-session" }
 openvikey-win-context = { path = "../openvikey-win-context" }
+arc-swap = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 unicode-segmentation = { workspace = true }
 windows = { workspace = true }
+windows-registry = "0.6"
 
 [lints.rust]
 unsafe_code = "allow"

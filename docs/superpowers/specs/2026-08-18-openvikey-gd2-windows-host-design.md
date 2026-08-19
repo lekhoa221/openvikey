@@ -1,7 +1,7 @@
 # OpenViKey GĐ2 — Windows host (thiết kế master)
 
 - **Ngày:** 2026-08-18
-- **Trạng thái:** v1.3 — GĐ2a implemented; GĐ2b survey complete; GĐ2d Windows product UI recorded
+- **Trạng thái:** Superseded as product roadmap by [`2026-08-19-openvikey-windows-standalone-design.md`](./2026-08-19-openvikey-windows-standalone-design.md)
 - **Governing spec:** [`2026-08-17-openvikey-design.md`](./2026-08-17-openvikey-design.md)
 - **Part 2 (lab capture):** [`2026-08-17-openvikey-part2-personal-capture-design.md`](./2026-08-17-openvikey-part2-personal-capture-design.md)
 - **Pha đầu (spec chi tiết):** [`2026-08-18-openvikey-gd2a-hook-electron-design.md`](./2026-08-18-openvikey-gd2a-hook-electron-design.md)
@@ -9,6 +9,8 @@
 - **License:** MIT (kế thừa)
 
 ---
+
+> Tài liệu lịch sử cho GĐ2a/GĐ2b. Owner đã khóa sản phẩm standalone; TSF không còn nằm trên default/critical path. Xem ADR 0010 và standalone spec.
 
 ## 0. Bối cảnh & động lực
 

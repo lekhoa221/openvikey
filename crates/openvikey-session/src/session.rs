@@ -71,6 +71,34 @@ pub struct UndoVisual {
     pub restored_composition: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LearningNoticeKind {
+    Accepted,
+    Observed,
+    Promoted,
+    Forgotten,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LearningNotice {
+    pub kind: LearningNoticeKind,
+    pub original_nfc: String,
+    pub replacement_nfc: String,
+}
+
+impl LearningNotice {
+    #[must_use]
+    pub fn display_text(&self) -> String {
+        let action = match self.kind {
+            LearningNoticeKind::Accepted => "Đã học",
+            LearningNoticeKind::Observed => "Đã ghi nhận",
+            LearningNoticeKind::Promoted => "Đã tạo gợi ý cá nhân",
+            LearningNoticeKind::Forgotten => "Đã quên",
+        };
+        format!("{action}: {} → {}", self.original_nfc, self.replacement_nfc)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LastLearned {
     Rule(RuleContextKey),
@@ -115,6 +143,7 @@ pub struct LabSession {
     intervention: InterventionConfig,
     pending_restore_raw: Option<String>,
     last_learned: Option<LastLearned>,
+    pending_learning_notice: Option<LearningNotice>,
 }
 
 impl LabSession {
@@ -162,6 +191,7 @@ impl LabSession {
             intervention: InterventionConfig::win32(),
             pending_restore_raw: None,
             last_learned: None,
+            pending_learning_notice: None,
         }
     }
 
@@ -373,6 +403,11 @@ impl LabSession {
             .model_mut()
             .apply_feedback(&key, &feedback, allow_learning);
         if allow_learning {
+            self.pending_learning_notice = Some(LearningNotice {
+                kind: LearningNoticeKind::Accepted,
+                original_nfc: key.original_nfc.clone(),
+                replacement_nfc: key.candidate_nfc.clone(),
+            });
             self.last_learned = Some(LastLearned::Rule(key));
         }
         self.clear_auto_anchor();
@@ -502,6 +537,25 @@ impl LabSession {
             .filter(|token| token.len() <= MAX_EXTERNAL_LEFT_TOKEN_BYTES);
         self.clear_document_context();
         self.left_context.prev_token_nfc = external_token;
+    }
+
+    /// Swap Telex/VNI/tone settings after the host has issued a caret break.
+    pub fn set_engine_config(&mut self, config: EngineConfig) {
+        self.engine.set_config(config);
+        self.last_slice = None;
+        self.last_original_nfc.clear();
+        self.last_left_token = None;
+        self.rewind.invalidate();
+    }
+
+    #[must_use]
+    pub fn engine_config(&self) -> EngineConfig {
+        *self.engine.config()
+    }
+
+    /// Drain one local UI notice after a real learning mutation.
+    pub fn take_learning_notice(&mut self) -> Option<LearningNotice> {
+        self.pending_learning_notice.take()
     }
 
     #[must_use]
@@ -865,6 +919,11 @@ impl LabSession {
         self.learning
             .model_mut()
             .apply_feedback(&key, &feedback, true);
+        self.pending_learning_notice = Some(LearningNotice {
+            kind: LearningNoticeKind::Observed,
+            original_nfc: key.original_nfc.clone(),
+            replacement_nfc: key.candidate_nfc.clone(),
+        });
         self.last_learned = Some(LastLearned::Rule(key));
     }
 
@@ -882,6 +941,11 @@ impl LabSession {
                     self.learning
                         .model_mut()
                         .apply_feedback(&key, &feedback, true);
+                    self.pending_learning_notice = Some(LearningNotice {
+                        kind: LearningNoticeKind::Observed,
+                        original_nfc: key.original_nfc.clone(),
+                        replacement_nfc: key.candidate_nfc.clone(),
+                    });
                     self.last_learned = Some(LastLearned::Rule(key));
                 }
             }
@@ -891,12 +955,21 @@ impl LabSession {
                 input_method,
             } => {
                 if allow_learning {
-                    self.learning.model_mut().record_personal_correction(
+                    let promoted = self.learning.model_mut().record_personal_correction(
                         input_method,
                         original_nfc.clone(),
                         replacement_nfc.clone(),
                         true,
                     );
+                    self.pending_learning_notice = Some(LearningNotice {
+                        kind: if promoted {
+                            LearningNoticeKind::Promoted
+                        } else {
+                            LearningNoticeKind::Observed
+                        },
+                        original_nfc: original_nfc.clone(),
+                        replacement_nfc: replacement_nfc.clone(),
+                    });
                     self.last_learned = Some(LastLearned::Personal {
                         input_method,
                         original_nfc,
@@ -939,6 +1012,11 @@ impl LabSession {
         match self.last_learned.take() {
             Some(LastLearned::Rule(key)) => {
                 self.learning.model_mut().forget_rule(&key);
+                self.pending_learning_notice = Some(LearningNotice {
+                    kind: LearningNoticeKind::Forgotten,
+                    original_nfc: key.original_nfc,
+                    replacement_nfc: key.candidate_nfc,
+                });
                 true
             }
             Some(LastLearned::Personal {
@@ -951,6 +1029,11 @@ impl LabSession {
                     &original_nfc,
                     &replacement_nfc,
                 );
+                self.pending_learning_notice = Some(LearningNotice {
+                    kind: LearningNoticeKind::Forgotten,
+                    original_nfc,
+                    replacement_nfc,
+                });
                 true
             }
             None => false,
@@ -1027,6 +1110,7 @@ impl LabSession {
             intervention: self.intervention,
             pending_restore_raw: self.pending_restore_raw.clone(),
             last_learned: self.last_learned.clone(),
+            pending_learning_notice: self.pending_learning_notice.clone(),
         }
     }
 
@@ -1040,6 +1124,8 @@ impl LabSession {
         self.capture.clone_from(&checkpoint.capture);
         *self.learning.model_mut() = checkpoint.learning.model().clone();
         self.last_learned.clone_from(&checkpoint.last_learned);
+        self.pending_learning_notice
+            .clone_from(&checkpoint.pending_learning_notice);
     }
 
     /// Restore state captured by [`Self::checkpoint_for_inject`].
@@ -1064,6 +1150,7 @@ impl LabSession {
         self.intervention = checkpoint.intervention;
         self.pending_restore_raw = checkpoint.pending_restore_raw;
         self.last_learned = checkpoint.last_learned;
+        self.pending_learning_notice = checkpoint.pending_learning_notice;
     }
 }
 
@@ -1089,6 +1176,7 @@ pub struct SessionInjectCheckpoint {
     intervention: InterventionConfig,
     pending_restore_raw: Option<String>,
     last_learned: Option<LastLearned>,
+    pending_learning_notice: Option<LearningNotice>,
 }
 
 /// Unicode punctuation the engine's ASCII boundary table does not treat as commit.

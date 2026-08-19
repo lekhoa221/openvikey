@@ -1,0 +1,262 @@
+OPENVIKEY STANDALONE PREVIEW — HƯỚNG DẪN SAU KHI RESTART
+=========================================================
+
+Ngày chuẩn bị: 2026-08-19
+Workspace: D:\Workspace\Project_Khoa\openvikey
+App cần chạy: D:\Workspace\Project_Khoa\openvikey\dist\OpenViKey-preview\OpenViKey.exe
+
+MỤC TIÊU
+--------
+Kiểm tra OpenViKey như một app standalone kiểu UniKey:
+- chạy một OpenViKey.exe;
+- có tray V/E;
+- gõ bằng keyboard hook + SendInput;
+- có gợi ý/learning;
+- không đăng ký TSF, không xuất hiện trong Win+Space;
+- password giữ nguyên và không được học.
+
+LƯU Ý VỀ DLL CŨ
+---------------
+Sau khi restart, openvikey_win_tsf.dll phải không còn được NẠP TRONG BỘ NHỚ của
+Cursor/Edge/Excel/Explorer/... và không còn đăng ký với Windows.
+
+Restart KHÔNG tự xóa file DLL nằm trong các thư mục target-* của workspace.
+Các file đó chỉ là build artifact trên đĩa, không hoạt động nếu không được đăng ký.
+Không cần chọn OpenViKey trong Win+Space và không chạy openvikey-tsf-register.exe.
+
+BƯỚC 1 — KIỂM TRA MÁY SAU RESTART
+---------------------------------
+1. Mở PowerShell bình thường, KHÔNG cần Run as Administrator.
+2. Chạy:
+
+   cd D:\Workspace\Project_Khoa\openvikey
+   powershell -ExecutionPolicy Bypass -File scripts\check-standalone-state.ps1
+
+Kết quả đúng phải có toàn bộ:
+
+   [PASS] PackageExists
+   [PASS] ComClassAbsent
+   [PASS] LanguageTipAbsent
+   [PASS] TsfDllNotLoaded
+   [PASS] ProductNotRunningYet
+   Machine is ready for the standalone test.
+
+Nếu có FAIL: dừng tại đây, copy toàn bộ output và đưa vào session mới.
+
+BƯỚC 2 — CHUẨN BỊ TRƯỚC KHI CHẠY
+--------------------------------
+1. Thoát UniKey, EVKey, OpenKey hoặc bộ gõ hook khác.
+2. Không thay input method bằng Win+Space để tìm OpenViKey. OpenViKey không nằm ở đó.
+3. Đóng các tài liệu quan trọng chưa lưu trước khi thử bản preview.
+4. Nhớ rằng model/capture preview hiện là plaintext local development data.
+
+BƯỚC 3 — KHỞI ĐỘNG OPENVIKEY
+----------------------------
+Double-click:
+
+   D:\Workspace\Project_Khoa\openvikey\dist\OpenViKey-preview\OpenViKey.exe
+
+Hoặc chạy từ PowerShell:
+
+   Start-Process .\dist\OpenViKey-preview\OpenViKey.exe
+
+Kỳ vọng:
+- không có cửa sổ console màu đen;
+- có icon V hoặc E trong system tray (có thể nằm dưới nút ^);
+- Task Manager chỉ có một process OpenViKey.exe;
+- hover icon hiện OpenViKey — V hoặc OpenViKey — E.
+
+Profile kiểm tra trên máy này đã đặt allow_terminal=true. Vì vậy PowerShell và
+Windows Terminal phải gõ được tiếng Việt, nhưng OpenViKey không learning/capture
+trong các process terminal chuyên dụng. Nếu settings bị reset, có thể khởi động tạm:
+
+   Start-Process .\dist\OpenViKey-preview\OpenViKey.exe -ArgumentList '--allow-terminal'
+
+Nếu không thấy tray icon:
+- kiểm tra vùng icon ẩn (^);
+- không double-click liên tục;
+- mở Task Manager xem OpenViKey.exe có chạy không;
+- báo kết quả trong session mới.
+
+BƯỚC 4 — KIỂM TRA TRAY VÀ SINGLE INSTANCE
+-----------------------------------------
+1. Click trái tray icon: V phải đổi thành E hoặc ngược lại.
+2. Để lại ở V trước khi test gõ.
+3. Click phải tray icon. Menu phải có:
+   - Cài đặt và rule đã học...
+   - Kiểu gõ Telex
+   - Kiểu gõ VNI
+   - Hiện gợi ý
+   - Khởi động cùng Windows
+   - Quên rule vừa học
+   - Thoát
+4. Double-click OpenViKey.exe thêm một lần.
+5. Kỳ vọng không có process hook thứ hai; instance đầu vẫn chạy và mở phần control.
+
+BƯỚC 5 — KIỂM TRA GÕ VNI TRONG NOTEPAD
+--------------------------------------
+1. Click phải tray, chọn Kiểu gõ VNI.
+2. Mở Notepad mới.
+3. Gõ chính xác:
+
+   ch2ao 
+
+Kỳ vọng sau Space:
+
+   chào 
+
+4. Gõ:
+
+   d91o 
+
+Kỳ vọng:
+
+   đó 
+
+5. Nhấn Enter. Kỳ vọng Notepad xuống dòng bình thường.
+6. Backspace trong lúc đang ghép từ phải xóa đúng một ký tự nhìn thấy.
+
+Ghi lại nếu có: mất ký tự, double typing, Enter sai, Backspace sai hoặc chữ nhảy.
+
+BƯỚC 6 — KIỂM TRA TELEX
+-----------------------
+1. Click phải tray, chọn Kiểu gõ Telex.
+2. Trong Notepad gõ các từ Telex quen thuộc, ví dụ:
+
+   chaof 
+
+Kỳ vọng:
+
+   chào 
+
+3. Chuyển E bằng click trái tray, gõ chaof.
+   Kỳ vọng giữ nguyên chaof.
+4. Chuyển lại V.
+
+BƯỚC 7 — KIỂM TRA GỢI Ý VÀ LEARNING
+-----------------------------------
+1. Chọn lại VNI để dùng smoke đã khóa.
+2. Trong Notepad gõ:
+
+   ko
+
+3. Kỳ vọng overlay có gợi ý không.
+4. Nhấn Ctrl+.
+5. Kỳ vọng text thành:
+
+   không
+
+6. Overlay phải có thông báo dạng:
+
+   Đã học: ko → không
+
+7. Click phải tray → Cài đặt và rule đã học...
+8. Kỳ vọng thấy rule ko → không hoặc rule đã ghi nhận tương ứng.
+9. Có thể thử:
+   - Ctrl+,          từ chối top suggestion
+   - Ctrl+Shift+Z    hoàn tác Auto gần nhất
+   - Ctrl+Shift+.    quên rule vừa học
+
+Lưu ý: một typo không lập tức trở thành Auto vĩnh viễn. Vòng đời là:
+
+   Ghi nhận → Gợi ý → Tự sửa khi đủ bằng chứng
+
+BƯỚC 8 — KIỂM TRA PERSIST QUA RESTART APP
+----------------------------------------
+1. Click phải tray → Thoát.
+2. Xác nhận icon biến mất và OpenViKey.exe không còn trong Task Manager.
+3. Mở OpenViKey.exe lại.
+4. Kiểm tra:
+   - Telex/VNI đã chọn trước đó còn được giữ;
+   - trạng thái gợi ý còn được giữ;
+   - rule learning vẫn xuất hiện.
+
+Dữ liệu nằm tại:
+
+   %LOCALAPPDATA%\OpenViKey\settings.json
+   %LOCALAPPDATA%\OpenViKey\model.ovkdev.json
+   %LOCALAPPDATA%\OpenViKey\capture.ovkdev.json
+
+Không chia sẻ các file model/capture vì chúng là plaintext development data.
+
+BƯỚC 9 — KIỂM TRA PASSWORD EDGE/CHROME
+--------------------------------------
+1. Mở file fixture:
+
+   D:\Workspace\Project_Khoa\openvikey\target-gd2b\gd2b-evidence\gd2b-smoke.html
+
+2. Click ô Password.
+3. Gõ chính xác:
+
+   paht1
+
+4. Nhấn nút Reveal dummy value.
+5. Kỳ vọng giá trị vẫn chính xác paht1, không đổi thành phát hoặc text khác.
+6. Không được có thông báo learning cho paht1.
+7. Chuyển giữa ô normal và password nhiều lần; thử cả click chuột và Tab.
+
+Nếu password bị biến đổi: chọn tray E hoặc Thoát ngay, sau đó báo blocker trong session mới.
+
+BƯỚC 10 — KIỂM TRA CURSOR
+-------------------------
+1. Đảm bảo tray ở V.
+2. Mở một composer không chứa dữ liệu quan trọng.
+3. Kiểm tra gõ tiếng Việt, Space, Backspace và Enter.
+4. Tab và Esc phải vẫn đi vào Cursor.
+5. Enter phải gửi prompt sau khi phần text tiếng Việt đã hiển thị đúng.
+
+Lưu ý: Cursor hiện có policy terminal/ambiguous riêng. Nếu không transform, ghi rõ
+Cursor field nào và OpenViKey được chạy với tham số nào; không tự bật learning ở terminal.
+
+BƯỚC 11 — KẾT THÚC TEST
+-----------------------
+1. Click phải tray → Thoát.
+2. Không kill process nếu menu Thoát vẫn hoạt động, để app flush dữ liệu đúng cách.
+3. Chạy lại preflight nếu muốn xác nhận app không đăng ký TSF:
+
+   powershell -ExecutionPolicy Bypass -File scripts\check-standalone-state.ps1
+
+Sau khi đã Thoát, ProductNotRunningYet phải PASS và COM/TIP vẫn absent.
+
+CÁCH BÁO KẾT QUẢ TRONG SESSION MỚI
+----------------------------------
+Dùng mẫu:
+
+   Tôi tiếp tục kiểm tra OpenViKey standalone tại:
+   D:\Workspace\Project_Khoa\openvikey
+
+   Hãy đọc:
+   - AGENTS.md
+   - STANDALONE-TEST-GUIDE.txt
+   - docs/superpowers/specs/2026-08-19-openvikey-windows-standalone-design.md
+
+   Preflight: PASS/FAIL
+   Tray + single instance: PASS/FAIL
+   Notepad VNI: PASS/FAIL — chi tiết
+   Notepad Telex: PASS/FAIL — chi tiết
+   Learning ko → không: PASS/FAIL — chi tiết
+   Persistence qua restart app: PASS/FAIL — chi tiết
+   Edge/Chrome password paht1: PASS/FAIL — chi tiết
+   Cursor: PASS/FAIL — chi tiết
+
+   Vui lòng tiếp tục từ working tree hiện tại, chưa tự review hoặc commit nếu tôi chưa yêu cầu.
+
+THÔNG TIN BUILD HIỆN TẠI
+------------------------
+Package:
+
+   D:\Workspace\Project_Khoa\openvikey\dist\OpenViKey-preview\OpenViKey.exe
+
+Build lại khi cần:
+
+   powershell -ExecutionPolicy Bypass -File scripts\build-standalone-preview.ps1
+
+Automated gate gần nhất:
+- cargo test --workspace: PASS
+- cargo clippy --workspace --all-targets --all-features -- -D warnings: PASS
+- cargo deny check: PASS (có warning dependency đã biết)
+
+Trạng thái source:
+- chưa commit;
+- TSF historical code vẫn nằm trong workspace nhưng không được package/start/register mặc định;
+- standalone preview là đường product hiện hành.

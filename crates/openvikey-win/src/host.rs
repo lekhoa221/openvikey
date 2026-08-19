@@ -2,20 +2,21 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
+use arc_swap::ArcSwap;
 use openvikey_core::correction::InterventionConfig;
 use openvikey_core::engine::EngineConfig;
 use openvikey_core::lexicon::{Lexicon, LexiconEntry};
-use openvikey_core::model::{AdaptiveModel, RuleContextKey};
+use openvikey_core::model::{AdaptiveModel, ModelInspectionRow, RuleContextKey};
 use openvikey_core::types::{
     EngineAction, FeedbackEvent, FeedbackKind, InputContext, InputKind, InputMethod, TonePlacement,
 };
 use openvikey_session::session::{LabSession, SessionCursors};
-use openvikey_win_context::{ContextProjection, ContextState};
+use openvikey_win_context::{ContextProjection, ContextState, ForegroundIdentity};
 
 use crate::classify::profile_for_exe;
-use crate::focus::FocusCache;
+use crate::focus::{FocusCache, ForegroundSnapshot};
 use crate::inject::{CommandInjector, InjectError, InjectProfile};
 use crate::policy::{HostHotkey, HostState, KeyDecision, Mode, RawKey, decide};
 use crate::sync::{
@@ -36,36 +37,71 @@ struct HostRuntime {
 
 static RUNTIME: OnceLock<HostRuntime> = OnceLock::new();
 
-/// Latest validated context shared with the hook through non-blocking reads.
+#[derive(Debug, Clone)]
+struct PublishedContextProjection {
+    foreground: Option<ForegroundIdentity>,
+    projection: ContextProjection,
+}
+
+/// Latest validated context shared with the hook through lock-free reads.
 pub struct ContextProjectionSlot {
-    inner: RwLock<ContextProjection>,
+    inner: ArcSwap<PublishedContextProjection>,
 }
 
 impl ContextProjectionSlot {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            inner: RwLock::new(ContextProjection::Unsupported),
+            inner: ArcSwap::from_pointee(PublishedContextProjection {
+                foreground: None,
+                projection: ContextProjection::Unsupported,
+            }),
         }
     }
 
-    pub fn publish(&self, projection: ContextProjection) {
-        let mut guard = self.inner.write().unwrap_or_else(PoisonError::into_inner);
-        *guard = projection;
+    pub fn publish(&self, foreground: ForegroundIdentity, projection: ContextProjection) {
+        self.inner.store(Arc::new(PublishedContextProjection {
+            foreground: Some(foreground),
+            projection,
+        }));
     }
 
-    /// Non-blocking state-only read for the low-level hook policy.
+    /// Fail closed while a field-focus transition is being classified.
+    pub fn invalidate(&self, foreground: ForegroundIdentity) {
+        self.publish(foreground, ContextProjection::Pending);
+    }
+
+    /// Read context state only when it belongs to this exact focus generation.
     #[must_use]
-    pub fn try_state(&self) -> Option<ContextState> {
-        let guard = self.inner.try_read().ok()?;
-        Some(projection_state(&guard))
+    pub fn try_state_for(&self, foreground: &ForegroundIdentity) -> Option<ContextState> {
+        self.try_projection_for(foreground)
+            .as_ref()
+            .map(projection_state)
     }
 
-    /// Non-blocking owned projection used only after the typing mutex is acquired.
+    /// Read an owned projection only when PID/TID/generation and HWND still match.
+    #[must_use]
+    pub fn try_projection_for(&self, foreground: &ForegroundIdentity) -> Option<ContextProjection> {
+        let published = self.inner.load();
+        published
+            .foreground
+            .as_ref()
+            .filter(|published| foregrounds_match(published, foreground))
+            .map(|_| published.projection.clone())
+    }
+
+    /// Read the current projection for diagnostics outside the hook policy.
     #[must_use]
     pub fn try_projection(&self) -> Option<ContextProjection> {
-        self.inner.try_read().ok().map(|guard| guard.clone())
+        Some(self.inner.load().projection.clone())
     }
+}
+
+fn foregrounds_match(left: &ForegroundIdentity, right: &ForegroundIdentity) -> bool {
+    left.pid == right.pid
+        && left.tid == right.tid
+        && left.generation == right.generation
+        && !matches!((left.hwnd, right.hwnd), (Some(left), Some(right)) if left != right)
 }
 
 impl Default for ContextProjectionSlot {
@@ -137,7 +173,6 @@ pub fn bind_persist_notify(notify: Arc<dyn Fn() + Send + Sync>) {
 }
 
 struct FocusSync {
-    focus: Arc<FocusCache>,
     caps_lock: bool,
     alt: bool,
     meta: bool,
@@ -153,30 +188,51 @@ fn needs_session(decision: &KeyDecision) -> bool {
     )
 }
 
-fn lock_free_host_state(caps_lock: bool, alt: bool, meta: bool) -> HostState {
+fn sample_host_state(
+    caps_lock: bool,
+    alt: bool,
+    meta: bool,
+) -> (HostState, Option<ForegroundSnapshot>) {
     if let Some(rt) = RUNTIME.get() {
-        let foreground_exe = rt.focus.try_get().map(|(_, exe)| exe).unwrap_or_default();
-        return HostState {
-            mode: mode_from_u8(rt.mode.load(Ordering::SeqCst)),
-            foreground_exe,
-            is_sending: rt.sending.load(Ordering::SeqCst),
-            allow_terminal: rt.allow_terminal,
+        let foreground = rt.focus.try_get_foreground();
+        let foreground_exe = foreground
+            .as_ref()
+            .map_or_else(String::new, |snapshot| snapshot.exe.clone());
+        let context_state = foreground
+            .as_ref()
+            .and_then(|snapshot| rt.context.try_state_for(&snapshot.identity))
+            .unwrap_or(ContextState::Unavailable);
+        return (
+            HostState {
+                mode: mode_from_u8(rt.mode.load(Ordering::SeqCst)),
+                foreground_exe,
+                is_sending: rt.sending.load(Ordering::SeqCst),
+                allow_terminal: rt.allow_terminal,
+                caps_lock,
+                alt,
+                meta,
+                context_state,
+            },
+            foreground,
+        );
+    }
+    (
+        HostState {
+            mode: Mode::Viet,
+            foreground_exe: "notepad.exe".into(),
+            is_sending: false,
+            allow_terminal: false,
             caps_lock,
             alt,
             meta,
-            context_state: rt.context.try_state().unwrap_or(ContextState::Unavailable),
-        };
-    }
-    HostState {
-        mode: Mode::Viet,
-        foreground_exe: "notepad.exe".into(),
-        is_sending: false,
-        allow_terminal: false,
-        caps_lock,
-        alt,
-        meta,
-        context_state: ContextState::Unsupported,
-    }
+            context_state: ContextState::Unsupported,
+        },
+        None,
+    )
+}
+
+fn lock_free_host_state(caps_lock: bool, alt: bool, meta: bool) -> HostState {
+    sample_host_state(caps_lock, alt, meta).0
 }
 
 fn after_unlock(lines: &[String], mode: Option<Mode>, notify_persist: bool) {
@@ -201,7 +257,8 @@ fn dispatch_locked_key(
     let (caps_lock, alt, meta) = sync.map_or((false, false, false), |sync| {
         (sync.caps_lock, sync.alt, sync.meta)
     });
-    let decision = decide(&raw, &lock_free_host_state(caps_lock, alt, meta));
+    let (state, foreground) = sample_host_state(caps_lock, alt, meta);
+    let decision = decide(&raw, &state);
     if !needs_session(&decision) {
         return decision;
     }
@@ -209,7 +266,10 @@ fn dispatch_locked_key(
         return on_try_lock_fail(&decision);
     };
     let context_projection = if let Some(rt) = RUNTIME.get() {
-        let Some(projection) = rt.context.try_projection() else {
+        let Some(projection) = foreground
+            .as_ref()
+            .and_then(|snapshot| rt.context.try_projection_for(&snapshot.identity))
+        else {
             return KeyDecision::Pass;
         };
         Some(projection)
@@ -217,8 +277,13 @@ fn dispatch_locked_key(
         None
     };
     if let Some(sync) = sync {
-        if let Some((hwnd, exe, generation)) = sync.focus.try_get_generation() {
-            guard.sync_focus(u64::try_from(hwnd).unwrap_or(0), exe, generation, at_ms);
+        if let Some(snapshot) = foreground {
+            guard.sync_focus(
+                u64::try_from(snapshot.hwnd).unwrap_or(0),
+                snapshot.exe,
+                snapshot.generation,
+                at_ms,
+            );
         }
         guard.caps_lock = sync.caps_lock;
         guard.alt = sync.alt;
@@ -228,7 +293,10 @@ fn dispatch_locked_key(
         guard.apply_context_projection(projection, at_ms);
     }
     let out = guard.handle_key(raw, at_ms);
-    let lines = guard.overlay_display_lines();
+    let mut lines = guard.overlay_display_lines();
+    if let Some(notice) = guard.session.take_learning_notice() {
+        lines.insert(0, notice.display_text());
+    }
     let mode = guard.mode;
     let notify_persist = guard.allow_learning_for_foreground();
     drop(guard);
@@ -244,6 +312,9 @@ pub fn handle_runtime_key(
     alt: bool,
     meta: bool,
 ) -> KeyDecision {
+    if raw.down && matches!(raw.vk, 0x09 | 0x25..=0x28 | 0x21..=0x24) {
+        invalidate_context_runtime();
+    }
     let Some(rt) = RUNTIME.get() else {
         return decide(&raw, &lock_free_host_state(caps_lock, alt, meta));
     };
@@ -252,12 +323,25 @@ pub fn handle_runtime_key(
         raw,
         at_ms,
         Some(&FocusSync {
-            focus: Arc::clone(&rt.focus),
             caps_lock,
             alt,
             meta,
         }),
     )
+}
+
+/// Mark the active field pending without blocking the hook callback.
+pub fn invalidate_context_runtime() {
+    let Some(rt) = RUNTIME.get() else {
+        return;
+    };
+    if let Some(foreground) = rt
+        .focus
+        .try_mark_field_transition()
+        .or_else(|| rt.focus.try_get_identity())
+    {
+        rt.context.invalidate(foreground);
+    }
 }
 
 /// Mouse caret-break under a single `try_lock` (focus + modifiers + notify).
@@ -299,6 +383,53 @@ pub fn suggestions_visible() -> bool {
         .is_none_or(|rt| rt.show_suggestions.load(Ordering::SeqCst))
 }
 
+/// Read-only product-control snapshot from the one live session.
+#[derive(Debug, Clone)]
+pub struct ControlSnapshot {
+    pub mode: Mode,
+    pub engine_config: EngineConfig,
+    pub show_suggestions: bool,
+    pub foreground_exe: String,
+    pub learning_allowed: bool,
+    pub learned_rows: Vec<ModelInspectionRow>,
+}
+
+#[must_use]
+pub fn control_snapshot() -> Option<ControlSnapshot> {
+    let rt = RUNTIME.get()?;
+    let guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
+    Some(ControlSnapshot {
+        mode: guard.mode,
+        engine_config: guard.session.engine_config(),
+        show_suggestions: guard.show_suggestions,
+        foreground_exe: guard.foreground_exe.clone(),
+        learning_allowed: guard.allow_learning_for_foreground(),
+        learned_rows: guard.session.model().inspection_rows(),
+    })
+}
+
+/// Change Telex/VNI from the tray/settings thread.
+pub fn set_input_method_runtime(method: InputMethod, at_ms: i64) {
+    let Some(rt) = RUNTIME.get() else {
+        return;
+    };
+    let mut guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut config = guard.session.engine_config();
+    if config.method == method {
+        return;
+    }
+    config.method = method;
+    guard.set_engine_config(config, at_ms);
+    let lines = guard.overlay_display_lines();
+    drop(guard);
+    after_unlock(&lines, None, true);
+}
+
+/// Forget the latest learned rule through the same session that owns typing.
+pub fn forget_last_rule_runtime(at_ms: i64) {
+    handle_tray_hotkey(HostHotkey::ForgetLastRule, at_ms);
+}
+
 fn handle_tray_hotkey(hotkey: HostHotkey, at_ms: i64) {
     let Some(rt) = RUNTIME.get() else {
         return;
@@ -306,7 +437,10 @@ fn handle_tray_hotkey(hotkey: HostHotkey, at_ms: i64) {
     let mut guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
     guard.handle_hotkey(hotkey, at_ms);
     let mode = matches!(hotkey, HostHotkey::ToggleMode).then_some(guard.mode);
-    let lines = guard.overlay_display_lines();
+    let mut lines = guard.overlay_display_lines();
+    if let Some(notice) = guard.session.take_learning_notice() {
+        lines.insert(0, notice.display_text());
+    }
     let ui_path = guard.ui_path.clone();
     let show_suggestions = guard.show_suggestions;
     drop(guard);
@@ -528,6 +662,22 @@ impl TypingHost {
     pub fn set_show_suggestions(&mut self, show: bool) {
         self.show_suggestions = show;
         self.suggestions_flag.store(show, Ordering::SeqCst);
+    }
+
+    /// Set startup mode before hooks are installed.
+    pub fn set_initial_mode(&mut self, mode: Mode) {
+        self.mode = mode;
+        self.mode_flag.store(mode_to_u8(mode), Ordering::SeqCst);
+    }
+
+    /// Apply Telex/VNI/tone settings at a safe caret boundary.
+    pub fn set_engine_config(&mut self, config: EngineConfig, at_ms: i64) {
+        self.apply_caret_break(at_ms);
+        self.sent.clear();
+        self.last_injected_token.clear();
+        self.last_injected_hwnd = 0;
+        self.session.set_engine_config(config);
+        self.apply_foreground_surface(self.foreground_exe.clone());
     }
 
     /// Mouse / focus caret-break without going through keyboard policy.

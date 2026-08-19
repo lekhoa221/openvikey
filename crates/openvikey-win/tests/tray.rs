@@ -19,6 +19,22 @@ fn tray_exit_requests_host_shutdown() {
     assert!(shutdown.is_requested());
 }
 
+#[cfg(windows)]
+#[test]
+fn installed_product_ui_has_a_discoverable_single_instance_sink() {
+    use openvikey_win::policy::Mode;
+    use openvikey_win::tray::install_host_ui;
+    use std::sync::Arc;
+    use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
+    use windows::core::{PCWSTR, w};
+
+    let shutdown = Arc::new(HostShutdown::new());
+    let _ui = install_host_ui(&shutdown, Mode::Viet).unwrap();
+    let sink = unsafe { FindWindowW(w!("OpenViKeyTraySink"), PCWSTR::null()) }.unwrap();
+
+    assert!(!sink.is_invalid());
+}
+
 #[test]
 fn tray_toggle_suggestions_maps_to_hotkey_without_exiting() {
     let shutdown = HostShutdown::new();

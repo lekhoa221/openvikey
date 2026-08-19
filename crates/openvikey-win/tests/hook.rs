@@ -159,16 +159,19 @@ fn dispatch_ll_letter_inject_fail_restores_learning_model() {
 #[test]
 fn dispatch_ll_lock_fail_hotkey_eats() {
     use std::sync::Arc;
+    use std::sync::mpsc;
     use std::thread;
-    use std::time::Duration;
 
     let host = Arc::new(Mutex::new(TypingHost::new_telex_fixture()));
     let held = Arc::clone(&host);
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
     let blocker = thread::spawn(move || {
         let _guard = held.lock().unwrap();
-        thread::sleep(Duration::from_millis(200));
+        ready_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
     });
-    thread::sleep(Duration::from_millis(20));
+    ready_rx.recv().unwrap();
     let mut acc = key(0xBE);
     acc.control = true;
     assert_eq!(dispatch_ll(&host, acc, 1), 1);
@@ -177,6 +180,7 @@ fn dispatch_ll_lock_fail_hotkey_eats() {
     assert_eq!(dispatch_ll(&host, key(0x0D), 3), 1);
     letter.extra_info = openvikey_win::policy::OVK_EXTRA;
     assert_eq!(dispatch_ll(&host, letter, 4), 0);
+    release_tx.send(()).unwrap();
     blocker.join().unwrap();
 }
 

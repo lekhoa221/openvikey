@@ -27,16 +27,19 @@ Không hai người gõ giống nhau — như nét chữ tay. OpenViKey xây m�
 ## Lộ trình
 
 - **v1 (đang làm) — "chứng minh bộ não":** engine + 4 loại sửa + vòng tự học chạy trong CLI harness thử nghiệm, **chưa** hook hệ thống. Mục tiêu: chứng minh phần khó nhất trước.
-- **v2 — Windows:** tích hợp toàn hệ thống qua TSF (Text Services Framework).
+- **v2 — Windows:** một app standalone kiểu UniKey: tray + keyboard hook + `SendInput` + learning/settings trong `OpenViKey.exe`; không cần TSF profile hay `Win + Space`.
 - **v3 — macOS:** spike InputMethodKit (`IMKInputController`) so với CGEventTap rồi chọn adapter, tái dùng chung core.
 
 ## Kiến trúc (tóm tắt)
 
 - `openvikey-core` (Rust thuần, không phụ thuộc OS): `types`, `engine`, `lexicon`, `generate`, `rank`, `model`, `decision`, `feedback`, `store`.
 - `openvikey-lab`: harness v1 để *nhìn bộ não hoạt động* + test-runner đo độ chính xác.
-- *(sau)* `openvikey-win` (TSF), `openvikey-mac` (InputMethodKit/CGEventTap — chờ spike) — lớp mỏng bọc core.
+- `openvikey-win`: app standalone Windows — hook, injector, tray/settings và learning host; TSF chỉ là research/compatibility optional.
+- *(sau)* `openvikey-mac` (InputMethodKit/CGEventTap — chờ spike) — lớp mỏng bọc core.
 
-Thiết kế chi tiết: [`docs/superpowers/specs/2026-08-17-openvikey-design.md`](docs/superpowers/specs/2026-08-17-openvikey-design.md).
+Thiết kế Windows hiện hành: [`docs/superpowers/specs/2026-08-19-openvikey-windows-standalone-design.md`](docs/superpowers/specs/2026-08-19-openvikey-windows-standalone-design.md).
+
+Thiết kế core: [`docs/superpowers/specs/2026-08-17-openvikey-design.md`](docs/superpowers/specs/2026-08-17-openvikey-design.md).
 
 Kế hoạch triển khai v1: [`docs/superpowers/plans/2026-08-17-openvikey-v1-implementation-plan.md`](docs/superpowers/plans/2026-08-17-openvikey-v1-implementation-plan.md).
 
@@ -64,23 +67,23 @@ Requires a real terminal (piped stdin exits with an error mentioning `terminal`)
 
 ## `openvikey-win` runbook (GĐ2a hook host)
 
-Windows system hook host (Notepad + Cursor/Electron). **Turn UniKey / other IMEs off** before running — only one keyboard filter should own the keys.
+Standalone Windows hook host (Notepad + Cursor/Electron). **Turn UniKey / other hook IMEs off** before running — only one keyboard filter should own the keys. OpenViKey does not register TSF or appear in `Win + Space`.
 
 ```bash
 cargo run -p openvikey-win -- --allow-terminal
 ```
 
-Default input method is **VNI**. Pass `--method telex` only when you want Telex. Learning keys are per-method: Telex evidence does not transfer to VNI.
+Default input method is **VNI**. Choose Telex/VNI from the tray menu; the choice persists in `%LOCALAPPDATA%\OpenViKey\settings.json`. `--method telex|vni` remains a development override. Learning evidence is per-method: Telex evidence does not transfer to VNI.
 
 Optional: `--model` / `--capture` (default `%LOCALAPPDATA%\OpenViKey\model.ovkdev.json` and `capture.ovkdev.json`), `--electron-gap-ms` for Electron SendInput spacing. Custom store names must end in `.ovkdev.json` so Git ignores the plaintext and all recovery sidecars. The Windows development host starts without a passphrase and stores these two files as inspectable plaintext JSON. Overlay visibility is remembered in `ui.ovkdev.json` (a boolean, not typing data). Existing encrypted `.ovk` files are left untouched.
 
 > **Development privacy warning:** `model.ovkdev.json`, `capture.ovkdev.json`, and their recovery sidecars are not encrypted. Do not share them or use this open-storage mode with sensitive text. Terminal, denylist, and English-mode learning/capture stay disabled. Electron apps (Chrome/Discord/Slack) may learn and capture when transform is on.
 
-Exit from the tray or press **Ctrl+C** in the launching console for a graceful shutdown: input hooks stop first, then the coherent model/capture pair is flushed.
+Exit from the tray or press **Ctrl+C** in a development console for graceful shutdown: input hooks stop first, then the coherent model/capture pair and settings are flushed. Build a no-console portable preview with `powershell -File scripts/build-standalone-preview.ps1`; output is `dist\OpenViKey-preview\OpenViKey.exe`.
 
-Debug builds embed the project-authored development lexicon; it is **not release-quality corpus evidence**. Release builds fail closed and require an explicit `--lexicon` until G3 closes. `--allow-terminal` explicitly enables Pi/PowerShell/Windows Terminal while disabling learning, capture, and persistence there. SSH running inside a terminal cannot yet be detected in GĐ2a: toggle OpenViKey to English before entering terminal secrets. Direct SSH clients, password managers, `LogonUI.exe`, and `CredentialUIBroker.exe` remain blocked.
+Standalone preview builds embed the project-authored development lexicon; it is **not release-quality corpus evidence** and remains excluded from the G3 release gate. `--allow-terminal` explicitly enables Pi/PowerShell/Windows Terminal while disabling learning, capture, and persistence there. SSH running inside a terminal cannot yet be detected in GĐ2a: toggle OpenViKey to English before entering terminal secrets. Direct SSH clients, password managers, `LogonUI.exe`, and `CredentialUIBroker.exe` remain blocked.
 
-Suggestion smoke (VNI): type `ch2ao` then Space and confirm the host replaces it with `chào`. Type `ko` and press **Ctrl+.** to accept `không` (this writes VNI learning mass). Type `khogn` to confirm `không` appears as a fuzzy candidate. Right-click the tray icon and uncheck **Gợi ý** to hide the overlay (Accept/Reject still work; the preference is remembered). Left-click the tray icon still toggles Vietnamese/English.
+Suggestion smoke (VNI): type `ch2ao` then Space and confirm the host replaces it with `chào`. Type `ko` and press **Ctrl+.** to accept `không`; the overlay reports the learning event. Type `khogn` to confirm `không` appears as a fuzzy candidate. Right-click the tray icon to choose Telex/VNI, hide suggestions, manage autostart, inspect recent learned rules, forget the latest rule, or Exit. Left-click toggles Vietnamese/English.
 
 | Key | Behavior |
 |---|---|
@@ -98,7 +101,7 @@ Suggestion smoke (VNI): type `ch2ao` then Space and confirm the host replaces it
 - [ ] Notepad: Enter inserts a newline after Vietnamese is visible
 - [ ] Cursor: Enter submits the prompt **after** visible Vietnamese (post-inject)
 
-## GĐ2b development tools
+## GĐ2b historical/optional TSF development tools
 
 Inspect the plaintext development model/capture pair without opening a saver or changing either file:
 
@@ -118,7 +121,7 @@ target\debug\openvikey-tsf-register.exe activate
 target\debug\openvikey-tsf-register.exe deactivate
 ```
 
-GĐ2b remains a hybrid: the GĐ2a hook owns key input; TSF only supplies read-only InputScope/left-context snapshots. The UniKey/VNIKey-style settings window is still GĐ2d, after GĐ2c stabilizes per-app TSF input behavior.
+GĐ2b TSF artifacts are retained for research and optional compatibility only. The default Windows product is now the standalone `OpenViKey.exe`; it must not register TSF, modify the language list, or require `Win + Space`. See [ADR 0010](docs/decisions/0010-windows-standalone-default.md).
 
 ## Bảo mật & riêng tư
 

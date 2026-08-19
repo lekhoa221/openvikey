@@ -58,9 +58,9 @@ mod shell_tray {
         Shell_NotifyIconW,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        AppendMenuW, CS_HREDRAW, CS_VREDRAW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-        DestroyMenu, DestroyWindow, GetCursorPos, HCURSOR, HICON, HWND_MESSAGE, IDI_APPLICATION,
-        LoadIconW, MF_CHECKED, MF_STRING, PostQuitMessage, RegisterClassW, SetForegroundWindow,
+        AppendMenuW, CS_HREDRAW, CS_VREDRAW, CreateIcon, CreatePopupMenu, CreateWindowExW,
+        DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, GetCursorPos, HCURSOR, HICON,
+        MF_CHECKED, MF_STRING, PostQuitMessage, RegisterClassW, SetForegroundWindow,
         TPM_RIGHTBUTTON, TrackPopupMenu, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_RBUTTONUP,
         WNDCLASSW, WS_POPUP,
     };
@@ -73,13 +73,20 @@ mod shell_tray {
     static SHUTDOWN: Mutex<Option<Arc<HostShutdown>>> = Mutex::new(None);
     const ID_EXIT: usize = 1;
     const ID_SUGGESTIONS: usize = 2;
+    const ID_SETTINGS: usize = 3;
+    const ID_TELEX: usize = 4;
+    const ID_VNI: usize = 5;
+    const ID_AUTOSTART: usize = 6;
+    const ID_FORGET_LAST: usize = 7;
 
-    /// Custom tray callback message (not unit-tested in CI).
+    /// Custom tray callback messages (not unit-tested in CI).
     pub const WM_TRAYICON: u32 = 0x8000;
+    pub const WM_OPEN_SETTINGS: u32 = 0x8001;
 
     /// Shell tray icon showing V/E mode in the tooltip.
     pub struct TrayIcon {
         data: NOTIFYICONDATAW,
+        icon: HICON,
     }
 
     // SAFETY: HWND/HICON inside NOTIFYICONDATAW are opaque Win32 handles; TrayIcon is only
@@ -93,7 +100,7 @@ mod shell_tray {
         ///
         /// Win32 shell notification APIs.
         pub unsafe fn install(hwnd: HWND, mode: Mode) -> Result<Self> {
-            let hicon = unsafe { LoadIconW(None, IDI_APPLICATION)? };
+            let hicon = create_mode_icon(mode)?;
             let mut data = NOTIFYICONDATAW {
                 cbSize: u32::try_from(std::mem::size_of::<NOTIFYICONDATAW>()).unwrap_or(u32::MAX),
                 uID: 1,
@@ -104,11 +111,8 @@ mod shell_tray {
                 ..Default::default()
             };
             set_tip(&mut data, mode);
-            let ok = unsafe { Shell_NotifyIconW(NIM_ADD, &raw const data) };
-            if !ok.as_bool() {
-                return Err(windows::core::Error::from_thread());
-            }
-            Ok(Self { data })
+            let _ = unsafe { Shell_NotifyIconW(NIM_ADD, &raw const data) };
+            Ok(Self { data, icon: hicon })
         }
 
         /// Refresh tray tooltip for the current mode (V/E).
@@ -118,8 +122,18 @@ mod shell_tray {
         /// Calls Win32 `Shell_NotifyIconW`.
         pub unsafe fn set_mode(&mut self, mode: Mode) {
             set_tip(&mut self.data, mode);
-            unsafe {
-                let _ = Shell_NotifyIconW(NIM_MODIFY, &raw const self.data);
+            if let Ok(icon) = create_mode_icon(mode) {
+                let old = self.icon;
+                self.icon = icon;
+                self.data.hIcon = icon;
+                unsafe {
+                    let _ = Shell_NotifyIconW(NIM_MODIFY, &raw const self.data);
+                    let _ = DestroyIcon(old);
+                }
+            } else {
+                unsafe {
+                    let _ = Shell_NotifyIconW(NIM_MODIFY, &raw const self.data);
+                }
             }
         }
     }
@@ -128,8 +142,30 @@ mod shell_tray {
         fn drop(&mut self) {
             unsafe {
                 let _ = Shell_NotifyIconW(NIM_DELETE, &raw const self.data);
+                let _ = DestroyIcon(self.icon);
             }
         }
+    }
+
+    fn create_mode_icon(mode: Mode) -> Result<HICON> {
+        let rows: [u16; 16] = match mode {
+            Mode::Viet => [
+                0, 0, 0x6006, 0x6006, 0x300C, 0x300C, 0x1818, 0x1818, 0x0C30, 0x0C30, 0x0660,
+                0x0660, 0x03C0, 0x0180, 0, 0,
+            ],
+            Mode::English => [
+                0, 0, 0x7FFE, 0x6000, 0x6000, 0x6000, 0x7FF0, 0x6000, 0x6000, 0x6000, 0x6000,
+                0x6000, 0x7FFE, 0, 0, 0,
+            ],
+        };
+        let mut xor = [0_u8; 32];
+        for (index, row) in rows.iter().enumerate() {
+            let [high, low] = row.to_be_bytes();
+            xor[index * 2] = high;
+            xor[index * 2 + 1] = low;
+        }
+        let and = [0_u8; 32];
+        unsafe { CreateIcon(None, 16, 16, 1, 1, and.as_ptr(), xor.as_ptr()) }
     }
 
     fn set_tip(data: &mut NOTIFYICONDATAW, mode: Mode) {
@@ -172,6 +208,10 @@ mod shell_tray {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
+        if msg == WM_OPEN_SETTINGS {
+            crate::control::show_control_window(hwnd);
+            return LRESULT(0);
+        }
         if msg == WM_TRAYICON {
             let mouse = u32::try_from(lparam.0.cast_unsigned()).unwrap_or(0);
             if mouse == WM_LBUTTONUP {
@@ -188,6 +228,27 @@ mod shell_tray {
         }
         if msg == WM_COMMAND {
             let id = wparam.0 & 0xFFFF;
+            if id == ID_SETTINGS {
+                crate::control::show_control_window(hwnd);
+                return LRESULT(0);
+            }
+            if id == ID_TELEX || id == ID_VNI {
+                let method = if id == ID_TELEX {
+                    openvikey_core::types::InputMethod::Telex
+                } else {
+                    openvikey_core::types::InputMethod::Vni
+                };
+                crate::host::set_input_method_runtime(method, now_ms());
+                return LRESULT(0);
+            }
+            if id == ID_AUTOSTART {
+                let _ = crate::startup::set_enabled(!crate::startup::enabled());
+                return LRESULT(0);
+            }
+            if id == ID_FORGET_LAST {
+                crate::host::forget_last_rule_runtime(now_ms());
+                return LRESULT(0);
+            }
             if id == ID_SUGGESTIONS {
                 if let Some(shutdown) = peek_shutdown()
                     && super::apply_tray_event(super::TrayEvent::ToggleSuggestions, &shutdown)
@@ -225,8 +286,46 @@ mod shell_tray {
         } else {
             MF_STRING
         };
-        let _ = unsafe { AppendMenuW(menu, suggestion_flags, ID_SUGGESTIONS, w!("Gợi ý")) };
-        let _ = unsafe { AppendMenuW(menu, MF_STRING, ID_EXIT, w!("E&xit")) };
+        let current_method =
+            crate::host::control_snapshot().map(|value| value.engine_config.method);
+        let telex_flags = if current_method == Some(openvikey_core::types::InputMethod::Telex) {
+            MF_STRING | MF_CHECKED
+        } else {
+            MF_STRING
+        };
+        let vni_flags = if current_method == Some(openvikey_core::types::InputMethod::Vni) {
+            MF_STRING | MF_CHECKED
+        } else {
+            MF_STRING
+        };
+        let autostart_flags = if crate::startup::enabled() {
+            MF_STRING | MF_CHECKED
+        } else {
+            MF_STRING
+        };
+        let _ = unsafe {
+            AppendMenuW(
+                menu,
+                MF_STRING,
+                ID_SETTINGS,
+                w!("Cài đặt và rule đã học..."),
+            )
+        };
+        let _ = unsafe { AppendMenuW(menu, telex_flags, ID_TELEX, w!("Kiểu gõ Telex")) };
+        let _ = unsafe { AppendMenuW(menu, vni_flags, ID_VNI, w!("Kiểu gõ VNI")) };
+        let _ =
+            unsafe { AppendMenuW(menu, suggestion_flags, ID_SUGGESTIONS, w!("Hiện gợi ý")) };
+        let _ = unsafe {
+            AppendMenuW(
+                menu,
+                autostart_flags,
+                ID_AUTOSTART,
+                w!("Khởi động cùng Windows"),
+            )
+        };
+        let _ =
+            unsafe { AppendMenuW(menu, MF_STRING, ID_FORGET_LAST, w!("Quên rule vừa học")) };
+        let _ = unsafe { AppendMenuW(menu, MF_STRING, ID_EXIT, w!("Thoát")) };
         let mut pt = POINT::default();
         let _ = unsafe { GetCursorPos(&raw mut pt) };
         unsafe {
@@ -284,7 +383,7 @@ mod shell_tray {
                 0,
                 0,
                 0,
-                Some(HWND_MESSAGE),
+                None,
                 None,
                 None,
                 None,
@@ -320,4 +419,4 @@ mod shell_tray {
 }
 
 #[cfg(windows)]
-pub use shell_tray::{HostUi, TrayIcon, WM_TRAYICON, install_host_ui};
+pub use shell_tray::{HostUi, TrayIcon, WM_OPEN_SETTINGS, WM_TRAYICON, install_host_ui};

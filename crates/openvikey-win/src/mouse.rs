@@ -1,6 +1,6 @@
 //! WH_MOUSE_LL decision helpers and callback (no lock or blocking wait on the hook path).
 
-use crate::host::caret_break_runtime_locked;
+use crate::host::{caret_break_runtime_locked, invalidate_context_runtime};
 use crate::policy::KeyDecision;
 
 /// `WM_LBUTTONDOWN`
@@ -65,6 +65,7 @@ pub unsafe extern "system" fn mouse_ll_proc(
         let message = u32::try_from(wparam.0).unwrap_or(0);
         let decision = mouse_decision(message);
         if matches!(decision, KeyDecision::CaretBreakAndPass) {
+            invalidate_context_runtime();
             let at_ms = now_ms();
             let (caps, alt, meta) = read_host_modifier_state();
             caret_break_runtime_locked(at_ms, caps, alt, meta);

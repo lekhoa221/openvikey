@@ -5,6 +5,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use crossbeam_queue::ArrayQueue;
 use openvikey_win_context::{
     BridgeMessage, CONTEXT_PIPE_NAME, CONTEXT_PROTOCOL_VERSION, ContextSnapshot, ReadContextResult,
     encode_frame,
@@ -18,10 +19,20 @@ use windows::core::{Error, HSTRING, PCWSTR, Result};
 
 use crate::SERVER_STATE;
 
-#[derive(Default)]
 struct LatestValue {
-    message: Mutex<Option<BridgeMessage>>,
+    message: ArrayQueue<BridgeMessage>,
+    wait: Mutex<()>,
     wake: Condvar,
+}
+
+impl Default for LatestValue {
+    fn default() -> Self {
+        Self {
+            message: ArrayQueue::new(1),
+            wait: Mutex::new(()),
+            wake: Condvar::new(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -47,10 +58,8 @@ impl SnapshotEmitter {
             state: result.state,
             left_token_nfc: result.left_token_nfc,
         });
-        if let Ok(mut guard) = self.latest.message.try_lock() {
-            *guard = Some(message);
-            self.latest.wake.notify_one();
-        }
+        let _replaced = self.latest.message.force_push(message);
+        self.latest.wake.notify_one();
     }
 }
 
@@ -171,18 +180,18 @@ fn run_publisher(
 }
 
 fn take_latest(latest: &LatestValue, timeout: Duration) -> Option<BridgeMessage> {
-    let mut guard = latest
-        .message
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    if guard.is_none() {
-        let (next, _) = latest
-            .wake
-            .wait_timeout(guard, timeout)
-            .unwrap_or_else(PoisonError::into_inner);
-        guard = next;
+    if let Some(message) = latest.message.pop() {
+        return Some(message);
     }
-    guard.take()
+    let guard = latest.wait.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(message) = latest.message.pop() {
+        return Some(message);
+    }
+    let (_guard, _) = latest
+        .wake
+        .wait_timeout(guard, timeout)
+        .unwrap_or_else(PoisonError::into_inner);
+    latest.message.pop()
 }
 
 fn open_pipe(pipe_name: &str) -> Result<OwnedPipe> {
@@ -226,5 +235,54 @@ impl Drop for OwnedPipe {
         unsafe {
             let _ = CloseHandle(self.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use openvikey_win_context::{BridgeMessage, ContextState, ReadContextResult};
+
+    use super::{LatestValue, SnapshotEmitter, take_latest};
+
+    #[test]
+    fn newest_snapshot_replaces_older_without_waiting() {
+        let latest = Arc::new(LatestValue::default());
+        let emitter = SnapshotEmitter {
+            source_pid: 10,
+            source_tid: 11,
+            instance_id: 12,
+            next_observed: Arc::default(),
+            latest: Arc::clone(&latest),
+        };
+        let worker_wait = latest.wait.lock().unwrap();
+
+        emitter.publish(
+            1,
+            ReadContextResult {
+                state: ContextState::Normal,
+                left_token_nfc: Some("normal".to_owned()),
+                hwnd: Some(13),
+            },
+        );
+        emitter.publish(
+            2,
+            ReadContextResult {
+                state: ContextState::Sensitive,
+                left_token_nfc: None,
+                hwnd: Some(13),
+            },
+        );
+
+        let message = latest.message.pop().expect("latest snapshot");
+        let BridgeMessage::Snapshot(snapshot) = message else {
+            panic!("expected a snapshot");
+        };
+        assert_eq!(snapshot.context_seq, 2);
+        assert_eq!(snapshot.state, ContextState::Sensitive);
+        assert!(latest.message.is_empty());
+        drop(worker_wait);
+        assert!(take_latest(&latest, std::time::Duration::ZERO).is_none());
     }
 }

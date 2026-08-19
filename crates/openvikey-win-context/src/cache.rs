@@ -73,11 +73,13 @@ impl ContextCache {
 
     /// Start a new host focus generation and invalidate any prior observation.
     pub fn focus_changed(&mut self, foreground: ForegroundIdentity) {
-        if let Some(entry) = self.sources.get_mut(&(foreground.pid, foreground.tid)) {
-            entry.focus_generation = Some(foreground.generation);
-            entry.focus_hwnd = foreground.hwnd;
-            entry.snapshot = None;
-            entry.awaiting_fresh_observation = true;
+        for ((process_id, _), entry) in &mut self.sources {
+            if *process_id == foreground.pid {
+                entry.focus_generation = Some(foreground.generation);
+                entry.focus_hwnd = foreground.hwnd;
+                entry.snapshot = None;
+                entry.awaiting_fresh_observation = true;
+            }
         }
     }
 
@@ -126,33 +128,95 @@ impl ContextCache {
     /// Project only a snapshot anchored to the exact current foreground generation.
     #[must_use]
     pub fn project(&self, foreground: &ForegroundIdentity) -> ContextProjection {
-        let Some(entry) = self.sources.get(&(foreground.pid, foreground.tid)) else {
+        if foreground.pid == 0 || foreground.tid == 0 || foreground.generation == 0 {
             return ContextProjection::Unsupported;
-        };
-        if foreground.pid == 0
-            || foreground.tid == 0
-            || foreground.generation == 0
-            || entry.focus_generation != Some(foreground.generation)
-            || windows_conflict(entry.focus_hwnd, foreground.hwnd)
+        }
+        if let Some(entry) = self.sources.get(&(foreground.pid, foreground.tid))
+            && let Some(projection) = project_entry(entry, foreground, false)
         {
-            return ContextProjection::Unsupported;
+            return projection;
         }
-        let Some(snapshot) = &entry.snapshot else {
-            return ContextProjection::Pending;
-        };
-        if windows_conflict(snapshot.hwnd, foreground.hwnd) {
-            return ContextProjection::Unsupported;
+
+        let mut same_process_source = false;
+        let mut best = None;
+        let mut candidates: Vec<_> = self
+            .sources
+            .iter()
+            .filter(|((process_id, _), _)| *process_id == foreground.pid)
+            .collect();
+        candidates.sort_by_key(|((_, thread_id), _)| *thread_id);
+        for (_, entry) in candidates {
+            if entry.focus_generation != Some(foreground.generation)
+                || windows_conflict(entry.focus_hwnd, foreground.hwnd)
+            {
+                continue;
+            }
+            same_process_source = true;
+            if let Some(projection) = project_entry(entry, foreground, true) {
+                best = Some(prefer_conservative(best, projection));
+            }
         }
-        match snapshot.state {
-            ContextState::Normal => ContextProjection::Normal {
-                left_token_nfc: snapshot.left_token_nfc.clone(),
-            },
-            ContextState::Sensitive => ContextProjection::Sensitive,
-            ContextState::Unavailable => ContextProjection::Unavailable,
-            ContextState::Pending => ContextProjection::Pending,
-            ContextState::Unsupported => ContextProjection::Unsupported,
-        }
+        best.unwrap_or(if same_process_source {
+            ContextProjection::Pending
+        } else {
+            ContextProjection::Unsupported
+        })
     }
+}
+
+fn project_entry(
+    entry: &SourceEntry,
+    foreground: &ForegroundIdentity,
+    require_matching_window: bool,
+) -> Option<ContextProjection> {
+    if entry.focus_generation != Some(foreground.generation)
+        || windows_conflict(entry.focus_hwnd, foreground.hwnd)
+    {
+        return None;
+    }
+    let snapshot = entry.snapshot.as_ref()?;
+    if windows_conflict(snapshot.hwnd, foreground.hwnd)
+        || (require_matching_window && !windows_match(snapshot.hwnd, foreground.hwnd))
+    {
+        return None;
+    }
+    Some(match snapshot.state {
+        ContextState::Normal => ContextProjection::Normal {
+            left_token_nfc: snapshot.left_token_nfc.clone(),
+        },
+        ContextState::Sensitive => ContextProjection::Sensitive,
+        ContextState::Unavailable => ContextProjection::Unavailable,
+        ContextState::Pending => ContextProjection::Pending,
+        ContextState::Unsupported => ContextProjection::Unsupported,
+    })
+}
+
+fn prefer_conservative(
+    current: Option<ContextProjection>,
+    candidate: ContextProjection,
+) -> ContextProjection {
+    let Some(current) = current else {
+        return candidate;
+    };
+    if projection_priority(&candidate) > projection_priority(&current) {
+        candidate
+    } else {
+        current
+    }
+}
+
+fn projection_priority(projection: &ContextProjection) -> u8 {
+    match projection {
+        ContextProjection::Sensitive => 4,
+        ContextProjection::Unavailable => 3,
+        ContextProjection::Pending => 2,
+        ContextProjection::Normal { .. } => 1,
+        ContextProjection::Unsupported => 0,
+    }
+}
+
+fn windows_match(left: Option<u64>, right: Option<u64>) -> bool {
+    matches!((left, right), (Some(left), Some(right)) if left == right)
 }
 
 fn windows_conflict(left: Option<u64>, right: Option<u64>) -> bool {

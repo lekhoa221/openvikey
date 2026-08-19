@@ -11,7 +11,8 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EVENT_SYSTEM_FOREGROUND, GetForegroundWindow, GetWindowThreadProcessId, WINEVENT_OUTOFCONTEXT,
+    EVENT_OBJECT_FOCUS, EVENT_SYSTEM_FOREGROUND, GetClassNameW, GetForegroundWindow,
+    GetWindowThreadProcessId, WINEVENT_OUTOFCONTEXT,
 };
 use windows::core::Result;
 
@@ -22,6 +23,15 @@ struct Snapshot {
     generation: u64,
     pid: u32,
     tid: u32,
+}
+
+/// One coherent foreground sample used to bind context policy to a focus generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForegroundSnapshot {
+    pub hwnd: isize,
+    pub exe: String,
+    pub generation: u64,
+    pub identity: ForegroundIdentity,
 }
 
 /// Lock-free-ish foreground snapshot: winevent thread writes; hook thread `try_read`s.
@@ -53,7 +63,9 @@ impl FocusCache {
         } else {
             unsafe { GetWindowThreadProcessId(HWND(hwnd as _), Some(&raw mut pid)) }
         };
-        self.set_with_identity(hwnd, exe, pid, tid);
+        let class_name = window_class_name(HWND(hwnd as _));
+        let exe = canonical_foreground_exe(exe, &class_name);
+        self.set_with_identity(hwnd, &exe, pid, tid);
     }
 
     /// Update foreground data with an already sampled process/thread identity.
@@ -101,10 +113,11 @@ impl FocusCache {
         Some((guard.hwnd, guard.exe.clone(), guard.generation))
     }
 
-    /// Non-blocking identity read for context-cache projection off the hook path.
+    /// Invalidate field-bound context without blocking a low-level hook callback.
     #[must_use]
-    pub fn try_get_identity(&self) -> Option<ForegroundIdentity> {
-        let guard = self.inner.try_read().ok()?;
+    pub fn try_mark_field_transition(&self) -> Option<ForegroundIdentity> {
+        let mut guard = self.inner.try_write().ok()?;
+        guard.generation = guard.generation.wrapping_add(1);
         let hwnd = u64::try_from(guard.hwnd).ok().filter(|hwnd| *hwnd != 0);
         Some(ForegroundIdentity {
             pid: guard.pid,
@@ -112,6 +125,30 @@ impl FocusCache {
             hwnd,
             generation: guard.generation,
         })
+    }
+
+    /// Non-blocking coherent read for hook policy and context projection matching.
+    #[must_use]
+    pub fn try_get_foreground(&self) -> Option<ForegroundSnapshot> {
+        let guard = self.inner.try_read().ok()?;
+        let hwnd = u64::try_from(guard.hwnd).ok().filter(|hwnd| *hwnd != 0);
+        Some(ForegroundSnapshot {
+            hwnd: guard.hwnd,
+            exe: guard.exe.clone(),
+            generation: guard.generation,
+            identity: ForegroundIdentity {
+                pid: guard.pid,
+                tid: guard.tid,
+                hwnd,
+                generation: guard.generation,
+            },
+        })
+    }
+
+    /// Non-blocking identity read for context-cache projection off the hook path.
+    #[must_use]
+    pub fn try_get_identity(&self) -> Option<ForegroundIdentity> {
+        self.try_get_foreground().map(|snapshot| snapshot.identity)
     }
 }
 
@@ -155,7 +192,8 @@ pub fn peek_callback_cache() -> Option<Arc<FocusCache>> {
 
 /// Installed WinEvent hook; unhooks on drop.
 pub struct FocusHook {
-    hook: HWINEVENTHOOK,
+    foreground_hook: HWINEVENTHOOK,
+    object_hook: HWINEVENTHOOK,
     _cache: Arc<FocusCache>,
 }
 
@@ -166,7 +204,7 @@ impl FocusHook {
     ///
     /// Calls Win32 hook APIs. Caller must keep `cache` alive for the hook lifetime.
     pub unsafe fn install(cache: Arc<FocusCache>) -> Result<Self> {
-        let hook = unsafe {
+        let foreground_hook = unsafe {
             SetWinEventHook(
                 EVENT_SYSTEM_FOREGROUND,
                 EVENT_SYSTEM_FOREGROUND,
@@ -177,13 +215,37 @@ impl FocusHook {
                 WINEVENT_OUTOFCONTEXT,
             )
         };
-        if hook.is_invalid() {
-            return Err(windows::core::Error::new(E_FAIL, "SetWinEventHook failed"));
+        if foreground_hook.is_invalid() {
+            return Err(windows::core::Error::new(
+                E_FAIL,
+                "foreground SetWinEventHook failed",
+            ));
+        }
+        let field_focus_hook = unsafe {
+            SetWinEventHook(
+                EVENT_OBJECT_FOCUS,
+                EVENT_OBJECT_FOCUS,
+                None,
+                Some(foreground_callback),
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT,
+            )
+        };
+        if field_focus_hook.is_invalid() {
+            unsafe {
+                let _ = UnhookWinEvent(foreground_hook);
+            }
+            return Err(windows::core::Error::new(
+                E_FAIL,
+                "field-focus SetWinEventHook failed",
+            ));
         }
         bind_callback_cache(Arc::clone(&cache));
         seed_current_foreground(&cache);
         Ok(Self {
-            hook,
+            foreground_hook,
+            object_hook: field_focus_hook,
             _cache: cache,
         })
     }
@@ -193,7 +255,8 @@ impl Drop for FocusHook {
     fn drop(&mut self) {
         unbind_callback_cache();
         unsafe {
-            let _ = UnhookWinEvent(self.hook);
+            let _ = UnhookWinEvent(self.object_hook);
+            let _ = UnhookWinEvent(self.foreground_hook);
         }
     }
 }
@@ -207,15 +270,48 @@ unsafe extern "system" fn foreground_callback(
     _id_event_thread: u32,
     _dwms_event_time: u32,
 ) {
-    if event != EVENT_SYSTEM_FOREGROUND {
+    if event == EVENT_OBJECT_FOCUS {
+        crate::host::invalidate_context_runtime();
         return;
     }
-    let Some(cache) = peek_callback_cache() else {
-        return;
-    };
-    let exe = exe_for_hwnd(hwnd);
-    cache.set(hwnd.0 as isize, &exe);
-    crate::overlay::push_overlay_lines(&[]);
+    if event == EVENT_SYSTEM_FOREGROUND {
+        let Some(cache) = peek_callback_cache() else {
+            return;
+        };
+        let exe = exe_for_hwnd(hwnd);
+        cache.set(hwnd.0 as isize, &exe);
+        crate::host::invalidate_context_runtime();
+        crate::overlay::push_overlay_lines(&[]);
+    }
+}
+
+/// Resolve terminal host windows independently from a potentially stale/provider-owned PID.
+///
+/// Windows Terminal can report focus through hosted/provider windows while the visible top-level
+/// class remains authoritative. Canonicalizing here keeps transform opt-in while forcing the
+/// existing terminal no-learning policy.
+#[must_use]
+pub fn canonical_foreground_exe(exe: &str, class_name: &str) -> String {
+    if class_name.eq_ignore_ascii_case("CASCADIA_HOSTING_WINDOW_CLASS") {
+        "WindowsTerminal.exe".to_owned()
+    } else if class_name.eq_ignore_ascii_case("ConsoleWindowClass") {
+        "conhost.exe".to_owned()
+    } else {
+        exe.to_owned()
+    }
+}
+
+fn window_class_name(hwnd: HWND) -> String {
+    if hwnd.is_invalid() {
+        return String::new();
+    }
+    let mut buffer = [0_u16; 256];
+    let size = unsafe { GetClassNameW(hwnd, &mut buffer) };
+    if size == 0 {
+        String::new()
+    } else {
+        String::from_utf16_lossy(&buffer[..usize::try_from(size).unwrap_or(0)])
+    }
 }
 
 fn exe_for_hwnd(hwnd: HWND) -> String {

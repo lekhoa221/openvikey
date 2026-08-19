@@ -10,6 +10,7 @@ use openvikey_core::lexicon::{Lexicon, LexiconArtifact};
 use openvikey_core::model::{ModelView, RuleContextKey};
 use openvikey_core::types::{CandidateSource, InputKind, InputMethod, TonePlacement};
 use openvikey_session::session::LabSession;
+use openvikey_win::focus::canonical_foreground_exe;
 use openvikey_win::hook::dispatch_ll;
 use openvikey_win::host::TypingHost;
 use openvikey_win::inject::{
@@ -205,6 +206,23 @@ fn electron_browser_learns_on_accept() {
 }
 
 #[test]
+fn hosted_terminal_provider_exe_still_transforms_without_capture() {
+    let session = LabSession::new(EngineConfig::default(), development_lexicon());
+    let mut host = TypingHost::new_with_session(session);
+    host.allow_terminal = true;
+    let canonical = canonical_foreground_exe("pi.exe", "CASCADIA_HOSTING_WINDOW_CLASS");
+    host.set_hwnd(10, canonical, 1);
+    let before = host.session.save_snapshot();
+
+    type_ascii(&mut host, "secretmarker");
+    host.handle_key(key(0x20), 20);
+
+    let after = host.session.save_snapshot();
+    assert_eq!(after.model, before.model);
+    assert_eq!(after.capture_records, before.capture_records);
+}
+
+#[test]
 fn terminal_context_cannot_leak_into_later_learning() {
     let session = LabSession::new(EngineConfig::default(), development_lexicon());
     let mut host = TypingHost::new_with_session(session);
@@ -270,6 +288,23 @@ fn vni_tone_before_vowel_do_auto_replaces_on_space() {
         "d91o + space must Auto-replace; recorded={:?}",
         host.recorded
     );
+}
+
+#[test]
+fn explicit_accept_emits_a_visible_learning_notice() {
+    let session = LabSession::new(vni_engine(), development_lexicon());
+    let mut host = TypingHost::new_with_session(session);
+    type_ascii(&mut host, "ko");
+
+    host.handle_hotkey(HostHotkey::AcceptTop, 10);
+
+    let notice = host
+        .session
+        .take_learning_notice()
+        .expect("learning notice");
+    assert_eq!(notice.original_nfc, "ko");
+    assert_eq!(notice.replacement_nfc, "không");
+    assert!(notice.display_text().starts_with("Đã học:"));
 }
 
 #[test]

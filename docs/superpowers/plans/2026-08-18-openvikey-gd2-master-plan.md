@@ -1,6 +1,6 @@
-# OpenViKey GĐ2 — Master plan (bốn plan nhỏ)
+# OpenViKey GĐ2 — Master plan (historical hybrid roadmap)
 
-> **For agentic workers:** This file is the **index**, not an executable TDD plan. GĐ2a is implemented. Write GĐ2b/GĐ2c/GĐ2d specs and plans only when that phase starts.
+> **Superseded:** Do not execute GĐ2c/GĐ2d in this order. The owner selected the standalone product direction in [ADR 0010](../../decisions/0010-windows-standalone-default.md). Use the [Windows standalone spec](../specs/2026-08-19-openvikey-windows-standalone-design.md). GĐ2a/GĐ2b remain implementation history.
 
 **Goal:** Ship a Windows host in four independently testable slices: daily hook typing, read-only TSF context, per-app TSF primary input, then a stable Windows product UI.
 
@@ -75,7 +75,7 @@ Each plan produces a **runnable** `openvikey-win` (2b/2c add a DLL next to it). 
 
 ---
 
-## Plan 2c — will look like (do not execute yet)
+## Plan 2c — cancelled as default product path (do not execute)
 
 **Goal:** A user-managed list of executables uses TSF as **primary** input (UWP / anti-cheat), including Windows composition underline.
 

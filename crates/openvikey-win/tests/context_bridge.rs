@@ -40,6 +40,44 @@ fn snapshot(observed_seq: u64) -> ContextSnapshot {
 }
 
 #[test]
+fn field_focus_invalidation_blocks_the_same_foreground_until_reclassified() {
+    let slot = ContextProjectionSlot::new();
+    let active = foreground(1);
+    slot.publish(
+        active,
+        ContextProjection::Normal {
+            left_token_nfc: None,
+        },
+    );
+
+    slot.invalidate(active);
+
+    assert_eq!(
+        slot.try_projection_for(&active),
+        Some(ContextProjection::Pending)
+    );
+}
+
+#[test]
+fn projection_never_crosses_a_foreground_generation() {
+    let slot = ContextProjectionSlot::new();
+    let first = foreground(1);
+    let second = foreground(2);
+    slot.publish(
+        first,
+        ContextProjection::Normal {
+            left_token_nfc: Some("chào".to_owned()),
+        },
+    );
+
+    assert!(matches!(
+        slot.try_projection_for(&first),
+        Some(ContextProjection::Normal { .. })
+    ));
+    assert_eq!(slot.try_projection_for(&second), None);
+}
+
+#[test]
 fn bridge_reducer_publishes_pending_normal_and_invalidates_on_focus() {
     let projection = Arc::new(ContextProjectionSlot::new());
     let mut bridge = ContextBridgeState::new(Arc::clone(&projection));
