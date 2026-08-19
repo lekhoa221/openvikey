@@ -563,6 +563,29 @@ impl LabSession {
         self.learning.model()
     }
 
+    pub fn model_mut(&mut self) -> &mut AdaptiveModel {
+        self.learning.model_mut()
+    }
+
+    pub fn record_test_personal_learned(
+        &mut self,
+        input_method: InputMethod,
+        original_nfc: &str,
+        replacement_nfc: &str,
+    ) {
+        self.learning.model_mut().record_personal_correction(
+            input_method,
+            original_nfc,
+            replacement_nfc,
+            true,
+        );
+        self.last_learned = Some(LastLearned::Personal {
+            input_method,
+            original_nfc: original_nfc.to_string(),
+            replacement_nfc: replacement_nfc.to_string(),
+        });
+    }
+
     pub fn model_payload(&self) -> Result<Vec<u8>, ModelError> {
         self.learning.model().to_json_payload()
     }
@@ -1038,6 +1061,34 @@ impl LabSession {
             }
             None => false,
         }
+    }
+
+    /// Forget any learned rule or personal pair matching input method and word pair.
+    pub fn forget_rule_pair(
+        &mut self,
+        input_method: InputMethod,
+        original_nfc: &str,
+        candidate_nfc: &str,
+    ) -> bool {
+        let changed = self.learning.model_mut().forget_matching_rule(
+            input_method,
+            original_nfc,
+            candidate_nfc,
+        );
+        if changed {
+            self.pending_learning_notice = Some(LearningNotice {
+                kind: LearningNoticeKind::Forgotten,
+                original_nfc: original_nfc.to_string(),
+                replacement_nfc: candidate_nfc.to_string(),
+            });
+        }
+        changed
+    }
+
+    /// Clear all learned rules and personal pairs.
+    pub fn clear_all_rules(&mut self) {
+        self.learning.model_mut().clear_all_learned();
+        self.last_learned = None;
     }
 
     fn invalidate_caret(&mut self) {

@@ -332,6 +332,7 @@ impl AdaptiveModel {
         let mut rows = self
             .entries
             .iter()
+            .filter(|entry| !entry.evidence.is_empty() || entry.state != DecisionState::Ignore)
             .map(|entry| ModelInspectionRow {
                 input_method: entry.key.input_method,
                 source: entry.key.source,
@@ -497,6 +498,50 @@ impl AdaptiveModel {
                 && row.original_nfc == original_nfc
                 && row.replacement_nfc == replacement_nfc)
         });
+    }
+
+    /// Drops evidence for any entry or personal pair matching input method and word pair.
+    pub fn forget_matching_rule(
+        &mut self,
+        input_method: InputMethod,
+        original_nfc: &str,
+        candidate_nfc: &str,
+    ) -> bool {
+        let mut changed = false;
+        for entry in self.entries.iter_mut().filter(|entry| {
+            entry.key.input_method == input_method
+                && entry.key.original_nfc == original_nfc
+                && entry.key.candidate_nfc == candidate_nfc
+        }) {
+            entry.evidence.clear();
+            entry.state = DecisionState::Ignore;
+            entry.recent_auto.clear();
+            entry.settled_auto_ids.clear();
+            entry.auto_demoted_at_seq = None;
+            changed = true;
+        }
+        let before_counts = self.personal.counts.len();
+        self.personal.counts.retain(|row| {
+            !(row.input_method == input_method
+                && row.original_nfc == original_nfc
+                && row.replacement_nfc == candidate_nfc)
+        });
+        let before_promoted = self.personal.promoted.len();
+        self.personal.promoted.retain(|row| {
+            !(row.input_method == input_method
+                && row.original_nfc == original_nfc
+                && row.replacement_nfc == candidate_nfc)
+        });
+        changed
+            || self.personal.counts.len() != before_counts
+            || self.personal.promoted.len() != before_promoted
+    }
+
+    /// Clear all learned adaptive entries and personal corrections.
+    pub fn clear_all_learned(&mut self) {
+        self.entries.clear();
+        self.personal.counts.clear();
+        self.personal.promoted.clear();
     }
 }
 

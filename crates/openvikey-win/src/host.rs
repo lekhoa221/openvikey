@@ -549,6 +549,39 @@ pub fn forget_last_rule_runtime(at_ms: i64) {
     handle_tray_hotkey(HostHotkey::ForgetLastRule, at_ms);
 }
 
+/// Forget a specific learned rule matching input method and word pair from Settings UI.
+pub fn forget_rule_runtime(
+    input_method: InputMethod,
+    original_nfc: &str,
+    candidate_nfc: &str,
+) -> bool {
+    let Some(rt) = RUNTIME.get() else {
+        return false;
+    };
+    let mut guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
+    let changed = guard
+        .session
+        .forget_rule_pair(input_method, original_nfc, candidate_nfc);
+    if changed {
+        let lines = guard.overlay_display_lines();
+        drop(guard);
+        after_unlock(&lines, None, true);
+    }
+    changed
+}
+
+/// Clear all learned rules from Settings UI.
+pub fn clear_all_rules_runtime() {
+    let Some(rt) = RUNTIME.get() else {
+        return;
+    };
+    let mut guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
+    guard.session.clear_all_rules();
+    let lines = guard.overlay_display_lines();
+    drop(guard);
+    after_unlock(&lines, None, true);
+}
+
 fn handle_tray_hotkey(hotkey: HostHotkey, at_ms: i64) {
     let Some(rt) = RUNTIME.get() else {
         return;

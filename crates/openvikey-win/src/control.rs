@@ -1,9 +1,10 @@
-//! Native Win32 Settings & Control Window (Slice UI-1).
+//! Native Win32 Settings & Control Window (Slice UI-1 & UI-2).
 
 use std::sync::Mutex;
 use std::time::SystemTime;
 
-use openvikey_core::types::{InputMethod, TonePlacement};
+use openvikey_core::model::ModelInspectionRow;
+use openvikey_core::types::{CandidateSource, InputMethod, TonePlacement};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, COLOR_BTNFACE, CreateFontW, DEFAULT_CHARSET,
@@ -13,14 +14,16 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, BS_DEFPUSHBUTTON, BS_GROUPBOX,
     BS_PUSHBUTTON, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CBN_SELCHANGE, CBS_DROPDOWNLIST,
-    CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, GetSystemMetrics, HCURSOR, HICON,
-    HMENU, IsWindow, LB_ADDSTRING, LB_GETCURSEL, LB_SETCURSEL, LBN_SELCHANGE, LBS_NOINTEGRALHEIGHT,
-    LBS_NOTIFY, MB_ICONERROR, MB_OK, MessageBoxW, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN,
-    SW_HIDE, SW_RESTORE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_NOZORDER, SendMessageW, SetForegroundWindow, SetWindowPos, SetWindowTextW, ShowWindow,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_SETFONT,
-    WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_GROUP, WS_MINIMIZEBOX,
-    WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
+    CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, EN_CHANGE, ES_AUTOHSCROLL,
+    GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW, HCURSOR, HICON, HMENU, IDYES, IsWindow,
+    LB_ADDSTRING, LB_GETCURSEL, LB_RESETCONTENT, LB_SETCURSEL, LBN_SELCHANGE, LBS_HASSTRINGS,
+    LBS_NOINTEGRALHEIGHT, LBS_NOTIFY, MB_ICONERROR, MB_ICONWARNING, MB_OK, MB_YESNO, MessageBoxW,
+    RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_HIDE, SW_RESTORE, SW_SHOW, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetForegroundWindow,
+    SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
+    WM_DESTROY, WM_DPICHANGED, WM_SETFONT, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD,
+    WS_CLIPCHILDREN, WS_GROUP, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
+    WS_VSCROLL,
 };
 use windows::core::{HSTRING, PCWSTR, Result, w};
 
@@ -47,6 +50,13 @@ const IDC_COMBO_STARTUP_MODE: usize = 206;
 const IDC_CHK_SUGGESTIONS: usize = 207;
 const IDC_CHK_AUTOSTART: usize = 208;
 const IDC_CHK_TERMINAL: usize = 209;
+
+const IDC_TXT_SEARCH_RULES: usize = 301;
+const IDC_LIST_RULES: usize = 302;
+const IDC_BTN_FORGET_RULE: usize = 303;
+const IDC_BTN_FORGET_LAST: usize = 304;
+const IDC_BTN_REFRESH_RULES: usize = 305;
+const IDC_BTN_CLEAR_ALL: usize = 306;
 
 const IDC_BTN_CLOSE: usize = 801;
 const IDC_BTN_APPLY: usize = 802;
@@ -104,6 +114,7 @@ struct ControlLayout {
     base_h: i32,
 }
 
+#[allow(dead_code)]
 struct UiControls {
     sidebar: HWND,
     radio_viet: HWND,
@@ -115,6 +126,22 @@ struct UiControls {
     chk_suggestions: HWND,
     chk_autostart: HWND,
     chk_terminal: HWND,
+    txt_search_rules: HWND,
+    list_rules: HWND,
+    lbl_detail_original: HWND,
+    lbl_detail_candidate: HWND,
+    lbl_detail_method: HWND,
+    lbl_detail_source: HWND,
+    lbl_detail_evidence: HWND,
+    lbl_detail_state: HWND,
+    lbl_detail_context: HWND,
+    lbl_detail_rule_id: HWND,
+    btn_forget_selected: HWND,
+    btn_forget_last: HWND,
+    btn_refresh_rules: HWND,
+    btn_clear_all: HWND,
+    filtered_rows: Vec<ModelInspectionRow>,
+    all_rows: Vec<ModelInspectionRow>,
     status_label: HWND,
     current_font: HFONT,
     page_controls: [Vec<HWND>; 6],
@@ -130,7 +157,6 @@ fn now_ms() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0))
 }
 
-/// Initialize Per-Monitor V2 DPI awareness for the process.
 pub fn init_dpi_awareness() {
     #[cfg(windows)]
     unsafe {
@@ -220,12 +246,10 @@ pub fn show_startup_error(message: &str) {
     eprintln!("OpenViKey startup failed: {message}");
 }
 
-/// Show or foreground the native Settings Window.
 pub fn show_control_window(_owner: HWND) {
     show_settings_window(Some(0));
 }
 
-/// Open the Settings Window navigated directly to a given page index.
 pub fn show_settings_window(page_index: Option<usize>) {
     #[cfg(windows)]
     {
@@ -360,6 +384,22 @@ fn create_label(hwnd: HWND, text: &str, x: i32, y: i32, w: i32, h: i32) -> Resul
     }
 }
 
+fn get_edit_text(hwnd: HWND) -> String {
+    let len = unsafe { GetWindowTextLengthW(hwnd) };
+    if len <= 0 {
+        return String::new();
+    }
+    let len_usize = usize::try_from(len).unwrap_or(0);
+    let mut buf = vec![0u16; len_usize + 1];
+    let copied = unsafe { GetWindowTextW(hwnd, &mut buf) };
+    if copied > 0 {
+        let copied_usize = usize::try_from(copied).unwrap_or(0);
+        String::from_utf16_lossy(&buf[..copied_usize])
+    } else {
+        String::new()
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
     let font = create_dpi_font(dpi);
@@ -411,7 +451,6 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
         }
     }
 
-    // Page 0 — General Controls
     let mut page_0 = Vec::new();
 
     let grp_mode = unsafe {
@@ -697,7 +736,246 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
     add_layout(lbl_term_hint, 214, 326, 500, 22);
     page_0.push(lbl_term_hint);
 
-    // Placeholder containers for Pages 1..5 (Slices UI-2 .. UI-4)
+    let mut page_1 = Vec::new();
+
+    let lbl_search = create_label(
+        hwnd,
+        "Tìm kiếm rule:",
+        scale_dpi(204, dpi),
+        scale_dpi(16, dpi),
+        scale_dpi(95, dpi),
+        scale_dpi(20, dpi),
+    )?;
+    add_layout(lbl_search, 204, 16, 95, 20);
+    page_1.push(lbl_search);
+
+    let txt_search_rules = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("EDIT"),
+            w!(""),
+            ws(
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER,
+                ES_AUTOHSCROLL as u32,
+            ),
+            scale_dpi(304, dpi),
+            scale_dpi(14, dpi),
+            scale_dpi(426, dpi),
+            scale_dpi(24, dpi),
+            Some(hwnd),
+            Some(HMENU(IDC_TXT_SEARCH_RULES as *mut core::ffi::c_void)),
+            Some(HINSTANCE::default()),
+            None,
+        )?
+    };
+    add_layout(txt_search_rules, 304, 14, 426, 24);
+    page_1.push(txt_search_rules);
+
+    let list_rules = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("LISTBOX"),
+            w!(""),
+            ws(
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | WS_VSCROLL,
+                LBS_NOTIFY as u32 | LBS_NOINTEGRALHEIGHT as u32 | LBS_HASSTRINGS as u32,
+            ),
+            scale_dpi(204, dpi),
+            scale_dpi(44, dpi),
+            scale_dpi(526, dpi),
+            scale_dpi(236, dpi),
+            Some(hwnd),
+            Some(HMENU(IDC_LIST_RULES as *mut core::ffi::c_void)),
+            Some(HINSTANCE::default()),
+            None,
+        )?
+    };
+    add_layout(list_rules, 204, 44, 526, 236);
+    page_1.push(list_rules);
+
+    let grp_details = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("BUTTON"),
+            w!(" Chi tiết rule "),
+            ws(WS_CHILD | WS_VISIBLE, BS_GROUPBOX as u32),
+            scale_dpi(204, dpi),
+            scale_dpi(286, dpi),
+            scale_dpi(526, dpi),
+            scale_dpi(148, dpi),
+            Some(hwnd),
+            None,
+            Some(HINSTANCE::default()),
+            None,
+        )?
+    };
+    add_layout(grp_details, 204, 286, 526, 148);
+    page_1.push(grp_details);
+
+    let lbl_detail_original = create_label(
+        hwnd,
+        "• Từ gốc:        -",
+        scale_dpi(216, dpi),
+        scale_dpi(306, dpi),
+        scale_dpi(240, dpi),
+        scale_dpi(18, dpi),
+    )?;
+    add_layout(lbl_detail_original, 216, 306, 240, 18);
+    page_1.push(lbl_detail_original);
+
+    let lbl_detail_candidate = create_label(
+        hwnd,
+        "• Từ thay thế:   -",
+        scale_dpi(470, dpi),
+        scale_dpi(306, dpi),
+        scale_dpi(240, dpi),
+        scale_dpi(18, dpi),
+    )?;
+    add_layout(lbl_detail_candidate, 470, 306, 240, 18);
+    page_1.push(lbl_detail_candidate);
+
+    let lbl_detail_method = create_label(
+        hwnd,
+        "• Kiểu gõ:       -",
+        scale_dpi(216, dpi),
+        scale_dpi(328, dpi),
+        scale_dpi(240, dpi),
+        scale_dpi(18, dpi),
+    )?;
+    add_layout(lbl_detail_method, 216, 328, 240, 18);
+    page_1.push(lbl_detail_method);
+
+    let lbl_detail_source = create_label(
+        hwnd,
+        "• Nguồn gốc:     -",
+        scale_dpi(470, dpi),
+        scale_dpi(328, dpi),
+        scale_dpi(240, dpi),
+        scale_dpi(18, dpi),
+    )?;
+    add_layout(lbl_detail_source, 470, 328, 240, 18);
+    page_1.push(lbl_detail_source);
+
+    let lbl_detail_evidence = create_label(
+        hwnd,
+        "• Bằng chứng:    -",
+        scale_dpi(216, dpi),
+        scale_dpi(350, dpi),
+        scale_dpi(240, dpi),
+        scale_dpi(18, dpi),
+    )?;
+    add_layout(lbl_detail_evidence, 216, 350, 240, 18);
+    page_1.push(lbl_detail_evidence);
+
+    let lbl_detail_state = create_label(
+        hwnd,
+        "• Trạng thái:    -",
+        scale_dpi(470, dpi),
+        scale_dpi(350, dpi),
+        scale_dpi(240, dpi),
+        scale_dpi(18, dpi),
+    )?;
+    add_layout(lbl_detail_state, 470, 350, 240, 18);
+    page_1.push(lbl_detail_state);
+
+    let lbl_detail_context = create_label(
+        hwnd,
+        "• Ngữ cảnh trước: -",
+        scale_dpi(216, dpi),
+        scale_dpi(372, dpi),
+        scale_dpi(500, dpi),
+        scale_dpi(18, dpi),
+    )?;
+    add_layout(lbl_detail_context, 216, 372, 500, 18);
+    page_1.push(lbl_detail_context);
+
+    let lbl_detail_rule_id = create_label(
+        hwnd,
+        "• Rule ID:       -",
+        scale_dpi(216, dpi),
+        scale_dpi(394, dpi),
+        scale_dpi(500, dpi),
+        scale_dpi(18, dpi),
+    )?;
+    add_layout(lbl_detail_rule_id, 216, 394, 500, 18);
+    page_1.push(lbl_detail_rule_id);
+
+    let btn_forget_selected = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("BUTTON"),
+            w!("Quên rule đã chọn"),
+            ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_PUSHBUTTON as u32),
+            scale_dpi(204, dpi),
+            scale_dpi(442, dpi),
+            scale_dpi(140, dpi),
+            scale_dpi(30, dpi),
+            Some(hwnd),
+            Some(HMENU(IDC_BTN_FORGET_RULE as *mut core::ffi::c_void)),
+            Some(HINSTANCE::default()),
+            None,
+        )?
+    };
+    add_layout(btn_forget_selected, 204, 442, 140, 30);
+    page_1.push(btn_forget_selected);
+
+    let btn_forget_last = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("BUTTON"),
+            w!("Quên rule vừa học"),
+            ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_PUSHBUTTON as u32),
+            scale_dpi(352, dpi),
+            scale_dpi(442, dpi),
+            scale_dpi(140, dpi),
+            scale_dpi(30, dpi),
+            Some(hwnd),
+            Some(HMENU(IDC_BTN_FORGET_LAST as *mut core::ffi::c_void)),
+            Some(HINSTANCE::default()),
+            None,
+        )?
+    };
+    add_layout(btn_forget_last, 352, 442, 140, 30);
+    page_1.push(btn_forget_last);
+
+    let btn_refresh_rules = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("BUTTON"),
+            w!("Làm mới"),
+            ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_PUSHBUTTON as u32),
+            scale_dpi(500, dpi),
+            scale_dpi(442, dpi),
+            scale_dpi(105, dpi),
+            scale_dpi(30, dpi),
+            Some(hwnd),
+            Some(HMENU(IDC_BTN_REFRESH_RULES as *mut core::ffi::c_void)),
+            Some(HINSTANCE::default()),
+            None,
+        )?
+    };
+    add_layout(btn_refresh_rules, 500, 442, 105, 30);
+    page_1.push(btn_refresh_rules);
+
+    let btn_clear_all = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("BUTTON"),
+            w!("Xóa tất cả"),
+            ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_PUSHBUTTON as u32),
+            scale_dpi(613, dpi),
+            scale_dpi(442, dpi),
+            scale_dpi(117, dpi),
+            scale_dpi(30, dpi),
+            Some(hwnd),
+            Some(HMENU(IDC_BTN_CLEAR_ALL as *mut core::ffi::c_void)),
+            Some(HINSTANCE::default()),
+            None,
+        )?
+    };
+    add_layout(btn_clear_all, 613, 442, 117, 30);
+    page_1.push(btn_clear_all);
+
     let mut make_placeholder = |title: &str, subtitle: &str| -> Result<Vec<HWND>> {
         let mut list = Vec::new();
         let h1 = create_label(
@@ -723,10 +1001,6 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
         Ok(list)
     };
 
-    let page_1 = make_placeholder(
-        "🧠  Đã học (Learned Rules)",
-        "Xem danh sách và quản lý các cặp từ máy đã học (Sẽ hoàn thiện ở Slice UI-2).",
-    )?;
     let page_2 = make_placeholder(
         "📱  Ứng dụng (Applications Policy)",
         "Cấu hình chính sách chuyển đổi và học máy cho từng ứng dụng (Sẽ hoàn thiện ở Slice UI-3).",
@@ -744,7 +1018,6 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
         "Thông tin phiên bản, bản quyền và trạng thái runtime (Sẽ hoàn thiện ở Slice UI-4).",
     )?;
 
-    // Bottom Action Bar
     let status_label = create_label(
         hwnd,
         "● OpenViKey đang chạy · Local-only · v0.1.0",
@@ -808,6 +1081,22 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
         chk_suggestions,
         chk_autostart,
         chk_terminal,
+        txt_search_rules,
+        list_rules,
+        lbl_detail_original,
+        lbl_detail_candidate,
+        lbl_detail_method,
+        lbl_detail_source,
+        lbl_detail_evidence,
+        lbl_detail_state,
+        lbl_detail_context,
+        lbl_detail_rule_id,
+        btn_forget_selected,
+        btn_forget_last,
+        btn_refresh_rules,
+        btn_clear_all,
+        filtered_rows: Vec::new(),
+        all_rows: Vec::new(),
         status_label,
         current_font: font,
         page_controls: [page_0, page_1, page_2, page_3, page_4, page_5],
@@ -868,10 +1157,10 @@ fn apply_dpi_layout(hwnd: HWND, dpi: u32) {
 }
 
 fn select_page(hwnd: HWND, page_index: usize) {
-    let Ok(guard) = CONTROLS.lock() else {
+    let Ok(mut guard) = CONTROLS.lock() else {
         return;
     };
-    let Some(controls) = guard.as_ref() else {
+    let Some(controls) = guard.as_mut() else {
         return;
     };
 
@@ -888,6 +1177,11 @@ fn select_page(hwnd: HWND, page_index: usize) {
             }
         }
     }
+
+    if target == 1 {
+        populate_rules_inner(controls);
+    }
+
     unsafe {
         let _ = SetWindowPos(
             hwnd,
@@ -901,12 +1195,195 @@ fn select_page(hwnd: HWND, page_index: usize) {
     }
 }
 
+fn format_rule_row(row: &ModelInspectionRow) -> String {
+    let method = match row.input_method {
+        InputMethod::Telex => "Telex",
+        InputMethod::Vni => "VNI",
+    };
+    let source = match row.source {
+        CandidateSource::Personal => "Cá nhân (Rewind)",
+        CandidateSource::Abbreviation => "Viết tắt (Abbrev)",
+        CandidateSource::TelexFix => "Sửa Telex (TelexFix)",
+        CandidateSource::Fuzzy => "Gõ sai âm (Fuzzy)",
+        CandidateSource::Diacritics => "Dấu thanh (Diacritics)",
+    };
+    format!(
+        "  {:<12} → {:<12} │ {:<8} │ +{:<4.1} / -{:<3.1} │ [{method}] {source}",
+        row.original_nfc,
+        row.candidate_nfc,
+        format!("{:?}", row.state),
+        row.positive_evidence,
+        row.negative_evidence
+    )
+}
+
+#[allow(clippy::too_many_lines)]
+fn update_rule_details_view(controls: &UiControls, row: Option<&ModelInspectionRow>) {
+    if let Some(r) = row {
+        let method = match r.input_method {
+            InputMethod::Telex => "Telex",
+            InputMethod::Vni => "VNI",
+        };
+        let source = match r.source {
+            CandidateSource::Personal => "Sửa từ sau đó (Rewind/Personal)",
+            CandidateSource::Abbreviation => "Viết tắt / Ghép tự nhiên (Abbreviation)",
+            CandidateSource::TelexFix => "Sửa lỗi gõ Telex (TelexFix)",
+            CandidateSource::Fuzzy => "Sửa sai âm tương đồng (Fuzzy)",
+            CandidateSource::Diacritics => "Bổ sung dấu thanh (Diacritics)",
+        };
+        let state_desc = match r.state {
+            openvikey_core::decision::DecisionState::Auto => {
+                "Auto (Tự động chuyển đổi tại ranh giới từ)"
+            }
+            openvikey_core::decision::DecisionState::Suggest => {
+                "Suggest (Được đề xuất trên thanh gợi ý)"
+            }
+            openvikey_core::decision::DecisionState::Ignore => {
+                "Ignore (Đang quan sát / Chưa đủ tin cậy)"
+            }
+        };
+        let orig = format!("• Từ gốc:        {}", r.original_nfc);
+        let cand = format!("• Từ thay thế:   {}", r.candidate_nfc);
+        let meth = format!("• Kiểu gõ:       {method}");
+        let src = format!("• Nguồn gốc:     {source}");
+        let evid = format!(
+            "• Bằng chứng:    +{:.1} / -{:.1} ({} sự kiện)",
+            r.positive_evidence, r.negative_evidence, r.evidence_count
+        );
+        let st = format!("• Trạng thái:    {state_desc}");
+        let ctx = format!(
+            "• Ngữ cảnh trước: {}",
+            r.left_token_nfc.as_deref().unwrap_or("(không có)")
+        );
+        let rid = format!("• Rule ID:       {}", r.source_rule_id);
+
+        unsafe {
+            let _ = SetWindowTextW(
+                controls.lbl_detail_original,
+                PCWSTR(HSTRING::from(orig).as_ptr()),
+            );
+            let _ = SetWindowTextW(
+                controls.lbl_detail_candidate,
+                PCWSTR(HSTRING::from(cand).as_ptr()),
+            );
+            let _ = SetWindowTextW(
+                controls.lbl_detail_method,
+                PCWSTR(HSTRING::from(meth).as_ptr()),
+            );
+            let _ = SetWindowTextW(
+                controls.lbl_detail_source,
+                PCWSTR(HSTRING::from(src).as_ptr()),
+            );
+            let _ = SetWindowTextW(
+                controls.lbl_detail_evidence,
+                PCWSTR(HSTRING::from(evid).as_ptr()),
+            );
+            let _ = SetWindowTextW(
+                controls.lbl_detail_state,
+                PCWSTR(HSTRING::from(st).as_ptr()),
+            );
+            let _ = SetWindowTextW(
+                controls.lbl_detail_context,
+                PCWSTR(HSTRING::from(ctx).as_ptr()),
+            );
+            let _ = SetWindowTextW(
+                controls.lbl_detail_rule_id,
+                PCWSTR(HSTRING::from(rid).as_ptr()),
+            );
+        }
+    } else {
+        unsafe {
+            let _ = SetWindowTextW(
+                controls.lbl_detail_original,
+                PCWSTR(HSTRING::from("• Từ gốc:        -").as_ptr()),
+            );
+            let _ = SetWindowTextW(
+                controls.lbl_detail_candidate,
+                PCWSTR(HSTRING::from("• Từ thay thế:   -").as_ptr()),
+            );
+            let _ = SetWindowTextW(
+                controls.lbl_detail_method,
+                PCWSTR(HSTRING::from("• Kiểu gõ:       -").as_ptr()),
+            );
+            let _ = SetWindowTextW(
+                controls.lbl_detail_source,
+                PCWSTR(HSTRING::from("• Nguồn gốc:     -").as_ptr()),
+            );
+            let _ = SetWindowTextW(
+                controls.lbl_detail_evidence,
+                PCWSTR(HSTRING::from("• Bằng chứng:    -").as_ptr()),
+            );
+            let _ = SetWindowTextW(
+                controls.lbl_detail_state,
+                PCWSTR(HSTRING::from("• Trạng thái:    -").as_ptr()),
+            );
+            let _ = SetWindowTextW(
+                controls.lbl_detail_context,
+                PCWSTR(HSTRING::from("• Ngữ cảnh trước: -").as_ptr()),
+            );
+            let _ = SetWindowTextW(
+                controls.lbl_detail_rule_id,
+                PCWSTR(HSTRING::from("• Rule ID:       -").as_ptr()),
+            );
+        }
+    }
+}
+
+fn apply_rules_filter_inner(controls: &mut UiControls) {
+    let query = get_edit_text(controls.txt_search_rules).to_lowercase();
+    let query = query.trim();
+
+    controls.filtered_rows = if query.is_empty() {
+        controls.all_rows.clone()
+    } else {
+        controls
+            .all_rows
+            .iter()
+            .filter(|r| {
+                r.original_nfc.to_lowercase().contains(query)
+                    || r.candidate_nfc.to_lowercase().contains(query)
+                    || r.source_rule_id.to_lowercase().contains(query)
+            })
+            .cloned()
+            .collect()
+    };
+
+    unsafe {
+        let _ = send_msg(controls.list_rules, LB_RESETCONTENT, 0, 0);
+    }
+
+    for row in &controls.filtered_rows {
+        let text = format_rule_row(row);
+        let wide = HSTRING::from(text);
+        unsafe {
+            let _ = send_msg(controls.list_rules, LB_ADDSTRING, 0, wide.as_ptr() as isize);
+        }
+    }
+
+    if controls.filtered_rows.is_empty() {
+        update_rule_details_view(controls, None);
+    } else {
+        unsafe {
+            let _ = send_msg(controls.list_rules, LB_SETCURSEL, 0, 0);
+        }
+        update_rule_details_view(controls, controls.filtered_rows.first());
+    }
+}
+
+fn populate_rules_inner(controls: &mut UiControls) {
+    let snapshot = crate::host::control_snapshot();
+    let mut rows = snapshot.map_or_else(Vec::new, |s| s.learned_rows);
+    rows.reverse();
+    controls.all_rows = rows;
+    apply_rules_filter_inner(controls);
+}
+
 #[allow(clippy::too_many_lines)]
 fn populate_controls(_hwnd: HWND) {
-    let Ok(guard) = CONTROLS.lock() else {
+    let Ok(mut guard) = CONTROLS.lock() else {
         return;
     };
-    let Some(controls) = guard.as_ref() else {
+    let Some(controls) = guard.as_mut() else {
         return;
     };
 
@@ -1022,6 +1499,8 @@ fn populate_controls(_hwnd: HWND) {
         let status_text = HSTRING::from("● OpenViKey đang chạy · Local-only · v0.1.0");
         let _ = SetWindowTextW(controls.status_label, PCWSTR(status_text.as_ptr()));
     }
+
+    populate_rules_inner(controls);
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1123,6 +1602,109 @@ fn apply_settings_from_ui(_hwnd: HWND) {
     }
 }
 
+fn on_forget_selected_rule(hwnd: HWND) {
+    let Ok(mut guard) = CONTROLS.lock() else {
+        return;
+    };
+    let Some(controls) = guard.as_mut() else {
+        return;
+    };
+
+    let sel = unsafe {
+        send_msg(controls.list_rules, LB_GETCURSEL, 0, 0)
+            .0
+            .cast_unsigned()
+    };
+    let Some(row) = controls.filtered_rows.get(sel).cloned() else {
+        return;
+    };
+
+    let changed =
+        crate::host::forget_rule_runtime(row.input_method, &row.original_nfc, &row.candidate_nfc);
+    populate_rules_inner(controls);
+
+    let status = if changed {
+        format!(
+            "✓ Đã quên rule: {} → {}",
+            row.original_nfc, row.candidate_nfc
+        )
+    } else {
+        "⚠ Không tìm thấy rule cần quên.".to_string()
+    };
+    unsafe {
+        let _ = SetWindowTextW(
+            controls.status_label,
+            PCWSTR(HSTRING::from(status).as_ptr()),
+        );
+    }
+    let _ = hwnd;
+}
+
+fn on_forget_last_rule(hwnd: HWND) {
+    let at_ms = now_ms();
+    crate::host::forget_last_rule_runtime(at_ms);
+
+    let Ok(mut guard) = CONTROLS.lock() else {
+        return;
+    };
+    let Some(controls) = guard.as_mut() else {
+        return;
+    };
+
+    populate_rules_inner(controls);
+    unsafe {
+        let text = HSTRING::from("✓ Đã thực hiện quên rule vừa học gần nhất.");
+        let _ = SetWindowTextW(controls.status_label, PCWSTR(text.as_ptr()));
+    }
+    let _ = hwnd;
+}
+
+fn on_refresh_rules(hwnd: HWND) {
+    let Ok(mut guard) = CONTROLS.lock() else {
+        return;
+    };
+    let Some(controls) = guard.as_mut() else {
+        return;
+    };
+
+    populate_rules_inner(controls);
+    unsafe {
+        let text = HSTRING::from("✓ Đã làm mới danh sách các rule đã học.");
+        let _ = SetWindowTextW(controls.status_label, PCWSTR(text.as_ptr()));
+    }
+    let _ = hwnd;
+}
+
+fn on_clear_all_rules(hwnd: HWND) {
+    let confirm = unsafe {
+        MessageBoxW(
+            Some(hwnd),
+            w!("Bạn có chắc chắn muốn xóa toàn bộ các rule và từ viết tắt đã học không?"),
+            w!("OpenViKey — Xác nhận xóa dữ liệu học"),
+            MB_YESNO | MB_ICONWARNING,
+        )
+    };
+    if confirm != IDYES {
+        return;
+    }
+
+    crate::host::clear_all_rules_runtime();
+
+    let Ok(mut guard) = CONTROLS.lock() else {
+        return;
+    };
+    let Some(controls) = guard.as_mut() else {
+        return;
+    };
+
+    populate_rules_inner(controls);
+    unsafe {
+        let text = HSTRING::from("✓ Đã xóa toàn bộ dữ liệu rule đã học.");
+        let _ = SetWindowTextW(controls.status_label, PCWSTR(text.as_ptr()));
+    }
+}
+
+#[allow(clippy::too_many_lines)]
 unsafe extern "system" fn settings_wnd_proc(
     hwnd: HWND,
     msg: u32,
@@ -1198,6 +1780,46 @@ unsafe extern "system" fn settings_wnd_proc(
             }
             if id == IDC_CHK_SUGGESTIONS || id == IDC_CHK_AUTOSTART || id == IDC_CHK_TERMINAL {
                 apply_settings_from_ui(hwnd);
+                return LRESULT(0);
+            }
+            if id == IDC_TXT_SEARCH_RULES && code == EN_CHANGE as usize {
+                let Ok(mut guard) = CONTROLS.lock() else {
+                    return LRESULT(0);
+                };
+                if let Some(controls) = guard.as_mut() {
+                    apply_rules_filter_inner(controls);
+                }
+                return LRESULT(0);
+            }
+            if id == IDC_LIST_RULES && code == LBN_SELCHANGE as usize {
+                let Ok(guard) = CONTROLS.lock() else {
+                    return LRESULT(0);
+                };
+                if let Some(controls) = guard.as_ref() {
+                    let sel = unsafe {
+                        send_msg(controls.list_rules, LB_GETCURSEL, 0, 0)
+                            .0
+                            .cast_unsigned()
+                    };
+                    let row = controls.filtered_rows.get(sel);
+                    update_rule_details_view(controls, row);
+                }
+                return LRESULT(0);
+            }
+            if id == IDC_BTN_FORGET_RULE {
+                on_forget_selected_rule(hwnd);
+                return LRESULT(0);
+            }
+            if id == IDC_BTN_FORGET_LAST {
+                on_forget_last_rule(hwnd);
+                return LRESULT(0);
+            }
+            if id == IDC_BTN_REFRESH_RULES {
+                on_refresh_rules(hwnd);
+                return LRESULT(0);
+            }
+            if id == IDC_BTN_CLEAR_ALL {
+                on_clear_all_rules(hwnd);
                 return LRESULT(0);
             }
             LRESULT(0)
