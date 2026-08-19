@@ -1,10 +1,15 @@
 //! Lock-free key policy for the WH_KEYBOARD_LL hook path.
 
 use std::cell::Cell;
+use std::sync::{Arc, OnceLock};
+
+use arc_swap::ArcSwap;
 
 use openvikey_core::engine::backend::is_boundary_char;
 use openvikey_core::types::InputKind;
 use openvikey_win_context::ContextState;
+
+use crate::settings::{AppTransformPolicy, HotkeySettingsV1};
 
 /// Marker stamped on our own `SendInput` events so the hook must Pass them.
 pub const OVK_EXTRA: usize = 0x4F56_4B31;
@@ -22,6 +27,7 @@ pub struct HostState {
     pub foreground_exe: String,
     pub is_sending: bool,
     pub allow_terminal: bool,
+    pub app_transform: AppTransformPolicy,
     pub caps_lock: bool,
     pub alt: bool,
     pub meta: bool,
@@ -91,6 +97,110 @@ pub fn hook_allows_next(decision: &KeyDecision) -> bool {
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
+struct HotkeyChord {
+    vk: u16,
+    control: bool,
+    shift: bool,
+    alt: bool,
+    meta: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RuntimeHotkeys {
+    default_toggle: bool,
+    toggle: Option<HotkeyChord>,
+    accept: HotkeyChord,
+    reject: HotkeyChord,
+    undo: HotkeyChord,
+    forget: HotkeyChord,
+}
+
+static HOTKEYS: OnceLock<Arc<ArcSwap<RuntimeHotkeys>>> = OnceLock::new();
+
+fn parse_hotkey(value: &str, allow_modifier_pair: bool) -> Result<Option<HotkeyChord>, String> {
+    if allow_modifier_pair && value.eq_ignore_ascii_case("LeftCtrl+LeftShift") {
+        return Ok(None);
+    }
+    let parts = value.split('+').map(str::trim).collect::<Vec<_>>();
+    let Some(key) = parts.last() else {
+        return Err("phím tắt trống".into());
+    };
+    let control = parts[..parts.len().saturating_sub(1)]
+        .iter()
+        .any(|part| part.eq_ignore_ascii_case("Ctrl"));
+    let shift = parts[..parts.len().saturating_sub(1)]
+        .iter()
+        .any(|part| part.eq_ignore_ascii_case("Shift"));
+    let alt = parts[..parts.len().saturating_sub(1)]
+        .iter()
+        .any(|part| part.eq_ignore_ascii_case("Alt"));
+    let meta = parts[..parts.len().saturating_sub(1)]
+        .iter()
+        .any(|part| part.eq_ignore_ascii_case("Win"));
+    if !control && !shift && !alt && !meta {
+        return Err(format!("phím tắt '{value}' cần Ctrl, Shift, Alt hoặc Win"));
+    }
+    let vk = match *key {
+        "." => 0xBE,
+        "," => 0xBC,
+        value if value.eq_ignore_ascii_case("Space") => 0x20,
+        value if value.len() == 1 => {
+            let byte = value.as_bytes()[0].to_ascii_uppercase();
+            if !byte.is_ascii_alphanumeric() {
+                return Err(format!("phím chính không hỗ trợ: {value}"));
+            }
+            u16::from(byte)
+        }
+        _ => return Err(format!("phím chính không hỗ trợ: {key}")),
+    };
+    Ok(Some(HotkeyChord {
+        vk,
+        control,
+        shift,
+        alt,
+        meta,
+    }))
+}
+
+fn parsed_hotkeys(settings: &HotkeySettingsV1) -> Result<RuntimeHotkeys, String> {
+    let toggle = parse_hotkey(&settings.toggle_mode, true)?;
+    let parsed = RuntimeHotkeys {
+        default_toggle: toggle.is_none(),
+        toggle,
+        accept: parse_hotkey(&settings.accept_top, false)?.ok_or("thiếu phím Accept")?,
+        reject: parse_hotkey(&settings.reject_top, false)?.ok_or("thiếu phím Reject")?,
+        undo: parse_hotkey(&settings.undo_last, false)?.ok_or("thiếu phím Undo")?,
+        forget: parse_hotkey(&settings.forget_last, false)?.ok_or("thiếu phím Forget")?,
+    };
+    let mut chords = vec![parsed.accept, parsed.reject, parsed.undo, parsed.forget];
+    if let Some(toggle) = parsed.toggle {
+        chords.push(toggle);
+    }
+    for (index, chord) in chords.iter().enumerate() {
+        if chords[index + 1..].contains(chord) {
+            return Err("hai hành động không thể dùng cùng một phím tắt".into());
+        }
+    }
+    Ok(parsed)
+}
+
+fn default_hotkeys() -> RuntimeHotkeys {
+    parsed_hotkeys(&HotkeySettingsV1::default()).expect("default hotkeys are valid")
+}
+
+fn hotkey_slot() -> &'static Arc<ArcSwap<RuntimeHotkeys>> {
+    HOTKEYS.get_or_init(|| Arc::new(ArcSwap::from_pointee(default_hotkeys())))
+}
+
+/// Validate and atomically replace hook hotkeys.
+pub fn set_runtime_hotkeys(settings: &HotkeySettingsV1) -> Result<(), String> {
+    let parsed = parsed_hotkeys(settings)?;
+    hotkey_slot().store(Arc::new(parsed));
+    Ok(())
+}
+
 thread_local! {
     static TOGGLE_BOTH: Cell<bool> = const { Cell::new(false) };
     static TOGGLE_DIRTY: Cell<bool> = const { Cell::new(false) };
@@ -112,7 +222,10 @@ pub fn decide(raw: &RawKey, state: &HostState) -> KeyDecision {
         return KeyDecision::Pass;
     }
 
-    note_toggle_chord(raw);
+    let hotkeys = hotkey_slot().load();
+    if hotkeys.default_toggle {
+        note_toggle_chord(raw);
+    }
 
     // 2. Swallow physical leak/auto-repeat while we are injecting.
     if state.is_sending {
@@ -121,10 +234,18 @@ pub fn decide(raw: &RawKey, state: &HostState) -> KeyDecision {
 
     // Keyup: only Toggle chord is special; everything else Passes.
     if !raw.down {
-        if is_toggle_chord(raw) {
+        if hotkeys.default_toggle && is_toggle_chord(raw) {
             return KeyDecision::Hotkey(HostHotkey::ToggleMode);
         }
         return KeyDecision::Pass;
+    }
+
+    if raw.down
+        && hotkeys
+            .toggle
+            .is_some_and(|chord| chord_matches(chord, raw, state))
+    {
+        return KeyDecision::Hotkey(HostHotkey::ToggleMode);
     }
 
     // 3. Tab / Esc
@@ -136,13 +257,14 @@ pub fn decide(raw: &RawKey, state: &HostState) -> KeyDecision {
     if state.mode == Mode::English
         || state.foreground_exe.is_empty()
         || is_denylisted(&state.foreground_exe)
+        || state.app_transform == AppTransformPolicy::Block
         || (requires_terminal_opt_in(&state.foreground_exe) && !state.allow_terminal)
     {
         return KeyDecision::Pass;
     }
 
     // 6 (before 5): detect OpenViKey hotkeys so step 5 can Pass other modifiers.
-    if let Some(hk) = match_hotkey_keydown(raw) {
+    if let Some(hk) = match_hotkey_keydown(raw, state, &hotkeys) {
         return KeyDecision::Hotkey(hk);
     }
 
@@ -243,27 +365,27 @@ fn is_toggle_chord(raw: &RawKey) -> bool {
     raw.left_ctrl && raw.left_shift && (raw.vk == 0xA0 || raw.vk == 0xA2) && !TOGGLE_DIRTY.get()
 }
 
-fn match_hotkey_keydown(raw: &RawKey) -> Option<HostHotkey> {
-    if !raw.control {
-        return None;
-    }
-    // Ctrl+Shift+. forget last rule; Ctrl+. Accept
-    if raw.vk == 0xBE {
-        return Some(if raw.shift {
-            HostHotkey::ForgetLastRule
-        } else {
-            HostHotkey::AcceptTop
-        });
-    }
-    // Ctrl+, Reject
-    if raw.vk == 0xBC && !raw.shift {
-        return Some(HostHotkey::RejectTop);
-    }
-    // Ctrl+Shift+Z Undo (Ctrl+Z alone is not Undo)
-    if raw.vk == 0x5A && raw.shift {
-        return Some(HostHotkey::UndoLast);
-    }
-    None
+fn chord_matches(chord: HotkeyChord, raw: &RawKey, state: &HostState) -> bool {
+    raw.vk == chord.vk
+        && raw.control == chord.control
+        && raw.shift == chord.shift
+        && state.alt == chord.alt
+        && state.meta == chord.meta
+}
+
+fn match_hotkey_keydown(
+    raw: &RawKey,
+    state: &HostState,
+    hotkeys: &RuntimeHotkeys,
+) -> Option<HostHotkey> {
+    [
+        (hotkeys.forget, HostHotkey::ForgetLastRule),
+        (hotkeys.accept, HostHotkey::AcceptTop),
+        (hotkeys.reject, HostHotkey::RejectTop),
+        (hotkeys.undo, HostHotkey::UndoLast),
+    ]
+    .into_iter()
+    .find_map(|(chord, action)| chord_matches(chord, raw, state).then_some(action))
 }
 
 fn is_nav_vk(vk: u16) -> bool {

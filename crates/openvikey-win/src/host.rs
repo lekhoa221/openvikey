@@ -19,6 +19,9 @@ use crate::classify::profile_for_exe;
 use crate::focus::{FocusCache, ForegroundSnapshot};
 use crate::inject::{CommandInjector, InjectError, InjectProfile};
 use crate::policy::{HostHotkey, HostState, KeyDecision, Mode, RawKey, decide};
+use crate::settings::{
+    AppInjectProfile, AppLearningPolicy, AppPolicyV1, AppTransformPolicy, HotkeySettingsV1,
+};
 use crate::sync::{
     InjectCommand, commands_from_accept, commands_from_caret_break, commands_from_typed,
     commands_from_undo, grapheme_len,
@@ -31,7 +34,9 @@ struct HostRuntime {
     mode: Arc<AtomicU8>,
     show_suggestions: Arc<AtomicBool>,
     allow_terminal: Arc<AtomicBool>,
+    app_policies: Arc<ArcSwap<Vec<AppPolicyV1>>>,
     context: Arc<ContextProjectionSlot>,
+    settings_path: Option<PathBuf>,
     persist: OnceLock<Arc<dyn Fn() + Send + Sync>>,
 }
 
@@ -136,12 +141,23 @@ pub fn bind_runtime_with_context(
     focus: Arc<FocusCache>,
     context: Arc<ContextProjectionSlot>,
 ) {
-    let (sending, mode, show_suggestions, allow_terminal) = match host.lock() {
+    bind_runtime_with_context_and_settings(host, focus, context, None);
+}
+
+/// Bind product runtime with an explicit settings file. Tests use `None` and never touch profiles.
+pub fn bind_runtime_with_context_and_settings(
+    host: Arc<Mutex<TypingHost>>,
+    focus: Arc<FocusCache>,
+    context: Arc<ContextProjectionSlot>,
+    settings_path: Option<PathBuf>,
+) {
+    let (sending, mode, show_suggestions, allow_terminal, app_policies) = match host.lock() {
         Ok(guard) => (
             Arc::clone(&guard.sending),
             Arc::clone(&guard.mode_flag),
             Arc::clone(&guard.suggestions_flag),
             Arc::clone(&guard.allow_terminal_flag),
+            Arc::new(ArcSwap::from_pointee(guard.app_policies.clone())),
         ),
         Err(poisoned) => {
             let guard = poisoned.into_inner();
@@ -150,6 +166,7 @@ pub fn bind_runtime_with_context(
                 Arc::clone(&guard.mode_flag),
                 Arc::clone(&guard.suggestions_flag),
                 Arc::clone(&guard.allow_terminal_flag),
+                Arc::new(ArcSwap::from_pointee(guard.app_policies.clone())),
             )
         }
     };
@@ -160,7 +177,9 @@ pub fn bind_runtime_with_context(
         mode,
         show_suggestions,
         allow_terminal,
+        app_policies,
         context,
+        settings_path,
         persist: OnceLock::new(),
     });
 }
@@ -188,6 +207,13 @@ fn needs_session(decision: &KeyDecision) -> bool {
     )
 }
 
+fn app_policy_for<'a>(exe: &str, policies: &'a [AppPolicyV1]) -> Option<&'a AppPolicyV1> {
+    let name = exe.rsplit(['/', '\\']).next().unwrap_or(exe);
+    policies
+        .iter()
+        .find(|policy| policy.executable.eq_ignore_ascii_case(name))
+}
+
 fn sample_host_state(
     caps_lock: bool,
     alt: bool,
@@ -202,12 +228,16 @@ fn sample_host_state(
             .as_ref()
             .and_then(|snapshot| rt.context.try_state_for(&snapshot.identity))
             .unwrap_or(ContextState::Unavailable);
+        let policies = rt.app_policies.load();
+        let app_transform = app_policy_for(&foreground_exe, &policies)
+            .map_or(AppTransformPolicy::Default, |policy| policy.transform);
         return (
             HostState {
                 mode: mode_from_u8(rt.mode.load(Ordering::SeqCst)),
                 foreground_exe,
                 is_sending: rt.sending.load(Ordering::SeqCst),
                 allow_terminal: rt.allow_terminal.load(Ordering::SeqCst),
+                app_transform,
                 caps_lock,
                 alt,
                 meta,
@@ -222,6 +252,7 @@ fn sample_host_state(
             foreground_exe: "notepad.exe".into(),
             is_sending: false,
             allow_terminal: false,
+            app_transform: AppTransformPolicy::Default,
             caps_lock,
             alt,
             meta,
@@ -421,6 +452,7 @@ pub struct ControlSnapshot {
     pub show_suggestions: bool,
     pub allow_terminal: bool,
     pub foreground_exe: String,
+    pub last_external_exe: String,
     pub learning_allowed: bool,
     pub learned_rows: Vec<ModelInspectionRow>,
 }
@@ -435,9 +467,22 @@ pub fn control_snapshot() -> Option<ControlSnapshot> {
         show_suggestions: guard.show_suggestions,
         allow_terminal: guard.allow_terminal,
         foreground_exe: guard.foreground_exe.clone(),
+        last_external_exe: guard.last_external_exe.clone(),
         learning_allowed: guard.allow_learning_for_foreground(),
         learned_rows: guard.session.model().inspection_rows(),
     })
+}
+
+fn persist_runtime_setting(
+    mutate: impl FnOnce(&mut crate::settings::SettingsV1),
+) -> Result<(), crate::settings::SettingsLoadError> {
+    let Some(path) = RUNTIME
+        .get()
+        .and_then(|runtime| runtime.settings_path.as_deref())
+    else {
+        return Ok(());
+    };
+    crate::settings::mutate_settings(path, mutate).map(|_| ())
 }
 
 /// Change Mode (Viet/English) from the settings/tray thread.
@@ -457,10 +502,7 @@ pub fn set_mode_runtime(mode: Mode, at_ms: i64) {
     let lines = guard.overlay_display_lines();
     drop(guard);
     after_unlock(&lines, Some(mode), false);
-    let local_app_data = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
-    let _ = crate::settings::mutate_saved_settings(local_app_data.as_ref(), |s| {
-        s.last_mode_viet = mode == Mode::Viet;
-    });
+    let _ = persist_runtime_setting(|settings| settings.last_mode_viet = mode == Mode::Viet);
 }
 
 /// Change Telex/VNI from the tray/settings thread.
@@ -478,10 +520,7 @@ pub fn set_input_method_runtime(method: InputMethod, at_ms: i64) {
     let lines = guard.overlay_display_lines();
     drop(guard);
     after_unlock(&lines, None, true);
-    let local_app_data = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
-    let _ = crate::settings::mutate_saved_settings(local_app_data.as_ref(), |s| {
-        s.input_method = method;
-    });
+    let _ = persist_runtime_setting(|settings| settings.input_method = method);
 }
 
 /// Change tone placement (Modern/Traditional) from the settings thread.
@@ -499,10 +538,7 @@ pub fn set_tone_placement_runtime(tone: TonePlacement, at_ms: i64) {
     let lines = guard.overlay_display_lines();
     drop(guard);
     after_unlock(&lines, None, true);
-    let local_app_data = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
-    let _ = crate::settings::mutate_saved_settings(local_app_data.as_ref(), |s| {
-        s.tone_placement = tone;
-    });
+    let _ = persist_runtime_setting(|settings| settings.tone_placement = tone);
 }
 
 /// Set suggestion overlay visibility from settings.
@@ -524,10 +560,7 @@ pub fn set_show_suggestions_runtime(show: bool) {
             },
         );
     }
-    let local_app_data = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
-    let _ = crate::settings::mutate_saved_settings(local_app_data.as_ref(), |s| {
-        s.show_suggestions = show;
-    });
+    let _ = persist_runtime_setting(|settings| settings.show_suggestions = show);
 }
 
 /// Set terminal transformation permission from settings.
@@ -538,30 +571,38 @@ pub fn set_allow_terminal_runtime(allow: bool) {
     let mut guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
     guard.allow_terminal = allow;
     guard.allow_terminal_flag.store(allow, Ordering::SeqCst);
-    let local_app_data = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
-    let _ = crate::settings::mutate_saved_settings(local_app_data.as_ref(), |s| {
-        s.allow_terminal = allow;
-    });
+    drop(guard);
+    let _ = persist_runtime_setting(|settings| settings.allow_terminal = allow);
 }
 
-/// Forget the latest learned rule through the same session that owns typing.
-pub fn forget_last_rule_runtime(at_ms: i64) {
-    handle_tray_hotkey(HostHotkey::ForgetLastRule, at_ms);
+/// Replace per-application policies in both lock-free hook policy and the live typing host.
+pub fn set_app_policies_runtime(policies: Vec<AppPolicyV1>) {
+    let Some(rt) = RUNTIME.get() else {
+        return;
+    };
+    rt.app_policies.store(Arc::new(policies.clone()));
+    let mut guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
+    guard.app_policies.clone_from(&policies);
+    let foreground = guard.foreground_exe.clone();
+    guard.apply_foreground_surface(foreground);
+    drop(guard);
+    let _ = persist_runtime_setting(move |settings| settings.app_policies = policies);
 }
 
-/// Forget a specific learned rule matching input method and word pair from Settings UI.
-pub fn forget_rule_runtime(
-    input_method: InputMethod,
-    original_nfc: &str,
-    candidate_nfc: &str,
-) -> bool {
+/// Validate and replace live hotkeys, then persist them for restart.
+pub fn set_hotkeys_runtime(hotkeys: HotkeySettingsV1) -> Result<(), String> {
+    crate::policy::set_runtime_hotkeys(&hotkeys)?;
+    persist_runtime_setting(move |settings| settings.hotkeys = hotkeys)
+        .map_err(|error| error.to_string())
+}
+
+/// Forget the latest learned rule from product UI, independent of V/E or foreground policy.
+pub fn forget_last_rule_runtime() -> bool {
     let Some(rt) = RUNTIME.get() else {
         return false;
     };
     let mut guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
-    let changed = guard
-        .session
-        .forget_rule_pair(input_method, original_nfc, candidate_nfc);
+    let changed = guard.session.forget_last_rule();
     if changed {
         let lines = guard.overlay_display_lines();
         drop(guard);
@@ -570,16 +611,19 @@ pub fn forget_rule_runtime(
     changed
 }
 
-/// Clear all learned rules from Settings UI.
-pub fn clear_all_rules_runtime() {
+/// Forget exactly one row selected from the learned-rules projection.
+pub fn forget_rule_runtime(row: &ModelInspectionRow) -> bool {
     let Some(rt) = RUNTIME.get() else {
-        return;
+        return false;
     };
     let mut guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
-    guard.session.clear_all_rules();
-    let lines = guard.overlay_display_lines();
-    drop(guard);
-    after_unlock(&lines, None, true);
+    let changed = guard.session.forget_inspection_row(row);
+    if changed {
+        let lines = guard.overlay_display_lines();
+        drop(guard);
+        after_unlock(&lines, None, true);
+    }
+    changed
 }
 
 fn handle_tray_hotkey(hotkey: HostHotkey, at_ms: i64) {
@@ -614,12 +658,14 @@ pub struct TypingHost {
     pub hwnd: u64,
     pub focus_generation: u64,
     pub foreground_exe: String,
+    pub last_external_exe: String,
     /// Latest host-validated TSF context projection for the active surface.
     pub context_projection: ContextProjection,
     pub mode: Mode,
     pub mode_flag: Arc<AtomicU8>,
     pub allow_terminal: bool,
     pub allow_terminal_flag: Arc<AtomicBool>,
+    pub app_policies: Vec<AppPolicyV1>,
     pub caps_lock: bool,
     pub alt: bool,
     pub meta: bool,
@@ -684,11 +730,13 @@ impl TypingHost {
             hwnd: 1,
             focus_generation: 0,
             foreground_exe: "notepad.exe".into(),
+            last_external_exe: "notepad.exe".into(),
             context_projection: ContextProjection::Unsupported,
             mode: Mode::Viet,
             mode_flag: Arc::new(AtomicU8::new(0)),
             allow_terminal: false,
             allow_terminal_flag: Arc::new(AtomicBool::new(false)),
+            app_policies: Vec::new(),
             caps_lock: false,
             alt: false,
             meta: false,
@@ -850,6 +898,8 @@ impl TypingHost {
             foreground_exe: self.foreground_exe.clone(),
             is_sending: self.sending.load(Ordering::SeqCst),
             allow_terminal: self.allow_terminal,
+            app_transform: app_policy_for(&self.foreground_exe, &self.app_policies)
+                .map_or(AppTransformPolicy::Default, |policy| policy.transform),
             caps_lock: self.caps_lock,
             alt: self.alt,
             meta: self.meta,
@@ -1000,7 +1050,17 @@ impl TypingHost {
 
     fn apply_foreground_surface(&mut self, exe: String) {
         self.foreground_exe = exe;
-        self.profile = profile_for_exe(&self.foreground_exe);
+        if !self.foreground_exe.eq_ignore_ascii_case("OpenViKey.exe") {
+            self.last_external_exe.clone_from(&self.foreground_exe);
+        }
+        self.profile = app_policy_for(&self.foreground_exe, &self.app_policies).map_or_else(
+            || profile_for_exe(&self.foreground_exe),
+            |policy| match policy.inject_profile {
+                AppInjectProfile::Auto => profile_for_exe(&self.foreground_exe),
+                AppInjectProfile::Win32 => InjectProfile::Win32,
+                AppInjectProfile::Electron => InjectProfile::Electron,
+            },
+        );
         self.session
             .set_intervention_config(self.intervention_for_foreground());
     }
@@ -1018,7 +1078,11 @@ impl TypingHost {
     }
 
     fn allow_learning_for_foreground(&self) -> bool {
-        self.mode == Mode::Viet && crate::policy::allows_learning(&self.foreground_exe)
+        if self.mode != Mode::Viet || !crate::policy::allows_learning(&self.foreground_exe) {
+            return false;
+        }
+        app_policy_for(&self.foreground_exe, &self.app_policies)
+            .is_none_or(|policy| policy.learning != AppLearningPolicy::Block)
     }
 
     fn apply_caret_break(&mut self, at_ms: i64) {

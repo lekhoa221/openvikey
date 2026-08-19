@@ -53,16 +53,20 @@ mod shell_tray {
     use std::sync::{Arc, Mutex};
 
     use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
+    use windows::Win32::Graphics::Gdi::{
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateBitmap, CreateDIBSection, DIB_RGB_COLORS,
+        DeleteObject,
+    };
     use windows::Win32::UI::Shell::{
         NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
         Shell_NotifyIconW,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        AppendMenuW, CS_HREDRAW, CS_VREDRAW, CreateIcon, CreatePopupMenu, CreateWindowExW,
+        AppendMenuW, CS_HREDRAW, CS_VREDRAW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW,
         DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, GetCursorPos, HCURSOR, HICON,
-        MF_CHECKED, MF_SEPARATOR, MF_STRING, PostQuitMessage, RegisterClassW, SetForegroundWindow,
-        TPM_RIGHTBUTTON, TrackPopupMenu, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_RBUTTONUP,
-        WNDCLASSW, WS_POPUP,
+        ICONINFO, MF_CHECKED, MF_SEPARATOR, MF_STRING, PostQuitMessage, RegisterClassW,
+        SetForegroundWindow, TPM_RIGHTBUTTON, TrackPopupMenu, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP,
+        WM_RBUTTONUP, WNDCLASSW, WS_POPUP,
     };
     use windows::core::{HSTRING, PCWSTR, Result, w};
 
@@ -153,8 +157,8 @@ mod shell_tray {
         }
     }
 
-    fn create_mode_icon(mode: Mode) -> Result<HICON> {
-        let rows: [u16; 16] = match mode {
+    fn mode_icon_pixels(mode: Mode) -> [u32; 16 * 16] {
+        let glyph: [u16; 16] = match mode {
             Mode::Viet => [
                 0, 0, 0x6006, 0x6006, 0x300C, 0x300C, 0x1818, 0x1818, 0x0C30, 0x0C30, 0x0660,
                 0x0660, 0x03C0, 0x0180, 0, 0,
@@ -164,14 +168,81 @@ mod shell_tray {
                 0x6000, 0x7FFE, 0, 0, 0,
             ],
         };
-        let mut xor = [0_u8; 32];
-        for (index, row) in rows.iter().enumerate() {
-            let [high, low] = row.to_be_bytes();
-            xor[index * 2] = high;
-            xor[index * 2 + 1] = low;
+        let background = match mode {
+            Mode::Viet => 0xFFE5_3935,    // UniKey-like red V
+            Mode::English => 0xFF19_76D2, // blue E
+        };
+        let mut pixels = [0_u32; 16 * 16];
+        for y in 0..16 {
+            for x in 0..16 {
+                let rounded_square = match y {
+                    0 | 15 => (3..=12).contains(&x),
+                    1 | 14 => (1..=14).contains(&x),
+                    _ => true,
+                };
+                if rounded_square {
+                    pixels[y * 16 + x] = background;
+                }
+                if glyph[y] & (0x8000 >> x) != 0 {
+                    pixels[y * 16 + x] = 0xFFFF_FFFF;
+                }
+            }
         }
-        let and = [0_u8; 32];
-        unsafe { CreateIcon(None, 16, 16, 1, 1, and.as_ptr(), xor.as_ptr()) }
+        pixels
+    }
+
+    fn create_mode_icon(mode: Mode) -> Result<HICON> {
+        let pixels = mode_icon_pixels(mode);
+        let bitmap_info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: u32::try_from(std::mem::size_of::<BITMAPINFOHEADER>()).unwrap_or(u32::MAX),
+                biWidth: 16,
+                biHeight: -16,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                biSizeImage: u32::try_from(pixels.len() * std::mem::size_of::<u32>())
+                    .unwrap_or(u32::MAX),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bits = std::ptr::null_mut();
+        let color = unsafe {
+            CreateDIBSection(
+                None,
+                &raw const bitmap_info,
+                DIB_RGB_COLORS,
+                &raw mut bits,
+                None,
+                0,
+            )?
+        };
+        unsafe {
+            std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits.cast::<u32>(), pixels.len());
+        }
+        let mask_bits = [0_u8; 32];
+        let mask = unsafe {
+            CreateBitmap(
+                16,
+                16,
+                1,
+                1,
+                Some(mask_bits.as_ptr().cast::<core::ffi::c_void>()),
+            )
+        };
+        let icon_info = ICONINFO {
+            fIcon: true.into(),
+            hbmMask: mask,
+            hbmColor: color,
+            ..Default::default()
+        };
+        let icon = unsafe { CreateIconIndirect(&raw const icon_info) };
+        unsafe {
+            let _ = DeleteObject(color.into());
+            let _ = DeleteObject(mask.into());
+        }
+        icon
     }
 
     fn set_tip(data: &mut NOTIFYICONDATAW, mode: Mode) {
@@ -272,7 +343,7 @@ mod shell_tray {
                 return LRESULT(0);
             }
             if id == ID_FORGET_LAST {
-                crate::host::forget_last_rule_runtime(now_ms());
+                crate::host::forget_last_rule_runtime();
                 return LRESULT(0);
             }
             if id == ID_SUGGESTIONS {
@@ -471,6 +542,23 @@ mod shell_tray {
                     let _ = DestroyWindow(self.sink);
                 }
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod icon_tests {
+        use super::*;
+
+        #[test]
+        fn tray_mode_icons_use_distinct_unikey_style_colors_and_white_letters() {
+            let viet = mode_icon_pixels(Mode::Viet);
+            let english = mode_icon_pixels(Mode::English);
+            assert_eq!(viet[0], 0);
+            assert_eq!(english[0], 0);
+            assert_eq!(viet[8 * 16], 0xFFE5_3935);
+            assert_eq!(english[8 * 16], 0xFF19_76D2);
+            assert!(viet.contains(&0xFFFF_FFFF));
+            assert!(english.contains(&0xFFFF_FFFF));
         }
     }
 }

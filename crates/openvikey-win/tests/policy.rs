@@ -1,5 +1,6 @@
 use openvikey_core::types::InputKind;
 use openvikey_win::policy::{HostHotkey, HostState, KeyDecision, Mode, OVK_EXTRA, RawKey, decide};
+use openvikey_win::settings::AppTransformPolicy;
 use openvikey_win_context::ContextState;
 
 fn viet() -> HostState {
@@ -8,6 +9,7 @@ fn viet() -> HostState {
         foreground_exe: "notepad.exe".into(),
         is_sending: false,
         allow_terminal: false,
+        app_transform: AppTransformPolicy::Default,
         caps_lock: false,
         alt: false,
         meta: false,

@@ -182,14 +182,13 @@ pub fn save_settings(path: &Path, settings: &SettingsV1) -> std::io::Result<()> 
     fs::rename(temp, path)
 }
 
-/// Atomically mutate and save settings to the default settings path.
-pub fn mutate_saved_settings(
-    local_app_data: Option<impl AsRef<Path>>,
+/// Atomically mutate one validated settings file without replacing unknown/corrupt payloads.
+pub fn mutate_settings(
+    path: &Path,
     mutate: impl FnOnce(&mut SettingsV1),
-) -> std::io::Result<SettingsV1> {
-    let path = default_settings_path(local_app_data);
-    let mut settings = load_settings(&path).unwrap_or_default();
+) -> Result<SettingsV1, SettingsLoadError> {
+    let mut settings = load_settings(path)?;
     mutate(&mut settings);
-    save_settings(&path, &settings)?;
+    save_settings(path, &settings)?;
     Ok(settings)
 }

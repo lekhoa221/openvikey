@@ -1,7 +1,7 @@
 # OpenViKey Settings UI v1 — Design Specification
 
 - **Ngày:** 2026-08-19
-- **Trạng thái:** Draft / Accepted for Implementation
+- **Trạng thái:** Implemented through UI-4 in working tree; automated review gates pass; manual visual acceptance pending
 - **Mục tiêu:** Cửa sổ cài đặt native Windows trong cùng process `OpenViKey.exe`, quản lý cấu hình và quan sát rule học máy kiểu UniKey
 - **ADR liên quan:** [`../../decisions/0010-windows-standalone-default.md`](../../decisions/0010-windows-standalone-default.md)
 - **Spec kiến trúc nền tảng:** [`2026-08-19-openvikey-windows-standalone-design.md`](./2026-08-19-openvikey-windows-standalone-design.md)
@@ -351,6 +351,16 @@ pub struct UiViewSnapshot {
 - Trang Giới thiệu & bảng chẩn đoán trạng thái runtime.
 - Keyboard navigation pass (Tab, Shift+Tab, Enter, Escape, Space).
 - Cập nhật Tray context menu đầy đủ các mục checkmark.
+
+### Trạng thái triển khai 2026-08-19
+
+- **Visual direction accepted:** phối hợp **A — UniKey Compact** và **B — OpenKey Modern**: navigation ngang, header V/E luôn hiện, full-width content, typography/spacing rõ và không dùng sidebar emoji.
+- **UI-1:** hoàn tất — shell native, General, tray/single-instance, DPI, close-to-tray.
+- **UI-2:** hoàn tất — ListView learned rules, filter, detail không lộ surrounding context, exact Forget và durable reload test.
+- **UI-3:** hoàn tất — per-app transform/learning/injection policy và hotkey validation/live apply.
+- **UI-4:** hoàn tất — Privacy, mở data folder, About/runtime diagnostics và dialog navigation.
+- `UiCommand` coordinator là boundary duy nhất cho mutation do Settings window khởi phát.
+- Manual visual/DPI/real-app acceptance vẫn phải thực hiện trên package release.
 
 ---
 

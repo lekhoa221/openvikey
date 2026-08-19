@@ -8,6 +8,9 @@ use openvikey_win::host::{
     set_tone_placement_runtime, tray_snapshot,
 };
 use openvikey_win::policy::{HostState, KeyDecision, Mode, RawKey, decide};
+use openvikey_win::settings::{
+    AppInjectProfile, AppLearningPolicy, AppPolicyV1, AppTransformPolicy, HotkeySettingsV1,
+};
 use openvikey_win_context::ContextState;
 
 #[test]
@@ -65,6 +68,7 @@ fn terminal_toggle_modifies_real_hook_policy() {
         foreground_exe: "cmd.exe".into(),
         is_sending: false,
         allow_terminal: false,
+        app_transform: AppTransformPolicy::Default,
         caps_lock: false,
         alt: false,
         meta: false,
@@ -84,6 +88,66 @@ fn terminal_toggle_modifies_real_hook_policy() {
     // Terminal reverted to false -> hook passes raw key
     state.allow_terminal = false;
     assert_eq!(decide(&raw_a, &state), KeyDecision::Pass);
+}
+
+#[test]
+fn app_policy_blocks_transform_and_selects_injection_profile() {
+    let mut host = TypingHost::new_telex_fixture();
+    host.app_policies = vec![AppPolicyV1 {
+        executable: "notepad.exe".into(),
+        transform: AppTransformPolicy::Block,
+        learning: AppLearningPolicy::Block,
+        inject_profile: AppInjectProfile::Electron,
+    }];
+    host.set_hwnd(10, "notepad.exe".into(), 1);
+    assert_eq!(host.profile, openvikey_win::inject::InjectProfile::Electron);
+    let raw = RawKey {
+        vk: 0x41,
+        down: true,
+        control: false,
+        shift: false,
+        extra_info: 0,
+        left_ctrl: false,
+        left_shift: false,
+    };
+    assert_eq!(host.handle_key(raw, 2), KeyDecision::Pass);
+}
+
+#[test]
+fn custom_hotkeys_validate_conflicts_and_apply_live() {
+    let mut settings = HotkeySettingsV1 {
+        accept_top: "Alt+K".into(),
+        ..HotkeySettingsV1::default()
+    };
+    openvikey_win::policy::set_runtime_hotkeys(&settings).unwrap();
+    let state = HostState {
+        mode: Mode::Viet,
+        foreground_exe: "notepad.exe".into(),
+        is_sending: false,
+        allow_terminal: false,
+        app_transform: AppTransformPolicy::Default,
+        caps_lock: false,
+        alt: true,
+        meta: false,
+        context_state: ContextState::Unsupported,
+    };
+    let raw = RawKey {
+        vk: 0x4B,
+        down: true,
+        control: false,
+        shift: false,
+        extra_info: 0,
+        left_ctrl: false,
+        left_shift: false,
+    };
+    assert_eq!(
+        decide(&raw, &state),
+        KeyDecision::Hotkey(openvikey_win::policy::HostHotkey::AcceptTop)
+    );
+
+    settings.reject_top = "Alt+K".into();
+    assert!(openvikey_win::policy::set_runtime_hotkeys(&settings).is_err());
+    openvikey_win::policy::set_runtime_hotkeys(&HotkeySettingsV1::default()).unwrap();
 }
 
 #[test]

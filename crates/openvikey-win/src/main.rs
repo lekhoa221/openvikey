@@ -19,7 +19,7 @@ use openvikey_win::console::ConsoleControlHandler;
 use openvikey_win::focus::HostHooks;
 use openvikey_win::focus::{FocusCache, run_host_message_loop, seed_current_foreground};
 use openvikey_win::host::{
-    ContextProjectionSlot, TypingHost, bind_persist_notify, bind_runtime_with_context,
+    ContextProjectionSlot, TypingHost, bind_persist_notify, bind_runtime_with_context_and_settings,
 };
 use openvikey_win::inject::{InjectProfile, ProfilingInjector, SendInputSender};
 #[cfg(windows)]
@@ -129,6 +129,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     {
         settings.start_with_windows = openvikey_win::startup::enabled();
     }
+    openvikey_win::policy::set_runtime_hotkeys(&settings.hotkeys)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
     let method = cli.method.map_or(settings.input_method, InputMethod::from);
 
     let (default_model, default_capture) = default_store_paths(local_app_data.as_ref());
@@ -162,6 +164,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let sending = Arc::new(AtomicBool::new(false));
     let mut typing = TypingHost::new_with_session(session);
     typing.allow_terminal = cli.allow_terminal || settings.allow_terminal;
+    typing
+        .allow_terminal_flag
+        .store(typing.allow_terminal, std::sync::atomic::Ordering::SeqCst);
+    typing.app_policies.clone_from(&settings.app_policies);
     typing.set_show_suggestions(settings.show_suggestions);
     typing.set_initial_mode(if settings.starts_in_vietnamese() {
         Mode::Viet
@@ -178,7 +184,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let focus = Arc::new(FocusCache::new());
     seed_current_foreground(&focus);
     let context = Arc::new(ContextProjectionSlot::new());
-    bind_runtime_with_context(Arc::clone(&host), Arc::clone(&focus), Arc::clone(&context));
+    bind_runtime_with_context_and_settings(
+        Arc::clone(&host),
+        Arc::clone(&focus),
+        Arc::clone(&context),
+        Some(settings_path.clone()),
+    );
     #[cfg(windows)]
     let context_guard = StandaloneContextGuard::start(Arc::clone(&focus), context)?;
     startup_trace("context-guard");

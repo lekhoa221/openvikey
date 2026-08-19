@@ -1,7 +1,7 @@
 use openvikey_core::types::{InputMethod, TonePlacement};
 use openvikey_win::settings::{
     SETTINGS_VERSION, SettingsLoadError, SettingsV1, default_settings_path, load_settings,
-    save_settings,
+    mutate_settings, save_settings,
 };
 
 fn test_root(name: &str) -> std::path::PathBuf {
@@ -49,9 +49,17 @@ fn unknown_settings_version_is_not_silently_overwritten() {
     let root = test_root("unknown-version");
     let path = default_settings_path(Some(&root));
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(&path, br#"{"version":999}"#).unwrap();
+    let original = br#"{"version":999}"#;
+    std::fs::write(&path, original).unwrap();
 
     let error = load_settings(&path).unwrap_err();
-
     assert!(matches!(error, SettingsLoadError::UnsupportedVersion(999)));
+
+    let mutation_error =
+        mutate_settings(&path, |settings| settings.show_suggestions = false).unwrap_err();
+    assert!(matches!(
+        mutation_error,
+        SettingsLoadError::UnsupportedVersion(999)
+    ));
+    assert_eq!(std::fs::read(&path).unwrap(), original);
 }

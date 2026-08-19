@@ -19,5 +19,6 @@ pub mod settings;
 pub mod startup;
 pub mod sync;
 pub mod tray;
+pub mod ui_coordinator;
 
 pub use persist::HostShutdown;
