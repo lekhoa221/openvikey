@@ -304,6 +304,10 @@ fn explicit_accept_emits_a_visible_learning_notice() {
         .expect("learning notice");
     assert_eq!(notice.original_nfc, "ko");
     assert_eq!(notice.replacement_nfc, "không");
+    assert_eq!(notice.positive_delta, 1.0);
+    assert_eq!(notice.negative_delta, 0.0);
+    assert_eq!(notice.positive_total, 1.0);
+    assert_eq!(notice.negative_total, 0.0);
     assert!(notice.display_text().starts_with("Đã học:"));
 }
 

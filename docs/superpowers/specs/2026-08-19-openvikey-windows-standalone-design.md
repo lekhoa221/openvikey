@@ -289,6 +289,9 @@ English mode, sensitive/unknown field, terminal và denied app không mutate mod
 - Explicit accept: `Ctrl+.`.
 - Explicit reject: `Ctrl+,`.
 - Natural composition rewind: gõ sai, Backspace trong composition, gõ lại, commit.
+- Lazy reopen từ gần nhất: sau khi xóa dấu cách ngay sau token vừa commit, OpenViKey giữ raw keys của đúng token/cùng focus; phím Telex/VNI kế tiếp có thể tiếp tục composition (`xin chao t` + `BS BS f/2` → `xin chào`) mà không xóa và gõ lại cả từ.
+- Lazy reopen chỉ áp dụng khi raw keys render đúng token đang hiển thị; expansion/auto replacement khác raw, caret/focus break, shortcut passthrough, sensitive context hoặc đổi method/mode phải hủy anchor.
+- Lazy reopen là tiếp tục gõ bình thường, không tự tạo implicit evidence hoặc thông báo “Đã học”.
 - Candidate-matched rewrite tạo implicit evidence.
 - Unmatched rewrite có thể tạo personal pair; phải lặp lại trước khi promote.
 - Telex/VNI-form fix đủ an toàn có policy auto tại boundary.
@@ -309,12 +312,21 @@ RuleForgotten
 
 Typed text chỉ hiện trong local UI theo hành động người dùng; không console, telemetry hay network.
 
-Overlay cần phân biệt:
+Overlay dùng một capsule native nhỏ tại góc dưới-phải của monitor đang hoạt động, phía trên taskbar; không còn khung ba dòng che vùng nhập liệu:
+
+- gợi ý chỉ hiện top-1, vị trí/tổng số và hotkey nhận;
+- learning notice có cặp sửa, evidence vừa cộng và tổng positive/negative của đúng rule;
+- learning notice được ưu tiên 2,5 giây, candidate mới chỉ thay tại chỗ và không xếp chồng;
+- capsule không activate, click-through, tự ẩn và ẩn cưỡng bức khi đổi focus, mode E, tắt gợi ý hoặc vào fullscreen;
+- sensitive/password không được hiển thị capsule.
+
+Các trạng thái cần phân biệt:
 
 - “Gợi ý: …”;
-- “Đã ghi nhận sửa: X → Y”;
-- “Đã học gợi ý: X → Y”;
-- “Đã sửa: X → Y · Backspace/Ctrl+Shift+Z để hoàn tác”.
+- “Đã ghi nhận: X → Y · +1,5 điểm”;
+- “Đã học: X → Y · +1,0 điểm”;
+- “Đã tạo gợi ý cá nhân: X → Y”;
+- “Đã quên: X → Y · Điểm tích lũy 0”.
 
 ### 7.4 Learned-rules UI
 

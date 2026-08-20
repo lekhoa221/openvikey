@@ -159,15 +159,15 @@ impl AdaptiveModel {
         key: &RuleContextKey,
         event: &FeedbackEvent,
         allow_learning: bool,
-    ) {
+    ) -> (f64, f64) {
         if !allow_learning {
-            return;
+            return (0.0, 0.0);
         }
         let max_events = self.config.max_events_per_rule.max(1);
         let undo_window = self.config.auto_undo_window.max(1);
         let entry = self.entry_mut(key);
         if !entry.handled_feedback_seqs.insert(event.seq) {
-            return;
+            return (0.0, 0.0);
         }
         trim_set(&mut entry.handled_feedback_seqs, max_events);
 
@@ -235,6 +235,7 @@ impl AdaptiveModel {
         }
         trim_set(&mut entry.settled_auto_ids, max_events);
         trim_set(&mut entry.settled_suggestion_ids, max_events);
+        (positive_add, negative_add)
     }
 
     /// Persists one operational state transition when learning is allowed.
@@ -324,6 +325,16 @@ impl AdaptiveModel {
         }
         model.entries.sort_by(|a, b| a.key.cmp(&b.key));
         Ok(model)
+    }
+
+    /// Return the raw positive/negative evidence totals for one exact adaptive rule.
+    #[must_use]
+    pub fn evidence_totals(&self, key: &RuleContextKey) -> (f64, f64) {
+        self.entry(key).map_or((0.0, 0.0), |entry| {
+            entry.evidence.iter().fold((0.0, 0.0), |totals, item| {
+                (totals.0 + item.positive_add, totals.1 + item.negative_add)
+            })
+        })
     }
 
     /// Return owned rows without exposing mutable model internals.
@@ -454,6 +465,25 @@ impl AdaptiveModel {
             );
         }
         false
+    }
+
+    /// Return the number of observed corrections for one exact personal pair.
+    #[must_use]
+    pub fn personal_correction_count(
+        &self,
+        input_method: InputMethod,
+        original_nfc: &str,
+        replacement_nfc: &str,
+    ) -> u32 {
+        self.personal
+            .counts
+            .iter()
+            .find(|row| {
+                row.input_method == input_method
+                    && row.original_nfc == original_nfc
+                    && row.replacement_nfc == replacement_nfc
+            })
+            .map_or(0, |row| row.count)
     }
 
     #[must_use]

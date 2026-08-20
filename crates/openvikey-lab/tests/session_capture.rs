@@ -88,6 +88,7 @@ fn document_pop_removes_delimiter_then_token_and_reports_start_once() {
         "ko",
         Some(' '),
         "ko",
+        Some("ko".into()),
         None,
         InputMethod::Telex,
         Vec::new(),
@@ -96,6 +97,7 @@ fn document_pop_removes_delimiter_then_token_and_reports_start_once() {
 
     let first = document.pop_grapheme().unwrap();
     assert!(first.started_deleting.is_none());
+    assert_eq!(first.removed_delimiter, Some(' '));
     assert_eq!(document.rendered(), "ko");
 
     let second = document.pop_grapheme().unwrap();

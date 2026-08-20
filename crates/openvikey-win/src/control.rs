@@ -808,7 +808,7 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
         CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             w!("BUTTON"),
-            w!("Hiện khung gợi ý từ (Overlay)"),
+            w!("Hiện gợi ý gọn ở góc màn hình"),
             ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_AUTOCHECKBOX as u32),
             scale_dpi(204, dpi),
             scale_dpi(216, dpi),

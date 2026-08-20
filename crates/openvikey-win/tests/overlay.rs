@@ -1,5 +1,6 @@
-//! Overlay candidate line cap (display-only helper).
+//! Compact suggestion/learning capsule presentation helpers.
 
+use openvikey_session::session::{LearningNotice, LearningNoticeKind};
 use openvikey_win::overlay::{
     OverlayPresentation, overlay_display_lines, overlay_lines, overlay_presentation,
     overlay_presentation_if,
@@ -15,7 +16,11 @@ fn overlay_caps_at_three() {
 fn candidates_show_and_empty_candidates_hide_the_overlay() {
     assert_eq!(
         overlay_presentation(&["không".into(), "khổng".into()], 3),
-        OverlayPresentation::Visible(vec!["không".into(), "khổng".into()])
+        OverlayPresentation::Suggestion {
+            candidate: "không".into(),
+            position: 1,
+            total: 2,
+        }
     );
     assert_eq!(overlay_presentation(&[], 3), OverlayPresentation::Hidden);
 }
@@ -32,6 +37,22 @@ fn disabled_suggestions_hide_overlay_even_with_candidates() {
         overlay_display_lines(&candidates, 3, true),
         vec!["không".to_string(), "khổng".to_string()]
     );
+}
+
+#[test]
+fn learning_notice_exposes_delta_and_accumulated_points() {
+    let notice = LearningNotice {
+        kind: LearningNoticeKind::Accepted,
+        original_nfc: "paht".into(),
+        replacement_nfc: "phát".into(),
+        positive_delta: 1.0,
+        negative_delta: 0.0,
+        positive_total: 4.0,
+        negative_total: 0.2,
+    };
+    let text = notice.display_text();
+    assert!(text.contains("+1.0 điểm"));
+    assert!(text.contains("Tích lũy +4.0/-0.2"));
 }
 
 #[cfg(windows)]
@@ -53,12 +74,39 @@ fn windows_overlay_is_visible_with_text_and_hides_when_empty() {
     let text = String::from_utf16_lossy(&text[..usize::try_from(len).unwrap_or(0)]);
     assert!(text.contains("không"));
 
-    let mut rect = RECT::default();
-    unsafe { GetWindowRect(overlay.hwnd(), &raw mut rect).expect("overlay rect") };
-    assert!(rect.right > rect.left && rect.bottom > rect.top);
+    let mut suggestion_rect = RECT::default();
+    unsafe { GetWindowRect(overlay.hwnd(), &raw mut suggestion_rect).expect("overlay rect") };
+    assert!(
+        suggestion_rect.right > suggestion_rect.left
+            && suggestion_rect.bottom > suggestion_rect.top
+    );
+
+    let notice = LearningNotice {
+        kind: LearningNoticeKind::Accepted,
+        original_nfc: "paht".into(),
+        replacement_nfc: "phát".into(),
+        positive_delta: 1.0,
+        negative_delta: 0.0,
+        positive_total: 4.0,
+        negative_total: 0.2,
+    };
+    unsafe {
+        overlay.set_presentation(OverlayPresentation::Learning(notice));
+    }
+    let mut learning_buffer = [0u16; 192];
+    let len = unsafe { GetWindowTextW(overlay.hwnd(), &mut learning_buffer) };
+    let learning_text =
+        String::from_utf16_lossy(&learning_buffer[..usize::try_from(len).unwrap_or(0)]);
+    assert!(learning_text.contains("Đã học"));
+    assert!(learning_text.contains("+1.0 điểm"));
+    let mut learning_rect = RECT::default();
+    unsafe { GetWindowRect(overlay.hwnd(), &raw mut learning_rect).expect("learning rect") };
+    assert!(
+        learning_rect.bottom - learning_rect.top > suggestion_rect.bottom - suggestion_rect.top
+    );
 
     unsafe {
-        overlay.set_lines(&[]);
+        overlay.hide();
     }
     assert!(!unsafe { IsWindowVisible(overlay.hwnd()) }.as_bool());
 }

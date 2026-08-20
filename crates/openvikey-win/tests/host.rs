@@ -78,7 +78,7 @@ fn ordinary_composition_backspace_deletes_one_visible_grapheme() {
 }
 
 #[test]
-fn backspace_after_commit_passes_through_to_the_focused_app() {
+fn deleting_latest_space_preserves_an_exact_token_for_lazy_reopen() {
     let mut host = TypingHost::new_telex_fixture();
     for vk in [0x58u16, 0x49, 0x4E, 0x20] {
         host.handle_key(key(vk), 1);
@@ -89,9 +89,129 @@ fn backspace_after_commit_passes_through_to_the_focused_app() {
     assert_eq!(decision, KeyDecision::Pass);
     assert!(
         host.recorded.is_empty(),
-        "outside composition, the physical Backspace should perform the visible deletion"
+        "the physical Backspace should remove only the visible space"
     );
+    assert!(host.session.has_pending_reopen());
+    assert_eq!(host.last_injected_token, "xin");
+}
+
+#[test]
+fn telex_tone_key_reopens_the_previous_token_without_retyping_it() {
+    let mut host = TypingHost::new_telex_fixture();
+    for vk in [
+        0x58u16, 0x49, 0x4E, 0x20, // xin + space
+        0x43, 0x48, 0x41, 0x4F, 0x20, // chao + space
+        0x54, // t
+    ] {
+        host.handle_key(key(vk), 1);
+    }
+
+    host.handle_key(key(0x08), 2); // remove t
+    host.recorded.clear();
+    assert_eq!(host.handle_key(key(0x08), 3), KeyDecision::Pass); // remove space
+    assert!(host.session.has_pending_reopen());
+    assert!(host.recorded.is_empty());
+
+    assert!(matches!(
+        host.handle_key(key(0x46), 4), // f
+        KeyDecision::EatAndInject(InputKind::Key { logical: 'f', .. })
+    ));
+    assert_eq!(host.session.composition_text(), "chào");
+    assert_eq!(host.last_injected_token, "chào");
+    assert!(
+        host.session.take_learning_notice().is_none(),
+        "continuing a token is normal typing, not implicit correction evidence"
+    );
+    assert_eq!(
+        host.recorded,
+        [InjectCommand::Replace {
+            backspace_graphemes: 4,
+            text_nfc: "chào".into(),
+        }]
+    );
+}
+
+#[test]
+fn vni_tone_key_reopens_the_previous_token_without_retyping_it() {
+    let mut host = TypingHost::new_telex_fixture();
+    host.set_engine_config(
+        EngineConfig {
+            method: InputMethod::Vni,
+            tone_placement: TonePlacement::Modern,
+        },
+        0,
+    );
+    for vk in [
+        0x58u16, 0x49, 0x4E, 0x20, // xin + space
+        0x43, 0x48, 0x41, 0x4F, 0x20, // chao + space
+        0x54, // t
+    ] {
+        host.handle_key(key(vk), 1);
+    }
+
+    host.handle_key(key(0x08), 2);
+    host.recorded.clear();
+    assert_eq!(host.handle_key(key(0x08), 3), KeyDecision::Pass);
+    assert!(host.session.has_pending_reopen());
+
+    host.handle_key(key(0x32), 4); // 2
+    assert_eq!(host.session.composition_text(), "chào");
+    assert_eq!(host.last_injected_token, "chào");
+    assert_eq!(
+        host.recorded,
+        [InjectCommand::Replace {
+            backspace_graphemes: 4,
+            text_nfc: "chào".into(),
+        }]
+    );
+}
+
+#[test]
+fn caret_move_cancels_lazy_reopen_identity() {
+    let mut host = TypingHost::new_telex_fixture();
+    for vk in [0x58u16, 0x49, 0x4E, 0x20] {
+        host.handle_key(key(vk), 1);
+    }
+    assert_eq!(host.handle_key(key(0x08), 2), KeyDecision::Pass);
+    assert!(host.session.has_pending_reopen());
+
+    assert_eq!(
+        host.handle_key(key(0x25), 3),
+        KeyDecision::CaretBreakAndPass
+    );
+    assert!(!host.session.has_pending_reopen());
     assert!(host.last_injected_token.is_empty());
+}
+
+#[test]
+fn passthrough_shortcut_cancels_lazy_reopen_before_external_text_can_change() {
+    let mut host = TypingHost::new_telex_fixture();
+    for vk in [0x58u16, 0x49, 0x4E, 0x20] {
+        host.handle_key(key(vk), 1);
+    }
+    assert_eq!(host.handle_key(key(0x08), 2), KeyDecision::Pass);
+    assert!(host.session.has_pending_reopen());
+
+    let mut paste = key(0x56); // Ctrl+V
+    paste.control = true;
+    assert_eq!(host.handle_key(paste, 3), KeyDecision::Pass);
+    assert!(!host.session.has_pending_reopen());
+    assert!(host.last_injected_token.is_empty());
+}
+
+#[test]
+fn accepted_expansion_is_not_reopened_from_mismatched_raw_keys() {
+    let mut host = TypingHost::new_telex_fixture();
+    host.handle_key(key(0x4B), 1); // k
+    host.handle_key(key(0x4F), 2); // o
+    host.handle_hotkey(HostHotkey::AcceptTop, 3);
+    assert_eq!(host.last_injected_token, "không");
+
+    host.recorded.clear();
+    assert_eq!(host.handle_key(key(0x08), 4), KeyDecision::Pass);
+    assert!(!host.session.has_pending_reopen());
+    assert!(host.last_injected_token.is_empty());
+    assert!(host.recorded.is_empty());
 }
 
 #[test]

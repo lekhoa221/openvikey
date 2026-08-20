@@ -272,6 +272,7 @@ unsafe extern "system" fn foreground_callback(
 ) {
     if event == EVENT_OBJECT_FOCUS {
         crate::host::invalidate_context_runtime();
+        crate::overlay::dismiss_overlay();
         return;
     }
     if event == EVENT_SYSTEM_FOREGROUND {
@@ -281,7 +282,7 @@ unsafe extern "system" fn foreground_callback(
         let exe = exe_for_hwnd(hwnd);
         cache.set(hwnd.0 as isize, &exe);
         crate::host::invalidate_context_runtime();
-        crate::overlay::push_overlay_lines(&[]);
+        crate::overlay::dismiss_overlay();
     }
 }
 

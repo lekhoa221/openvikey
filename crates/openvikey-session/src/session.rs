@@ -79,11 +79,17 @@ pub enum LearningNoticeKind {
     Forgotten,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LearningNotice {
     pub kind: LearningNoticeKind,
     pub original_nfc: String,
     pub replacement_nfc: String,
+    /// Evidence added by the action that produced this notice.
+    pub positive_delta: f64,
+    pub negative_delta: f64,
+    /// Raw evidence totals for this exact rule after the action.
+    pub positive_total: f64,
+    pub negative_total: f64,
 }
 
 impl LearningNotice {
@@ -95,7 +101,23 @@ impl LearningNotice {
             LearningNoticeKind::Promoted => "Đã tạo gợi ý cá nhân",
             LearningNoticeKind::Forgotten => "Đã quên",
         };
-        format!("{action}: {} → {}", self.original_nfc, self.replacement_nfc)
+        if self.kind == LearningNoticeKind::Forgotten {
+            return format!(
+                "{action}: {} → {} · Điểm tích lũy 0",
+                self.original_nfc, self.replacement_nfc
+            );
+        }
+        let delta = if self.positive_delta > 0.0 && self.negative_delta > 0.0 {
+            format!("+{:.1}/-{:.1}", self.positive_delta, self.negative_delta)
+        } else if self.positive_delta > 0.0 {
+            format!("+{:.1}", self.positive_delta)
+        } else {
+            format!("-{:.1}", self.negative_delta)
+        };
+        format!(
+            "{action}: {} → {} · {delta} điểm · Tích lũy +{:.1}/-{:.1}",
+            self.original_nfc, self.replacement_nfc, self.positive_total, self.negative_total
+        )
     }
 }
 
@@ -142,6 +164,7 @@ pub struct LabSession {
     rewind: CompositionRewindMiner,
     intervention: InterventionConfig,
     pending_restore_raw: Option<String>,
+    pending_reopen: bool,
     last_learned: Option<LastLearned>,
     pending_learning_notice: Option<LearningNotice>,
 }
@@ -190,6 +213,7 @@ impl LabSession {
             rewind: CompositionRewindMiner::default(),
             intervention: InterventionConfig::win32(),
             pending_restore_raw: None,
+            pending_reopen: false,
             last_learned: None,
             pending_learning_notice: None,
         }
@@ -265,6 +289,13 @@ impl LabSession {
         }
         if matches!(event.kind, InputKind::InsertText { .. }) {
             self.rewind.invalidate();
+        }
+        if self.pending_reopen {
+            if matches!(event.kind, InputKind::Key { .. }) && allow_transform {
+                let _ = self.reopen_previous_token();
+            } else {
+                self.pending_reopen = false;
+            }
         }
 
         let before = self.engine.snapshot();
@@ -342,6 +373,7 @@ impl LabSession {
         self.last_left_token
             .clone_from(&self.left_context.prev_token_nfc);
         self.last_method = method;
+        let snapshot_raw_keys = snapshot.raw_keys.clone();
         let observation = SessionObservation {
             event_seq: event.seq,
             snapshot,
@@ -354,7 +386,14 @@ impl LabSession {
         let mut used_slice = false;
         for (text, delimiter) in commits {
             if !used_slice && !text.is_empty() {
-                self.commit_token(&text, delimiter, &slice, &event, allow_learning, method);
+                self.commit_token(
+                    &text,
+                    delimiter,
+                    &snapshot_raw_keys,
+                    &slice,
+                    &event,
+                    allow_learning,
+                );
                 used_slice = true;
             } else {
                 if text.is_empty() {
@@ -399,25 +438,33 @@ impl LabSession {
                 candidate_id: top.id,
             },
         };
-        self.learning
-            .model_mut()
-            .apply_feedback(&key, &feedback, allow_learning);
+        let (positive_delta, negative_delta) =
+            self.learning
+                .model_mut()
+                .apply_feedback(&key, &feedback, allow_learning);
         if allow_learning {
+            let (positive_total, negative_total) = self.learning.model().evidence_totals(&key);
             self.pending_learning_notice = Some(LearningNotice {
                 kind: LearningNoticeKind::Accepted,
                 original_nfc: key.original_nfc.clone(),
                 replacement_nfc: key.candidate_nfc.clone(),
+                positive_delta,
+                negative_delta,
+                positive_total,
+                negative_total,
             });
             self.last_learned = Some(LastLearned::Rule(key));
         }
         self.clear_auto_anchor();
         let candidate_nfc = top.text.clone();
         if was_composing {
+            let raw_keys = self.engine.snapshot().raw_keys;
             self.reset_engine(at_ms);
             self.document.push_commit(CommittedUnit::new(
                 top.text,
                 Some(' '),
                 self.last_original_nfc.clone(),
+                Some(raw_keys),
                 self.last_left_token.clone(),
                 self.last_method,
                 slice.candidates,
@@ -518,6 +565,7 @@ impl LabSession {
     pub fn clear_document_context(&mut self) {
         self.document = DocumentBuffer::new();
         self.left_context = LeftContext::default();
+        self.pending_reopen = false;
         self.invalidate_caret();
         self.last_slice = None;
         self.last_original_nfc.clear();
@@ -542,6 +590,7 @@ impl LabSession {
     /// Swap Telex/VNI/tone settings after the host has issued a caret break.
     pub fn set_engine_config(&mut self, config: EngineConfig) {
         self.engine.set_config(config);
+        self.pending_reopen = false;
         self.last_slice = None;
         self.last_original_nfc.clear();
         self.last_left_token = None;
@@ -642,6 +691,17 @@ impl LabSession {
             .map(|candidate| candidate.text.clone())
     }
 
+    /// Whether deleting the latest space left an exact committed token eligible for reopening.
+    #[must_use]
+    pub fn has_pending_reopen(&self) -> bool {
+        self.pending_reopen
+    }
+
+    /// Cancel a pending reopen when the host can no longer prove the visible token identity.
+    pub fn cancel_pending_reopen(&mut self) {
+        self.pending_reopen = false;
+    }
+
     #[must_use]
     pub fn candidate_texts(&self) -> Vec<String> {
         self.last_slice
@@ -677,6 +737,41 @@ impl LabSession {
             self.mining_snapshot = Some(unit);
         }
         self.sync_left_context();
+        self.pending_reopen =
+            outcome.removed_delimiter == Some(' ') && self.reopen_engine_for_last_token().is_some();
+    }
+
+    fn reopen_engine_for_last_token(&self) -> Option<Engine> {
+        if !self.engine.is_empty() {
+            return None;
+        }
+        let unit = self.document.last()?;
+        if unit.delimiter.is_some()
+            || unit.remaining_nfc != unit.full_token_nfc
+            || unit.input_method != self.engine.config().method
+        {
+            return None;
+        }
+        let raw_keys = unit.raw_keys.as_deref()?;
+        if raw_keys.is_empty() {
+            return None;
+        }
+        let mut reopened = self.engine.clone();
+        reopened.restore_raw_keys(raw_keys);
+        (reopened.rendered() == unit.full_token_nfc).then_some(reopened)
+    }
+
+    fn reopen_previous_token(&mut self) -> bool {
+        self.pending_reopen = false;
+        let Some(reopened) = self.reopen_engine_for_last_token() else {
+            return false;
+        };
+        let _ = self.document.pop_last();
+        self.engine = reopened;
+        self.last_slice = None;
+        self.clear_auto_anchor();
+        self.sync_left_context();
+        true
     }
 
     fn commits(actions: &[EngineAction], allow_transform: bool) -> Vec<(String, Option<char>)> {
@@ -787,11 +882,12 @@ impl LabSession {
         &mut self,
         text: &str,
         delimiter: Option<char>,
+        raw_keys: &str,
         slice: &CorrectionSlice,
         event: &InputEvent,
         allow_learning: bool,
-        method: InputMethod,
     ) {
+        let method = self.engine.config().method;
         let token_text = if let Some(EngineAction::ReplaceRange(action)) = &slice.action {
             self.last_auto_revision = Some(action.range.revision);
             self.last_auto_token = Some(action.replacement.clone());
@@ -807,6 +903,7 @@ impl LabSession {
             token_text.clone(),
             delimiter,
             self.last_original_nfc.clone(),
+            Some(raw_keys.to_string()),
             left_at_commit,
             method,
             slice.candidates.clone(),
@@ -835,6 +932,7 @@ impl LabSession {
             text.to_string(),
             delimiter,
             text.to_string(),
+            None,
             left_at_commit,
             method,
             Vec::new(),
@@ -920,13 +1018,19 @@ impl LabSession {
                 .unwrap_or("")
                 .to_string(),
         };
-        self.learning
+        let (positive_delta, negative_delta) = self
+            .learning
             .model_mut()
             .apply_feedback(&key, &feedback, true);
+        let (positive_total, negative_total) = self.learning.model().evidence_totals(&key);
         self.pending_learning_notice = Some(LearningNotice {
             kind: LearningNoticeKind::Observed,
             original_nfc: key.original_nfc.clone(),
             replacement_nfc: key.candidate_nfc.clone(),
+            positive_delta,
+            negative_delta,
+            positive_total,
+            negative_total,
         });
         self.last_learned = Some(LastLearned::Rule(key));
     }
@@ -942,13 +1046,20 @@ impl LabSession {
             RewindEvaluate::Ignored => {}
             RewindEvaluate::Matched { key, feedback } => {
                 if allow_learning {
-                    self.learning
+                    let (positive_delta, negative_delta) = self
+                        .learning
                         .model_mut()
                         .apply_feedback(&key, &feedback, true);
+                    let (positive_total, negative_total) =
+                        self.learning.model().evidence_totals(&key);
                     self.pending_learning_notice = Some(LearningNotice {
                         kind: LearningNoticeKind::Observed,
                         original_nfc: key.original_nfc.clone(),
                         replacement_nfc: key.candidate_nfc.clone(),
+                        positive_delta,
+                        negative_delta,
+                        positive_total,
+                        negative_total,
                     });
                     self.last_learned = Some(LastLearned::Rule(key));
                 }
@@ -959,26 +1070,42 @@ impl LabSession {
                 input_method,
             } => {
                 if allow_learning {
+                    let previous_count = self.learning.model().personal_correction_count(
+                        input_method,
+                        &original_nfc,
+                        &replacement_nfc,
+                    );
                     let promoted = self.learning.model_mut().record_personal_correction(
                         input_method,
                         original_nfc.clone(),
                         replacement_nfc.clone(),
                         true,
                     );
-                    self.pending_learning_notice = Some(LearningNotice {
-                        kind: if promoted {
-                            LearningNoticeKind::Promoted
-                        } else {
-                            LearningNoticeKind::Observed
-                        },
-                        original_nfc: original_nfc.clone(),
-                        replacement_nfc: replacement_nfc.clone(),
-                    });
-                    self.last_learned = Some(LastLearned::Personal {
+                    let count = self.learning.model().personal_correction_count(
                         input_method,
-                        original_nfc,
-                        replacement_nfc,
-                    });
+                        &original_nfc,
+                        &replacement_nfc,
+                    );
+                    if count > previous_count {
+                        self.pending_learning_notice = Some(LearningNotice {
+                            kind: if promoted {
+                                LearningNoticeKind::Promoted
+                            } else {
+                                LearningNoticeKind::Observed
+                            },
+                            original_nfc: original_nfc.clone(),
+                            replacement_nfc: replacement_nfc.clone(),
+                            positive_delta: f64::from(count - previous_count),
+                            negative_delta: 0.0,
+                            positive_total: f64::from(count),
+                            negative_total: 0.0,
+                        });
+                        self.last_learned = Some(LastLearned::Personal {
+                            input_method,
+                            original_nfc,
+                            replacement_nfc,
+                        });
+                    }
                 }
             }
         }
@@ -1020,6 +1147,10 @@ impl LabSession {
                     kind: LearningNoticeKind::Forgotten,
                     original_nfc: key.original_nfc,
                     replacement_nfc: key.candidate_nfc,
+                    positive_delta: 0.0,
+                    negative_delta: 0.0,
+                    positive_total: 0.0,
+                    negative_total: 0.0,
                 });
                 true
             }
@@ -1037,6 +1168,10 @@ impl LabSession {
                     kind: LearningNoticeKind::Forgotten,
                     original_nfc,
                     replacement_nfc,
+                    positive_delta: 0.0,
+                    negative_delta: 0.0,
+                    positive_total: 0.0,
+                    negative_total: 0.0,
                 });
                 true
             }
@@ -1055,12 +1190,17 @@ impl LabSession {
                 kind: LearningNoticeKind::Forgotten,
                 original_nfc: row.original_nfc.clone(),
                 replacement_nfc: row.candidate_nfc.clone(),
+                positive_delta: 0.0,
+                negative_delta: 0.0,
+                positive_total: 0.0,
+                negative_total: 0.0,
             });
         }
         changed
     }
 
     fn invalidate_caret(&mut self) {
+        self.pending_reopen = false;
         self.miner.invalidate_due_to_caret_break();
         self.rewind.invalidate();
         self.learning.invalidate_due_to_caret_break();
@@ -1129,6 +1269,7 @@ impl LabSession {
             rewind: self.rewind.clone(),
             intervention: self.intervention,
             pending_restore_raw: self.pending_restore_raw.clone(),
+            pending_reopen: self.pending_reopen,
             last_learned: self.last_learned.clone(),
             pending_learning_notice: self.pending_learning_notice.clone(),
         }
@@ -1169,6 +1310,7 @@ impl LabSession {
         self.rewind = checkpoint.rewind;
         self.intervention = checkpoint.intervention;
         self.pending_restore_raw = checkpoint.pending_restore_raw;
+        self.pending_reopen = checkpoint.pending_reopen;
         self.last_learned = checkpoint.last_learned;
         self.pending_learning_notice = checkpoint.pending_learning_notice;
     }
@@ -1195,6 +1337,7 @@ pub struct SessionInjectCheckpoint {
     rewind: CompositionRewindMiner,
     intervention: InterventionConfig,
     pending_restore_raw: Option<String>,
+    pending_reopen: bool,
     last_learned: Option<LastLearned>,
     pending_learning_notice: Option<LearningNotice>,
 }

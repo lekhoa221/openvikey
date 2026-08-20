@@ -267,13 +267,33 @@ fn lock_free_host_state(caps_lock: bool, alt: bool, meta: bool) -> HostState {
 }
 
 fn after_unlock(lines: &[String], mode: Option<Mode>, notify_persist: bool) {
+    after_unlock_with_notice(lines, None, mode, notify_persist);
+}
+
+fn after_unlock_with_notice(
+    lines: &[String],
+    notice: Option<openvikey_session::session::LearningNotice>,
+    mode: Option<Mode>,
+    notify_persist: bool,
+) {
     if notify_persist
         && let Some(rt) = RUNTIME.get()
         && let Some(notify) = rt.persist.get()
     {
         notify();
     }
-    crate::overlay::push_overlay_lines(lines);
+    let english_mode = mode == Some(Mode::English)
+        || (mode.is_none()
+            && RUNTIME
+                .get()
+                .is_some_and(|rt| mode_from_u8(rt.mode.load(Ordering::SeqCst)) == Mode::English));
+    if !suggestions_visible() || english_mode {
+        crate::overlay::dismiss_overlay();
+    } else if let Some(notice) = notice {
+        crate::overlay::push_learning_notice(notice);
+    } else {
+        crate::overlay::push_overlay_lines(lines);
+    }
     if let Some(mode) = mode {
         crate::tray::set_tray_mode(mode);
     }
@@ -291,6 +311,14 @@ fn dispatch_locked_key(
     let (state, foreground) = sample_host_state(caps_lock, alt, meta);
     let decision = decide(&raw, &state);
     if !needs_session(&decision) {
+        if state.context_state == ContextState::Sensitive {
+            crate::overlay::dismiss_overlay();
+        }
+        let cancels_reopen = state.context_state == ContextState::Sensitive
+            || (raw.down && (raw.control || alt || meta || matches!(raw.vk, 0x09 | 0x1B)));
+        if cancels_reopen && let Ok(mut guard) = host.try_lock() {
+            guard.cancel_reopen_anchor();
+        }
         return decision;
     }
     let Ok(mut guard) = host.try_lock() else {
@@ -324,14 +352,12 @@ fn dispatch_locked_key(
         guard.apply_context_projection(projection, at_ms);
     }
     let out = guard.handle_key(raw, at_ms);
-    let mut lines = guard.overlay_display_lines();
-    if let Some(notice) = guard.session.take_learning_notice() {
-        lines.insert(0, notice.display_text());
-    }
+    let lines = guard.overlay_display_lines();
+    let notice = guard.session.take_learning_notice();
     let mode = guard.mode;
     let notify_persist = guard.allow_learning_for_foreground();
     drop(guard);
-    after_unlock(&lines, Some(mode), notify_persist);
+    after_unlock_with_notice(&lines, notice, Some(mode), notify_persist);
     out
 }
 
@@ -551,7 +577,11 @@ pub fn set_show_suggestions_runtime(show: bool) {
     let lines = guard.overlay_display_lines();
     let ui_path = guard.ui_path.clone();
     drop(guard);
-    after_unlock(&lines, None, false);
+    if show {
+        after_unlock(&lines, None, false);
+    } else {
+        crate::overlay::dismiss_overlay();
+    }
     if let Some(path) = ui_path {
         let _ = crate::persist::save_ui_prefs(
             &path,
@@ -605,8 +635,9 @@ pub fn forget_last_rule_runtime() -> bool {
     let changed = guard.session.forget_last_rule();
     if changed {
         let lines = guard.overlay_display_lines();
+        let notice = guard.session.take_learning_notice();
         drop(guard);
-        after_unlock(&lines, None, true);
+        after_unlock_with_notice(&lines, notice, None, true);
     }
     changed
 }
@@ -620,8 +651,9 @@ pub fn forget_rule_runtime(row: &ModelInspectionRow) -> bool {
     let changed = guard.session.forget_inspection_row(row);
     if changed {
         let lines = guard.overlay_display_lines();
+        let notice = guard.session.take_learning_notice();
         drop(guard);
-        after_unlock(&lines, None, true);
+        after_unlock_with_notice(&lines, notice, None, true);
     }
     changed
 }
@@ -633,14 +665,19 @@ fn handle_tray_hotkey(hotkey: HostHotkey, at_ms: i64) {
     let mut guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
     guard.handle_hotkey(hotkey, at_ms);
     let mode = matches!(hotkey, HostHotkey::ToggleMode).then_some(guard.mode);
-    let mut lines = guard.overlay_display_lines();
-    if let Some(notice) = guard.session.take_learning_notice() {
-        lines.insert(0, notice.display_text());
-    }
+    let lines = guard.overlay_display_lines();
+    let notice = guard.session.take_learning_notice();
     let ui_path = guard.ui_path.clone();
     let show_suggestions = guard.show_suggestions;
     drop(guard);
-    after_unlock(&lines, mode, false);
+    if show_suggestions {
+        after_unlock_with_notice(&lines, notice, mode, false);
+    } else {
+        crate::overlay::dismiss_overlay();
+        if let Some(mode) = mode {
+            crate::tray::set_tray_mode(mode);
+        }
+    }
     if hotkey == HostHotkey::ToggleSuggestions
         && let Some(path) = ui_path
     {
@@ -914,8 +951,10 @@ impl TypingHost {
                     return on_try_lock_fail(&decision);
                 }
                 if composition_was_empty && self.session.composition_text().is_empty() {
-                    self.last_injected_token.clear();
-                    self.last_injected_hwnd = 0;
+                    if !self.session.has_pending_reopen() {
+                        self.last_injected_token.clear();
+                        self.last_injected_hwnd = 0;
+                    }
                     return KeyDecision::Pass;
                 }
             }
@@ -941,7 +980,15 @@ impl TypingHost {
             KeyDecision::Hotkey(hotkey) => {
                 self.handle_hotkey(*hotkey, at_ms);
             }
-            KeyDecision::Pass | KeyDecision::EatAndIgnore => {}
+            KeyDecision::Pass => {
+                if state.context_state == ContextState::Sensitive
+                    || (raw.down
+                        && (raw.control || self.alt || self.meta || matches!(raw.vk, 0x09 | 0x1B)))
+                {
+                    self.cancel_reopen_anchor();
+                }
+            }
+            KeyDecision::EatAndIgnore => {}
         }
         decision
     }
@@ -993,6 +1040,14 @@ impl TypingHost {
     }
 
     fn apply_typed(&mut self, kind: InputKind, at_ms: i64) -> Result<(), InjectError> {
+        let wants_reopen =
+            matches!(kind, InputKind::Key { .. }) && self.session.has_pending_reopen();
+        let can_reopen = wants_reopen
+            && !self.last_injected_token.is_empty()
+            && self.hwnd == self.last_injected_hwnd;
+        if wants_reopen && !can_reopen {
+            self.session.cancel_pending_reopen();
+        }
         let restoring_backspace = matches!(kind, InputKind::Backspace)
             && self.session.composition_text().is_empty()
             && !self.last_injected_token.is_empty();
@@ -1004,6 +1059,24 @@ impl TypingHost {
             allow_learning,
         };
         let obs = self.session.inject(kind, context, at_ms);
+        if can_reopen && !obs.snapshot.rendered.is_empty() {
+            let cmds = [InjectCommand::Replace {
+                backspace_graphemes: grapheme_len(&last_token),
+                text_nfc: obs.snapshot.rendered.clone(),
+            }];
+            if let Err(error) = self.apply_commands(&cmds) {
+                self.session.restore_inject_checkpoint(checkpoint);
+                self.session.cancel_pending_reopen();
+                return Err(error);
+            }
+            if !allow_learning {
+                self.session.restore_persistent_state(&checkpoint);
+            }
+            self.sent.clone_from(&obs.snapshot.rendered);
+            self.last_injected_token.clone_from(&obs.snapshot.rendered);
+            self.last_injected_hwnd = self.hwnd;
+            return Ok(());
+        }
         if restoring_backspace && !obs.snapshot.rendered.is_empty() {
             let cmds = [InjectCommand::Replace {
                 backspace_graphemes: grapheme_len(&last_token).saturating_add(1),
@@ -1090,6 +1163,13 @@ impl TypingHost {
         let _ = self.apply_commands(&cmds);
         self.sent = sent;
         self.inject_caret_break_without_persistence(at_ms);
+        self.cancel_reopen_anchor();
+    }
+
+    fn cancel_reopen_anchor(&mut self) {
+        self.session.cancel_pending_reopen();
+        self.last_injected_token.clear();
+        self.last_injected_hwnd = 0;
     }
 
     fn inject_caret_break_without_persistence(&mut self, at_ms: i64) {

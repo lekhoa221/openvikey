@@ -10,6 +10,8 @@ pub struct CommittedUnit {
     pub full_token_nfc: String,
     pub delimiter: Option<char>,
     pub original_nfc: String,
+    /// Ephemeral composition keystrokes used to reopen this exact token after deleting a space.
+    pub raw_keys: Option<String>,
     pub left_token_nfc: Option<String>,
     pub input_method: InputMethod,
     pub candidates: Vec<Candidate>,
@@ -21,6 +23,7 @@ impl CommittedUnit {
         token_nfc: impl Into<String>,
         delimiter: Option<char>,
         original_nfc: impl Into<String>,
+        raw_keys: Option<String>,
         left_token_nfc: Option<String>,
         input_method: InputMethod,
         candidates: Vec<Candidate>,
@@ -31,6 +34,7 @@ impl CommittedUnit {
             full_token_nfc: token_nfc,
             delimiter,
             original_nfc: original_nfc.into(),
+            raw_keys,
             left_token_nfc,
             input_method,
             candidates,
@@ -42,6 +46,7 @@ impl CommittedUnit {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PopOutcome {
     pub started_deleting: Option<CommittedUnit>,
+    pub removed_delimiter: Option<char>,
 }
 
 /// Committed tokens before the caret.
@@ -112,20 +117,19 @@ impl DocumentBuffer {
     }
 
     pub fn pop_grapheme(&mut self) -> Option<PopOutcome> {
-        let empty_after_delimiter = {
+        let removed_delimiter = {
             let unit = self.units.last_mut()?;
-            if unit.delimiter.take().is_some() {
-                Some(unit.remaining_nfc.is_empty())
-            } else {
-                None
-            }
+            unit.delimiter
+                .take()
+                .map(|delimiter| (delimiter, unit.remaining_nfc.is_empty()))
         };
-        if let Some(empty_token) = empty_after_delimiter {
+        if let Some((delimiter, empty_token)) = removed_delimiter {
             if empty_token {
                 self.units.pop();
             }
             return Some(PopOutcome {
                 started_deleting: None,
+                removed_delimiter: Some(delimiter),
             });
         }
         let unit = self.units.last_mut()?;
@@ -139,6 +143,7 @@ impl DocumentBuffer {
         }
         Some(PopOutcome {
             started_deleting: started,
+            removed_delimiter: None,
         })
     }
 }
