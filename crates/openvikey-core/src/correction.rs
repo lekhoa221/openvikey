@@ -221,7 +221,7 @@ pub fn run_learning_correction_slice(
     let Some(top) = slice.candidates.first() else {
         return slice;
     };
-    let rule = rule_key(snapshot, left_context, input_method, top);
+    let rule = candidate_rule_key(snapshot, left_context, input_method, top);
 
     if slice.decision == Some(DecisionState::Auto) {
         let valid_auto_edit = auto_edit.filter(|edit| {
@@ -253,7 +253,13 @@ pub fn run_learning_correction_slice(
     slice
 }
 
-fn rule_key(
+/// Stable learning key for a ranked candidate.
+///
+/// Rank may overwrite [`Candidate::source`] when NFC-identical candidates merge.
+/// Telex/VNI reconstructions still identify as [`CandidateSource::TelexFix`] and keep
+/// the `telex-fix:` / `vni-fix:` evidence id.
+#[must_use]
+pub fn candidate_rule_key(
     snapshot: &CompositionSnapshot,
     left_context: &LeftContext,
     input_method: InputMethod,
@@ -261,19 +267,37 @@ fn rule_key(
 ) -> RuleContextKey {
     RuleContextKey {
         input_method,
-        source: candidate.source,
+        source: if is_telex_fix_candidate(candidate) {
+            CandidateSource::TelexFix
+        } else {
+            candidate.source
+        },
         original_nfc: snapshot.normalized.clone(),
         candidate_nfc: candidate.text.clone(),
         left_token_nfc: left_context.prev_token_nfc.clone(),
-        source_rule_id: primary_rule_id(&candidate.evidence).to_string(),
+        source_rule_id: telex_fix_rule_id(candidate)
+            .unwrap_or_else(|| primary_rule_id(&candidate.evidence))
+            .to_string(),
     }
+}
+
+fn telex_fix_rule_id(candidate: &Candidate) -> Option<&str> {
+    candidate
+        .evidence
+        .split('+')
+        .find(|part| part.contains("telex-fix:") || part.contains("vni-fix:"))
 }
 
 fn primary_rule_id(evidence: &str) -> &str {
     evidence.split('+').next().unwrap_or("")
 }
 
-fn is_telex_fix_candidate(candidate: &Candidate) -> bool {
+/// True when a ranked candidate is a Telex/VNI misplaced-tone reconstruction.
+///
+/// Rank may keep a higher-scoring duplicate's [`CandidateSource`] after NFC merge,
+/// so callers must not trust `source == TelexFix` alone.
+#[must_use]
+pub fn is_telex_fix_candidate(candidate: &Candidate) -> bool {
     candidate.source == CandidateSource::TelexFix
         || candidate
             .evidence
@@ -297,27 +321,99 @@ pub fn unique_telex_fix_candidate(candidates: &[Candidate]) -> Option<&Candidate
     unique
 }
 
-/// TelexFix/VNI-fix cold-start auto: unique reconstruction, lexicon gates, delimiter policy.
+/// Unique Space/punct replacement that may be applied without `Ctrl+.`.
+///
+/// TelexFix keeps its reconstruction rule (may not be ranked first). Abbreviation
+/// applies only as a unique single-word top expansion. Fuzzy applies only when it
+/// is the sole ranked candidate and the typed token is long enough to be a typo
+/// rather than a guess. Diacritics and multi-word expansions never apply.
 #[must_use]
-pub fn telex_fix_policy_applies(
+pub fn boundary_assist_candidate<'a>(
     snapshot: &CompositionSnapshot,
-    candidates: &[Candidate],
+    candidates: &'a [Candidate],
     delimiter: Option<char>,
     config: InterventionConfig,
     lexicon: &Lexicon,
     allow_transform: bool,
+) -> Option<&'a Candidate> {
+    if !policy_auto_allowed(delimiter, config, allow_transform) {
+        return None;
+    }
+    if let Some(fix) = unique_telex_fix_candidate(candidates)
+        && lexicon_allows_replacement(lexicon, snapshot, fix)
+    {
+        return Some(fix);
+    }
+    unique_top_assist_candidate(snapshot, candidates, lexicon)
+}
+
+fn policy_auto_allowed(
+    delimiter: Option<char>,
+    config: InterventionConfig,
+    allow_transform: bool,
 ) -> bool {
-    if !allow_transform || !config.telex_fix_policy_auto {
-        return false;
+    allow_transform && config.telex_fix_policy_auto && config.policy_delimiters.allows(delimiter)
+}
+
+fn lexicon_allows_replacement(
+    lexicon: &Lexicon,
+    snapshot: &CompositionSnapshot,
+    candidate: &Candidate,
+) -> bool {
+    !lexicon.contains(&snapshot.normalized) && lexicon.contains(&candidate.text)
+}
+
+fn unique_top_assist_candidate<'a>(
+    snapshot: &CompositionSnapshot,
+    candidates: &'a [Candidate],
+    lexicon: &Lexicon,
+) -> Option<&'a Candidate> {
+    let top = candidates.first()?;
+    if !lexicon_allows_replacement(lexicon, snapshot, top) {
+        return None;
     }
-    if !config.policy_delimiters.allows(delimiter) {
-        return false;
+    if top.text == snapshot.normalized || top.text == snapshot.rendered {
+        return None;
     }
-    let Some(fix) = unique_telex_fix_candidate(candidates) else {
-        return false;
-    };
-    if lexicon.contains(&snapshot.normalized) {
-        return false;
+    match top.source {
+        CandidateSource::Abbreviation => unique_abbrev_expansion(top, candidates),
+        CandidateSource::Fuzzy => {
+            if fuzzy_token_long_enough(snapshot) && candidates.len() == 1 {
+                Some(top)
+            } else {
+                None
+            }
+        }
+        CandidateSource::TelexFix | CandidateSource::Diacritics | CandidateSource::Personal => None,
     }
-    lexicon.contains(&fix.text)
+}
+
+fn fuzzy_token_long_enough(snapshot: &CompositionSnapshot) -> bool {
+    snapshot
+        .normalized
+        .chars()
+        .filter(|ch| ch.is_alphabetic())
+        .count()
+        >= 4
+}
+
+fn unique_abbrev_expansion<'a>(
+    top: &'a Candidate,
+    candidates: &'a [Candidate],
+) -> Option<&'a Candidate> {
+    if top.text.split_whitespace().nth(1).is_some() {
+        return None;
+    }
+    let mut unique_text: Option<&str> = None;
+    for candidate in candidates {
+        if candidate.source != CandidateSource::Abbreviation {
+            continue;
+        }
+        match unique_text {
+            None => unique_text = Some(candidate.text.as_str()),
+            Some(text) if text == candidate.text => {}
+            Some(_) => return None,
+        }
+    }
+    (unique_text == Some(top.text.as_str())).then_some(top)
 }

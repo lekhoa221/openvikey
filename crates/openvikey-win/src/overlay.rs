@@ -676,12 +676,14 @@ mod hwnd_overlay {
             LearningNoticeKind::Observed => "Đã ghi nhận",
             LearningNoticeKind::Promoted => "Gợi ý cá nhân",
             LearningNoticeKind::Forgotten => "Đã quên",
+            LearningNoticeKind::Corrected => "Đã sửa",
         };
         let left = scale_dpi(14, dpi);
         let title_bottom = scale_dpi(31, dpi).min(height);
         let action_width = match notice.kind {
             LearningNoticeKind::Observed => 104,
             LearningNoticeKind::Promoted => 116,
+            LearningNoticeKind::Corrected => 72,
             _ => 76,
         };
         let action_right = scale_dpi(action_width, dpi);
@@ -708,6 +710,8 @@ mod hwnd_overlay {
 
         let detail = if notice.kind == LearningNoticeKind::Forgotten {
             "Điểm tích lũy đã trở về 0".to_string()
+        } else if notice.kind == LearningNoticeKind::Corrected {
+            "Backspace để hoàn tác".to_string()
         } else {
             let delta = if notice.positive_delta > 0.0 && notice.negative_delta > 0.0 {
                 format!(

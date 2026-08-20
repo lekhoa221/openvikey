@@ -140,22 +140,25 @@ BƯỚC 7 — KIỂM TRA GỢI Ý VÀ LEARNING
 
    ko
 
-3. Kỳ vọng overlay có gợi ý không.
-4. Nhấn Ctrl+.
-5. Kỳ vọng text thành:
+   rồi Space.
+
+3. Kỳ vọng text thành:
 
    không
 
-6. Overlay phải có thông báo dạng:
-
-   Đã học: ko → không
-
-7. Click phải tray → Cài đặt và rule đã học...
-8. Kỳ vọng thấy rule ko → không hoặc rule đã ghi nhận tương ứng.
-9. Có thể thử:
-   - Ctrl+,          từ chối top suggestion
-   - Ctrl+Shift+Z    hoàn tác Auto gần nhất
-   - Ctrl+Shift+.    quên rule vừa học
+   Overlay: Đã sửa: ko → không · Backspace để hoàn tác
+4. Backspace ngay. Kỳ vọng lại composition `ko`.
+5. Gõ lại `ko` + Space, rồi gõ tiếp (không Backspace).
+6. Gõ `ntn` + Space. Kỳ vọng vẫn `ntn` (không thành `nên` hay `như thế nào`).
+7. Gõ `khogn` + Space. Kỳ vọng thành `không` kèm overlay Đã sửa.
+8. Gõ `ch2ao` + Space. Kỳ vọng thành `chào` và **không** nháy capsule Đã sửa.
+9. Click phải tray → Cài đặt và rule đã học...
+10. Có thể thử:
+   - `khong` + Space     chỉ gợi ý, không tự thay
+   - Ctrl+.              nhận gợi ý tường minh
+   - Ctrl+,              từ chối top suggestion
+   - Ctrl+Shift+Z        hoàn tác Auto gần nhất
+   - Ctrl+Shift+.        quên rule vừa học
 
 Lưu ý: một typo không lập tức trở thành Auto vĩnh viễn. Vòng đời là:
 

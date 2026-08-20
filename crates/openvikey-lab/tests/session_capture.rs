@@ -1002,6 +1002,178 @@ fn personal_pair_promotes_on_second_composition_session() {
     );
 }
 
+fn khong_lexicon() -> Lexicon {
+    Lexicon::from_entries(
+        [LexiconEntry {
+            token_nfc: "không".to_string(),
+            frequency: 100,
+        }],
+        [],
+        Some("session-khong"),
+    )
+}
+
+fn nen_lexicon() -> Lexicon {
+    Lexicon::from_entries(
+        [
+            LexiconEntry {
+                token_nfc: "nên".to_string(),
+                frequency: 50,
+            },
+            LexiconEntry {
+                token_nfc: "không".to_string(),
+                frequency: 100,
+            },
+        ],
+        [],
+        Some("session-nen"),
+    )
+}
+
+#[test]
+fn abbrev_boundary_assist_replaces_on_space_without_accept_mass() {
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    type_keys(&mut session, "ko", 0);
+    let last = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        10,
+    );
+    match &last.action {
+        Some(EngineAction::ReplaceRange(action)) => {
+            assert_eq!(action.original, "ko");
+            assert_eq!(action.replacement, "không");
+        }
+        other => panic!("expected abbrev ReplaceRange, got {other:?}"),
+    }
+    let notice = session
+        .take_learning_notice()
+        .expect("boundary assist must show a notice");
+    assert_eq!(notice.original_nfc, "ko");
+    assert_eq!(notice.replacement_nfc, "không");
+    assert!(
+        notice.display_text().starts_with("Đã sửa:"),
+        "notice was {}",
+        notice.display_text()
+    );
+    assert!(
+        notice.display_text().contains("Backspace"),
+        "notice was {}",
+        notice.display_text()
+    );
+    assert_eq!(session.model().positive_mass(&ko_rule(), 10), 0.0);
+    session.inject(InputKind::Backspace, InputContext::default(), 11);
+    assert_eq!(session.composition_text(), "ko");
+    assert!(!session.document_text().contains("không"));
+}
+
+#[test]
+fn two_abbrev_assist_undos_stop_further_space_auto() {
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    type_keys(&mut session, "ko", 0);
+    for (space_ms, undo_ms) in [(10, 11), (20, 21)] {
+        let last = session.inject(
+            InputKind::Boundary { delimiter: ' ' },
+            InputContext::default(),
+            space_ms,
+        );
+        match &last.action {
+            Some(EngineAction::ReplaceRange(action)) => {
+                assert_eq!(action.replacement, "không");
+            }
+            other => panic!("expected assist replace before two undos, got {other:?}"),
+        }
+        session.inject(InputKind::Backspace, InputContext::default(), undo_ms);
+        assert_eq!(session.composition_text(), "ko");
+    }
+    let third = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        30,
+    );
+    assert!(
+        !matches!(third.action, Some(EngineAction::ReplaceRange(_))),
+        "abbrev/fuzzy assist must yield after two Backspace undos, got {:?}",
+        third.action
+    );
+    assert!(
+        session.document_text().contains("ko"),
+        "document was {}",
+        session.document_text()
+    );
+    assert!(!session.document_text().contains("không"));
+}
+
+#[test]
+fn ntn_space_does_not_boundary_assist_a_guess() {
+    let mut session = LabSession::new(vni_config(), nen_lexicon());
+    type_keys(&mut session, "ntn", 0);
+    let last = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        10,
+    );
+    assert!(
+        !matches!(&last.action, Some(EngineAction::ReplaceRange(_))),
+        "ntn must stay typed; got {:?}",
+        last.action
+    );
+    assert!(session.take_learning_notice().is_none());
+}
+
+#[test]
+fn fuzzy_boundary_assist_replaces_unique_typo_on_space() {
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    type_keys(&mut session, "khogn", 0);
+    let last = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        10,
+    );
+    match &last.action {
+        Some(EngineAction::ReplaceRange(action)) => {
+            assert_eq!(action.replacement, "không");
+        }
+        other => panic!("expected fuzzy ReplaceRange, got {other:?}"),
+    }
+}
+
+#[test]
+fn diacritics_does_not_boundary_assist_on_space() {
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    type_keys(&mut session, "khong", 0);
+    let last = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        10,
+    );
+    assert!(
+        !matches!(last.action, Some(EngineAction::ReplaceRange(_))),
+        "khong must stay suggestion-only, got {:?}",
+        last.action
+    );
+    assert!(
+        session.document_text().contains("khong"),
+        "document was {}",
+        session.document_text()
+    );
+}
+
+#[test]
+fn telex_fix_policy_auto_stays_silent() {
+    let mut session = LabSession::new(vni_config(), chao_lexicon());
+    type_keys(&mut session, "ch2ao", 0);
+    session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        10,
+    );
+    assert!(
+        session.take_learning_notice().is_none(),
+        "TelexFix auto must not emit a learning notice"
+    );
+}
+
 #[test]
 fn telex_fix_policy_auto_on_space_and_undo_restores_raw_keys() {
     let mut session = LabSession::new(vni_config(), chao_lexicon());
@@ -1035,6 +1207,38 @@ fn telex_fix_policy_auto_on_space_and_undo_restores_raw_keys() {
         after_mass < 0.1,
         "immediate restore must not apply Undo mass, got {after_mass}"
     );
+}
+
+#[test]
+fn two_telex_fix_undos_do_not_disable_space_auto() {
+    let mut session = LabSession::new(vni_config(), chao_lexicon());
+    type_keys(&mut session, "ch2ao", 0);
+    for (space_ms, undo_ms) in [(10, 11), (20, 21)] {
+        let last = session.inject(
+            InputKind::Boundary { delimiter: ' ' },
+            InputContext::default(),
+            space_ms,
+        );
+        match &last.action {
+            Some(EngineAction::ReplaceRange(action)) => {
+                assert_eq!(action.replacement, "chào");
+            }
+            other => panic!("expected TelexFix replace, got {other:?}"),
+        }
+        session.inject(InputKind::Backspace, InputContext::default(), undo_ms);
+        assert_eq!(session.composition_text(), "ch2ao");
+    }
+    let third = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        30,
+    );
+    match &third.action {
+        Some(EngineAction::ReplaceRange(action)) => {
+            assert_eq!(action.replacement, "chào");
+        }
+        other => panic!("TelexFix must stay deterministic after undos, got {other:?}"),
+    }
 }
 
 #[test]

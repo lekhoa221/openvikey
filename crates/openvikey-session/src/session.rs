@@ -6,8 +6,8 @@ use crate::capture::{
 };
 use crate::document::{CommittedUnit, DocumentBuffer};
 use openvikey_core::correction::{
-    AutoEditContext, CorrectionSlice, InterventionConfig, run_learning_correction_slice,
-    telex_fix_policy_applies, unique_telex_fix_candidate,
+    AutoEditContext, CorrectionSlice, InterventionConfig, boundary_assist_candidate,
+    candidate_rule_key, is_telex_fix_candidate, run_learning_correction_slice,
 };
 use openvikey_core::decision::{DecisionConfig, DecisionState};
 use openvikey_core::engine::{Engine, EngineConfig};
@@ -22,11 +22,11 @@ use openvikey_core::generate::personal::PersonalGenerator;
 use openvikey_core::generate::telex_fix::TelexFixGenerator;
 use openvikey_core::generate::{Generator, LeftContext};
 use openvikey_core::lexicon::Lexicon;
-use openvikey_core::model::{AdaptiveModel, ModelError, RuleContextKey};
+use openvikey_core::model::{AdaptiveModel, ModelError, ModelView, RuleContextKey};
 use openvikey_core::rank::ScoreConfig;
 use openvikey_core::types::{
-    Candidate, CandidateSource, CompositionSnapshot, EditRange, EngineAction, FeedbackEvent,
-    FeedbackKind, InputContext, InputEvent, InputKind, InputMethod, Modifiers, RangeBasis,
+    Candidate, CompositionSnapshot, EditRange, EngineAction, FeedbackEvent, FeedbackKind,
+    InputContext, InputEvent, InputKind, InputMethod, Modifiers, RangeBasis,
 };
 use serde::Serialize;
 use unicode_normalization::UnicodeNormalization;
@@ -77,6 +77,7 @@ pub enum LearningNoticeKind {
     Observed,
     Promoted,
     Forgotten,
+    Corrected,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -100,6 +101,12 @@ impl LearningNotice {
             LearningNoticeKind::Observed => "Đã ghi nhận",
             LearningNoticeKind::Promoted => "Đã tạo gợi ý cá nhân",
             LearningNoticeKind::Forgotten => "Đã quên",
+            LearningNoticeKind::Corrected => {
+                return format!(
+                    "Đã sửa: {} → {} · Backspace để hoàn tác",
+                    self.original_nfc, self.replacement_nfc
+                );
+            }
         };
         if self.kind == LearningNoticeKind::Forgotten {
             return format!(
@@ -164,6 +171,7 @@ pub struct LabSession {
     rewind: CompositionRewindMiner,
     intervention: InterventionConfig,
     pending_restore_raw: Option<String>,
+    pending_restore_learn_undo: bool,
     pending_reopen: bool,
     last_learned: Option<LastLearned>,
     pending_learning_notice: Option<LearningNotice>,
@@ -213,6 +221,7 @@ impl LabSession {
             rewind: CompositionRewindMiner::default(),
             intervention: InterventionConfig::win32(),
             pending_restore_raw: None,
+            pending_restore_learn_undo: false,
             pending_reopen: false,
             last_learned: None,
             pending_learning_notice: None,
@@ -301,6 +310,7 @@ impl LabSession {
         let before = self.engine.snapshot();
         if before.is_empty() && !matches!(event.kind, InputKind::Backspace) {
             self.pending_restore_raw = None;
+            self.pending_restore_learn_undo = false;
         }
         let peak_candidates = self
             .last_slice
@@ -331,7 +341,7 @@ impl LabSession {
 
         if matches!(event.kind, InputKind::Backspace)
             && before.is_empty()
-            && self.try_restore_policy_undo(event.at_ms)
+            && self.try_restore_policy_undo(event.at_ms, allow_learning)
         {
             let snapshot = self.engine.snapshot();
             return SessionObservation {
@@ -828,39 +838,30 @@ impl LabSession {
         );
         if at_commit
             && !matches!(&slice.action, Some(EngineAction::ReplaceRange(_)))
-            && telex_fix_policy_applies(
-                snapshot,
-                &slice.candidates,
-                delimiter,
-                self.intervention,
-                &self.lexicon,
-                event.context.allow_transform,
-            )
             && let (Some(fix), Some(edit)) = (
-                unique_telex_fix_candidate(&slice.candidates).cloned(),
+                boundary_assist_candidate(
+                    snapshot,
+                    &slice.candidates,
+                    delimiter,
+                    self.intervention,
+                    &self.lexicon,
+                    event.context.allow_transform,
+                )
+                .cloned(),
                 auto_edit,
             )
         {
+            let telex_fix = is_telex_fix_candidate(&fix);
+            let rule = candidate_rule_key(snapshot, &self.left_context, method, &fix);
+            if !telex_fix && !self.learning.model().auto_allowed(&rule, event.at_ms) {
+                return slice;
+            }
             let action = openvikey_core::types::ReplaceRangeAction {
                 edit_id: edit.edit_id,
                 range: edit.range,
                 original: snapshot.rendered.clone(),
                 replacement: fix.text.clone(),
                 delimiter: edit.delimiter,
-            };
-            let rule = RuleContextKey {
-                input_method: method,
-                source: CandidateSource::TelexFix,
-                original_nfc: snapshot.normalized.clone(),
-                candidate_nfc: fix.text.clone(),
-                left_token_nfc: self.left_context.prev_token_nfc.clone(),
-                source_rule_id: fix
-                    .evidence
-                    .split('+')
-                    .find(|part| part.contains("-fix:move-tone-"))
-                    .or_else(|| fix.evidence.split('+').next())
-                    .unwrap_or("")
-                    .to_string(),
             };
             self.learning.record_auto_edit(
                 rule.clone(),
@@ -869,6 +870,18 @@ impl LabSession {
                 event.context.allow_learning,
             );
             self.pending_restore_raw = Some(snapshot.raw_keys.clone());
+            self.pending_restore_learn_undo = !telex_fix;
+            if !telex_fix {
+                self.pending_learning_notice = Some(LearningNotice {
+                    kind: LearningNoticeKind::Corrected,
+                    original_nfc: snapshot.normalized.clone(),
+                    replacement_nfc: fix.text.clone(),
+                    positive_delta: 0.0,
+                    negative_delta: 0.0,
+                    positive_total: 0.0,
+                    negative_total: 0.0,
+                });
+            }
             if event.context.allow_learning {
                 self.last_learned = Some(LastLearned::Rule(rule));
             }
@@ -956,6 +969,7 @@ impl LabSession {
         self.last_auto_revision = None;
         self.last_auto_token = None;
         self.pending_restore_raw = None;
+        self.pending_restore_learn_undo = false;
     }
 
     fn leftover_committed_prefix(&self) -> bool {
@@ -1111,7 +1125,7 @@ impl LabSession {
         }
     }
 
-    fn try_restore_policy_undo(&mut self, at_ms: i64) -> bool {
+    fn try_restore_policy_undo(&mut self, at_ms: i64, allow_learning: bool) -> bool {
         let Some(raw) = self.pending_restore_raw.clone() else {
             return false;
         };
@@ -1121,10 +1135,10 @@ impl LabSession {
         let Some(revision) = self.last_auto_revision else {
             return false;
         };
-        let _ = at_ms;
+        let learn_undo = allow_learning && self.pending_restore_learn_undo;
         if self
             .learning
-            .undo(revision, self.next_seq, at_ms, false)
+            .undo(revision, self.next_seq, at_ms, learn_undo)
             .is_none()
         {
             return false;
@@ -1133,6 +1147,7 @@ impl LabSession {
         self.document.pop_last();
         self.engine.restore_raw_keys(&raw);
         self.pending_restore_raw = None;
+        self.pending_restore_learn_undo = false;
         self.clear_auto_anchor();
         self.sync_left_context();
         self.last_slice = None;
@@ -1213,14 +1228,18 @@ impl LabSession {
     }
 
     fn top_rule_key(&self, top: &Candidate) -> RuleContextKey {
-        RuleContextKey {
-            input_method: self.last_method,
-            source: top.source,
-            original_nfc: self.last_original_nfc.clone(),
-            candidate_nfc: top.text.clone(),
-            left_token_nfc: self.last_left_token.clone(),
-            source_rule_id: top.evidence.split('+').next().unwrap_or("").to_string(),
-        }
+        candidate_rule_key(
+            &CompositionSnapshot::new(
+                0,
+                self.last_original_nfc.clone(),
+                self.last_original_nfc.clone(),
+            ),
+            &LeftContext {
+                prev_token_nfc: self.last_left_token.clone(),
+            },
+            self.last_method,
+            top,
+        )
     }
 
     fn reset_engine(&mut self, at_ms: i64) {
@@ -1269,6 +1288,7 @@ impl LabSession {
             rewind: self.rewind.clone(),
             intervention: self.intervention,
             pending_restore_raw: self.pending_restore_raw.clone(),
+            pending_restore_learn_undo: self.pending_restore_learn_undo,
             pending_reopen: self.pending_reopen,
             last_learned: self.last_learned.clone(),
             pending_learning_notice: self.pending_learning_notice.clone(),
@@ -1310,6 +1330,7 @@ impl LabSession {
         self.rewind = checkpoint.rewind;
         self.intervention = checkpoint.intervention;
         self.pending_restore_raw = checkpoint.pending_restore_raw;
+        self.pending_restore_learn_undo = checkpoint.pending_restore_learn_undo;
         self.pending_reopen = checkpoint.pending_reopen;
         self.last_learned = checkpoint.last_learned;
         self.pending_learning_notice = checkpoint.pending_learning_notice;
@@ -1337,6 +1358,7 @@ pub struct SessionInjectCheckpoint {
     rewind: CompositionRewindMiner,
     intervention: InterventionConfig,
     pending_restore_raw: Option<String>,
+    pending_restore_learn_undo: bool,
     pending_reopen: bool,
     last_learned: Option<LastLearned>,
     pending_learning_notice: Option<LearningNotice>,

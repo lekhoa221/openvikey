@@ -291,6 +291,115 @@ fn vni_tone_before_vowel_do_auto_replaces_on_space() {
 }
 
 #[test]
+fn ntn_space_does_not_auto_replace_a_guess() {
+    let session = LabSession::new(vni_engine(), development_lexicon());
+    let mut host = TypingHost::new_with_session(session);
+    type_ascii(&mut host, "ntn");
+    host.recorded.clear();
+    host.handle_key(key(0x20), 10);
+    assert_eq!(host.last_injected_token, "ntn");
+    assert!(
+        !host.recorded.iter().any(|cmd| matches!(
+            cmd,
+            InjectCommand::Replace { text_nfc, .. } if text_nfc == "nên" || text_nfc.contains(' ')
+        )),
+        "ntn must not Auto-replace; got {:?}",
+        host.recorded
+    );
+}
+
+#[test]
+fn abbrev_space_replaces_without_ctrl_period() {
+    let session = LabSession::new(vni_engine(), development_lexicon());
+    let mut host = TypingHost::new_with_session(session);
+    type_ascii(&mut host, "ko");
+    host.recorded.clear();
+    host.handle_key(key(0x20), 10);
+    assert!(
+        host.recorded.iter().any(|cmd| matches!(
+            cmd,
+            InjectCommand::Replace { text_nfc, .. } if text_nfc == "không"
+        )),
+        "ko + space must inject không; got {:?}",
+        host.recorded
+    );
+    assert_eq!(host.last_injected_token, "không");
+    let notice = host
+        .session
+        .take_learning_notice()
+        .expect("boundary assist notice");
+    assert!(
+        notice.display_text().starts_with("Đã sửa:"),
+        "notice was {}",
+        notice.display_text()
+    );
+    assert_eq!(
+        host.session
+            .model()
+            .positive_mass(&ko_abbrev_rule_for(InputMethod::Vni), 10),
+        0.0
+    );
+}
+
+#[test]
+fn fuzzy_space_replaces_unique_typo_without_ctrl_period() {
+    let session = LabSession::new(vni_engine(), development_lexicon());
+    let mut host = TypingHost::new_with_session(session);
+    type_ascii(&mut host, "khogn");
+    host.recorded.clear();
+    host.handle_key(key(0x20), 10);
+    assert_eq!(host.last_injected_token, "không");
+    assert!(
+        host.recorded.iter().any(|cmd| matches!(
+            cmd,
+            InjectCommand::Replace { text_nfc, .. } if text_nfc == "không"
+        )),
+        "khogn + space must inject không; got {:?}",
+        host.recorded
+    );
+    let notice = host
+        .session
+        .take_learning_notice()
+        .expect("unique fuzzy notice");
+    assert!(
+        notice.display_text().starts_with("Đã sửa:"),
+        "notice was {}",
+        notice.display_text()
+    );
+}
+
+#[test]
+fn unaccented_khong_space_does_not_auto_replace() {
+    let session = LabSession::new(vni_engine(), development_lexicon());
+    let mut host = TypingHost::new_with_session(session);
+    type_ascii(&mut host, "khong");
+    host.recorded.clear();
+    host.handle_key(key(0x20), 10);
+    assert_eq!(host.last_injected_token, "khong");
+    assert!(
+        !host.recorded.iter().any(|cmd| matches!(
+            cmd,
+            InjectCommand::Replace { text_nfc, .. } if text_nfc == "không"
+        )),
+        "khong must not Auto-replace; got {:?}",
+        host.recorded
+    );
+}
+
+#[test]
+fn telex_fix_auto_stays_silent() {
+    let session = LabSession::new(vni_engine(), development_lexicon());
+    let mut host = TypingHost::new_with_session(session);
+    type_ascii(&mut host, "ch2ao");
+    host.handle_key(key(0x20), 10);
+    assert_eq!(host.last_injected_token, "chào");
+    assert!(
+        host.session.take_learning_notice().is_none(),
+        "TelexFix auto must not flash a learning capsule"
+    );
+}
+
+#[test]
 fn explicit_accept_emits_a_visible_learning_notice() {
     let session = LabSession::new(vni_engine(), development_lexicon());
     let mut host = TypingHost::new_with_session(session);

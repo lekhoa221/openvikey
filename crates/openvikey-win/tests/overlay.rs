@@ -40,6 +40,22 @@ fn disabled_suggestions_hide_overlay_even_with_candidates() {
 }
 
 #[test]
+fn corrected_notice_tells_the_user_to_backspace() {
+    let notice = LearningNotice {
+        kind: LearningNoticeKind::Corrected,
+        original_nfc: "ko".into(),
+        replacement_nfc: "không".into(),
+        positive_delta: 0.0,
+        negative_delta: 0.0,
+        positive_total: 0.0,
+        negative_total: 0.0,
+    };
+    let text = notice.display_text();
+    assert!(text.starts_with("Đã sửa: ko → không"));
+    assert!(text.contains("Backspace"));
+}
+
+#[test]
 fn learning_notice_exposes_delta_and_accumulated_points() {
     let notice = LearningNotice {
         kind: LearningNoticeKind::Accepted,
