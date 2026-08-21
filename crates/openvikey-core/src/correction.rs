@@ -5,7 +5,7 @@
 use crate::decision::{DecisionConfig, DecisionState};
 use crate::feedback::LearningSession;
 use crate::generate::{Generator, LeftContext, collect_candidates};
-use crate::intervention::{InterventionAction, plan_intervention};
+use crate::intervention::{InterventionAction, InterventionPlan, plan_intervention};
 use crate::learning_config::LearningConfigV2;
 use crate::lexicon::Lexicon;
 use crate::model::{ModelView, RuleContextKey};
@@ -79,6 +79,7 @@ pub struct CorrectionSlice {
     pub candidates: Vec<Candidate>,
     pub decision: Option<DecisionState>,
     pub action: Option<EngineAction>,
+    pub plan: Option<InterventionPlan>,
 }
 
 /// Caller-owned identity and semantic range for an auto replacement.
@@ -115,6 +116,9 @@ pub fn run_correction_slice(
         score_config,
         decision_config,
         false,
+        &Lexicon::empty(),
+        InterventionConfig::default(),
+        None,
     );
     if slice.decision == Some(DecisionState::Auto) {
         slice.decision = Some(DecisionState::Suggest);
@@ -138,6 +142,9 @@ fn evaluate_correction_slice(
     score_config: &ScoreConfig,
     decision_config: &DecisionConfig,
     auto_edit_valid: bool,
+    lexicon: &Lexicon,
+    intervention: InterventionConfig,
+    delimiter: Option<char>,
 ) -> CorrectionSlice {
     let raw = collect_candidates(snapshot, left_context, context, generators);
     if raw.is_empty() {
@@ -145,6 +152,7 @@ fn evaluate_correction_slice(
             candidates: Vec::new(),
             decision: None,
             action: None,
+            plan: None,
         };
     }
 
@@ -165,19 +173,23 @@ fn evaluate_correction_slice(
     let plan = plan_intervention(
         snapshot,
         &candidates,
-        &Lexicon::empty(),
+        lexicon,
         model,
         &learning,
-        InterventionConfig::default(),
+        intervention,
         context,
-        None,
+        delimiter,
         None,
         evaluate_at_ms,
         auto_edit_valid,
         input_method,
         left_context.prev_token_nfc.as_deref(),
     );
-    let decision = plan.model_transition;
+    let decision = if plan.action == InterventionAction::Replace {
+        Some(DecisionState::Auto)
+    } else {
+        plan.model_transition
+    };
     let action = match plan.action {
         InterventionAction::DisplaySuggestion => Some(EngineAction::ShowSuggestions {
             revision: snapshot.revision,
@@ -190,6 +202,7 @@ fn evaluate_correction_slice(
         candidates,
         decision,
         action,
+        plan: Some(plan),
     }
 }
 
@@ -207,11 +220,14 @@ pub fn run_learning_correction_slice(
     score_config: &ScoreConfig,
     decision_config: &DecisionConfig,
     auto_edit: Option<AutoEditContext>,
+    lexicon: &Lexicon,
+    intervention: InterventionConfig,
 ) -> CorrectionSlice {
     let auto_edit_valid = auto_edit.as_ref().is_some_and(|edit| {
         edit.range.revision == snapshot.revision
             && edit.range.length_grapheme == snapshot.rendered.graphemes(true).count()
     });
+    let delimiter = auto_edit.as_ref().and_then(|edit| edit.delimiter);
     let mut slice = evaluate_correction_slice(
         snapshot,
         left_context,
@@ -223,13 +239,24 @@ pub fn run_learning_correction_slice(
         score_config,
         decision_config,
         auto_edit_valid,
+        lexicon,
+        intervention,
+        delimiter,
     );
-    let Some(top) = slice.candidates.first() else {
+    let Some(plan) = slice.plan.clone() else {
         return slice;
     };
-    let rule = candidate_rule_key(snapshot, left_context, input_method, top);
+    let Some(chosen) = plan
+        .candidate_id
+        .and_then(|id| slice.candidates.iter().find(|candidate| candidate.id == id))
+        .or_else(|| slice.candidates.first())
+        .cloned()
+    else {
+        return slice;
+    };
+    let rule = candidate_rule_key(snapshot, left_context, input_method, &chosen);
 
-    if slice.decision == Some(DecisionState::Auto) {
+    if plan.action == InterventionAction::Replace {
         let valid_auto_edit = auto_edit.filter(|edit| {
             edit.range.revision == snapshot.revision
                 && edit.range.length_grapheme == snapshot.rendered.graphemes(true).count()
@@ -239,21 +266,28 @@ pub fn run_learning_correction_slice(
                 edit_id: edit.edit_id,
                 range: edit.range,
                 original: snapshot.rendered.clone(),
-                replacement: top.text.clone(),
+                replacement: chosen.text.clone(),
                 delimiter: edit.delimiter,
             };
-            session.record_decision(&rule, DecisionState::Auto, context.allow_learning);
+            if let Some(state) = plan.model_transition {
+                session.record_decision(&rule, state, context.allow_learning);
+            }
             session.record_auto_edit(rule, action.clone(), evaluate_at_ms, context.allow_learning);
             slice.action = Some(EngineAction::ReplaceRange(action));
+            slice.decision = Some(DecisionState::Auto);
         } else {
             slice.decision = Some(DecisionState::Suggest);
             slice.action = Some(EngineAction::ShowSuggestions {
                 revision: snapshot.revision,
                 candidates: slice.candidates.clone(),
             });
-            session.record_decision(&rule, DecisionState::Suggest, context.allow_learning);
+            if let Some(state) = plan.model_transition {
+                session.record_decision(&rule, state, context.allow_learning);
+            } else {
+                session.record_decision(&rule, DecisionState::Suggest, context.allow_learning);
+            }
         }
-    } else if let Some(state) = slice.decision {
+    } else if let Some(state) = plan.model_transition {
         session.record_decision(&rule, state, context.allow_learning);
     }
     slice
@@ -342,84 +376,14 @@ pub fn boundary_assist_candidate<'a>(
     lexicon: &Lexicon,
     allow_transform: bool,
 ) -> Option<&'a Candidate> {
-    if !policy_auto_allowed(delimiter, config, allow_transform) {
-        return None;
-    }
-    if let Some(fix) = unique_telex_fix_candidate(candidates)
-        && lexicon_allows_replacement(lexicon, snapshot, fix)
-    {
-        return Some(fix);
-    }
-    unique_top_assist_candidate(snapshot, candidates, lexicon)
-}
-
-fn policy_auto_allowed(
-    delimiter: Option<char>,
-    config: InterventionConfig,
-    allow_transform: bool,
-) -> bool {
-    allow_transform && config.telex_fix_policy_auto && config.policy_delimiters.allows(delimiter)
-}
-
-fn lexicon_allows_replacement(
-    lexicon: &Lexicon,
-    snapshot: &CompositionSnapshot,
-    candidate: &Candidate,
-) -> bool {
-    !lexicon.contains(&snapshot.normalized) && lexicon.contains(&candidate.text)
-}
-
-fn unique_top_assist_candidate<'a>(
-    snapshot: &CompositionSnapshot,
-    candidates: &'a [Candidate],
-    lexicon: &Lexicon,
-) -> Option<&'a Candidate> {
-    let top = candidates.first()?;
-    if !lexicon_allows_replacement(lexicon, snapshot, top) {
-        return None;
-    }
-    if top.text == snapshot.normalized || top.text == snapshot.rendered {
-        return None;
-    }
-    match top.source {
-        CandidateSource::Abbreviation => unique_abbrev_expansion(top, candidates),
-        CandidateSource::Fuzzy => {
-            if fuzzy_token_long_enough(snapshot) && candidates.len() == 1 {
-                Some(top)
-            } else {
-                None
-            }
-        }
-        CandidateSource::TelexFix | CandidateSource::Diacritics | CandidateSource::Personal => None,
-    }
-}
-
-fn fuzzy_token_long_enough(snapshot: &CompositionSnapshot) -> bool {
-    snapshot
-        .normalized
-        .chars()
-        .filter(|ch| ch.is_alphabetic())
-        .count()
-        >= 4
-}
-
-fn unique_abbrev_expansion<'a>(
-    top: &'a Candidate,
-    candidates: &'a [Candidate],
-) -> Option<&'a Candidate> {
-    if top.text.split_whitespace().nth(1).is_some() {
-        return None;
-    }
-    let mut unique_text: Option<&str> = None;
-    for candidate in candidates {
-        if candidate.source != CandidateSource::Abbreviation {
-            continue;
-        }
-        match unique_text {
-            None => unique_text = Some(candidate.text.as_str()),
-            Some(text) if text == candidate.text => {}
-            Some(_) => return None,
-        }
-    }
-    (unique_text == Some(top.text.as_str())).then_some(top)
+    crate::intervention::policy_assist_candidate(
+        snapshot,
+        candidates,
+        delimiter,
+        config,
+        lexicon,
+        allow_transform,
+        &LearningConfigV2::compatibility_v1(),
+    )
+    .map(|(candidate, _)| candidate)
 }

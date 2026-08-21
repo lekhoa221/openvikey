@@ -1,6 +1,6 @@
 //! Single decision point for None / Suggest / Replace.
 
-use crate::correction::InterventionConfig;
+use crate::correction::{InterventionConfig, unique_telex_fix_candidate};
 use crate::decision::{ActionCap, DecisionState, decide};
 use crate::learning_config::LearningConfigV2;
 use crate::lexicon::Lexicon;
@@ -108,6 +108,121 @@ fn primary_rule_id(evidence: &str) -> &str {
     evidence.split('+').next().unwrap_or("")
 }
 
+fn policy_auto_allowed(
+    delimiter: Option<char>,
+    intervention: InterventionConfig,
+    allow_transform: bool,
+) -> bool {
+    allow_transform
+        && intervention.telex_fix_policy_auto
+        && intervention.policy_delimiters.allows(delimiter)
+}
+
+fn lexicon_allows_replacement(
+    lexicon: &Lexicon,
+    snapshot: &CompositionSnapshot,
+    candidate: &Candidate,
+) -> bool {
+    !lexicon.contains(&snapshot.normalized) && lexicon.contains(&candidate.text)
+}
+
+fn fuzzy_token_long_enough(snapshot: &CompositionSnapshot) -> bool {
+    snapshot
+        .normalized
+        .chars()
+        .filter(|ch| ch.is_alphabetic())
+        .count()
+        >= 4
+}
+
+fn unique_abbrev_expansion<'a>(
+    top: &'a Candidate,
+    candidates: &'a [Candidate],
+) -> Option<&'a Candidate> {
+    if top.text.split_whitespace().nth(1).is_some() {
+        return None;
+    }
+    let mut unique_text: Option<&str> = None;
+    for candidate in candidates {
+        if candidate.source != CandidateSource::Abbreviation {
+            continue;
+        }
+        match unique_text {
+            None => unique_text = Some(candidate.text.as_str()),
+            Some(text) if text == candidate.text => {}
+            Some(_) => return None,
+        }
+    }
+    (unique_text == Some(top.text.as_str())).then_some(top)
+}
+
+fn unique_heuristic_candidate<'a>(
+    snapshot: &CompositionSnapshot,
+    ranked: &'a [Candidate],
+    lexicon: &Lexicon,
+    config: &LearningConfigV2,
+) -> Option<&'a Candidate> {
+    let top = ranked.first()?;
+    if !lexicon_allows_replacement(lexicon, snapshot, top) {
+        return None;
+    }
+    if top.text == snapshot.normalized || top.text == snapshot.rendered {
+        return None;
+    }
+    match top.source {
+        CandidateSource::Abbreviation if config.abbrev_cold_start_auto => {
+            unique_abbrev_expansion(top, ranked)
+        }
+        CandidateSource::Fuzzy if config.fuzzy_heuristic_assist => {
+            if fuzzy_token_long_enough(snapshot) && ranked.len() == 1 {
+                Some(top)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Shared picker for TelexFix structural auto and unique abbrev/fuzzy assist.
+pub(crate) fn policy_assist_candidate<'a>(
+    snapshot: &CompositionSnapshot,
+    ranked: &'a [Candidate],
+    delimiter: Option<char>,
+    intervention: InterventionConfig,
+    lexicon: &Lexicon,
+    allow_transform: bool,
+    config: &LearningConfigV2,
+) -> Option<(&'a Candidate, InterventionReason)> {
+    if !policy_auto_allowed(delimiter, intervention, allow_transform) {
+        return None;
+    }
+    if let Some(fix) = unique_telex_fix_candidate(ranked)
+        && lexicon_allows_replacement(lexicon, snapshot, fix)
+    {
+        return Some((fix, InterventionReason::SafeStructuralFix));
+    }
+    unique_heuristic_candidate(snapshot, ranked, lexicon, config)
+        .map(|candidate| (candidate, InterventionReason::UniqueHeuristicAssist))
+}
+
+fn replace_without_persisting(
+    reason: InterventionReason,
+    candidate: &Candidate,
+) -> InterventionPlan {
+    InterventionPlan {
+        action: InterventionAction::Replace,
+        reason,
+        candidate_id: Some(candidate.id),
+        score_breakdown: breakdown_for(candidate),
+        undo_contract: UndoContract {
+            required: true,
+            uses_original_rendered: true,
+        },
+        model_transition: None,
+    }
+}
+
 fn rule_key(
     snapshot: &CompositionSnapshot,
     candidate: &Candidate,
@@ -130,12 +245,12 @@ fn rule_key(
 pub fn plan_intervention(
     snapshot: &CompositionSnapshot,
     ranked: &[Candidate],
-    _lexicon: &Lexicon,
+    lexicon: &Lexicon,
     model: &dyn ModelView,
     config: &LearningConfigV2,
-    _intervention: InterventionConfig,
+    intervention: InterventionConfig,
     context: InputContext,
-    _delimiter: Option<char>,
+    delimiter: Option<char>,
     _revert_guard: Option<&RevertGuard>,
     evaluate_at_ms: i64,
     auto_edit_valid: bool,
@@ -151,6 +266,18 @@ pub fn plan_intervention(
     let Some(top) = ranked.first() else {
         return none_plan(InterventionReason::NoCandidate);
     };
+    let assist = policy_assist_candidate(
+        snapshot,
+        ranked,
+        delimiter,
+        intervention,
+        lexicon,
+        context.allow_transform,
+        config,
+    );
+    if auto_edit_valid && let Some((candidate, InterventionReason::SafeStructuralFix)) = assist {
+        return replace_without_persisting(InterventionReason::SafeStructuralFix, candidate);
+    }
     let rule = rule_key(snapshot, top, input_method, left_token_nfc);
     let cap = if model.auto_allowed(&rule, evaluate_at_ms) {
         top.source.max_action()
@@ -166,8 +293,8 @@ pub fn plan_intervention(
         &config.decision,
     );
     let breakdown = breakdown_for(top);
-    match state {
-        DecisionState::Auto if auto_edit_valid => InterventionPlan {
+    if state == DecisionState::Auto && auto_edit_valid {
+        return InterventionPlan {
             action: InterventionAction::Replace,
             reason: InterventionReason::LearnedCorrection,
             candidate_id: Some(top.id),
@@ -177,14 +304,29 @@ pub fn plan_intervention(
                 uses_original_rendered: true,
             },
             model_transition: Some(DecisionState::Auto),
-        },
+        };
+    }
+    if auto_edit_valid && let Some((candidate, InterventionReason::UniqueHeuristicAssist)) = assist
+    {
+        let assist_rule = rule_key(snapshot, candidate, input_method, left_token_nfc);
+        if model.auto_allowed(&assist_rule, evaluate_at_ms) {
+            return replace_without_persisting(
+                InterventionReason::UniqueHeuristicAssist,
+                candidate,
+            );
+        }
+    }
+    let suggest_reason = if cap == ActionCap::Suggest {
+        InterventionReason::SourceSuggestOnly
+    } else if state == DecisionState::Auto {
+        InterventionReason::LearnedCorrection
+    } else {
+        InterventionReason::LowScore
+    };
+    match state {
         DecisionState::Auto | DecisionState::Suggest => InterventionPlan {
             action: InterventionAction::DisplaySuggestion,
-            reason: if state == DecisionState::Auto {
-                InterventionReason::LearnedCorrection
-            } else {
-                InterventionReason::LowScore
-            },
+            reason: suggest_reason,
             candidate_id: Some(top.id),
             score_breakdown: breakdown,
             undo_contract: UndoContract {
@@ -195,7 +337,7 @@ pub fn plan_intervention(
         },
         DecisionState::Ignore => InterventionPlan {
             action: InterventionAction::None,
-            reason: InterventionReason::LowScore,
+            reason: suggest_reason,
             candidate_id: Some(top.id),
             score_breakdown: breakdown,
             undo_contract: UndoContract {

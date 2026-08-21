@@ -3,12 +3,13 @@
 #![allow(clippy::float_cmp)]
 
 use openvikey_core::correction::{
-    AutoEditContext, run_correction_slice, run_learning_correction_slice,
+    AutoEditContext, InterventionConfig, run_correction_slice, run_learning_correction_slice,
 };
 use openvikey_core::decision::{ActionCap, DecisionConfig, DecisionState, decide};
 use openvikey_core::feedback::LearningSession;
 use openvikey_core::generate::personal::PersonalGenerator;
 use openvikey_core::generate::{Generator, LeftContext};
+use openvikey_core::lexicon::Lexicon;
 use openvikey_core::model::{AdaptiveModel, ModelConfig, ModelView, RuleContextKey};
 use openvikey_core::rank::{RankingContext, ScoreConfig, rank};
 use openvikey_core::types::{
@@ -121,6 +122,8 @@ fn promoted_correction_emits_replace_range_and_records_auto_edit() {
         &ScoreConfig::default(),
         &DecisionConfig::default(),
         Some(edit),
+        &Lexicon::empty(),
+        InterventionConfig::default(),
     );
 
     assert_eq!(slice.decision, Some(DecisionState::Auto));
@@ -186,6 +189,8 @@ fn stale_auto_edit_context_degrades_to_suggestion() {
         &ScoreConfig::default(),
         &DecisionConfig::default(),
         Some(auto_edit(902, 9, None)),
+        &Lexicon::empty(),
+        InterventionConfig::default(),
     );
 
     assert_eq!(slice.decision, Some(DecisionState::Suggest));
@@ -216,6 +221,8 @@ fn learning_context_false_allows_auto_undo_but_does_not_mutate_model() {
         &ScoreConfig::default(),
         &DecisionConfig::default(),
         Some(auto_edit(901, 10, None)),
+        &Lexicon::empty(),
+        InterventionConfig::default(),
     );
 
     assert!(matches!(slice.action, Some(EngineAction::ReplaceRange(_))));
@@ -355,6 +362,8 @@ fn two_recent_undos_block_immediate_repromotion_even_at_high_confidence() {
         &ScoreConfig::default(),
         &DecisionConfig::default(),
         Some(auto_edit(999, 10, None)),
+        &Lexicon::empty(),
+        InterventionConfig::default(),
     );
 
     assert_eq!(slice.decision, Some(DecisionState::Suggest));
@@ -381,6 +390,8 @@ fn two_recent_undos_block_immediate_repromotion_even_at_high_confidence() {
         &ScoreConfig::default(),
         &DecisionConfig::default(),
         Some(auto_edit(1_001, 10, None)),
+        &Lexicon::empty(),
+        InterventionConfig::default(),
     );
     assert_eq!(retrained.decision, Some(DecisionState::Auto));
 }
@@ -401,6 +412,8 @@ fn diacritics_stays_suggestion_only_after_promotion_mass() {
         &ScoreConfig::default(),
         &DecisionConfig::default(),
         Some(auto_edit(1_000, 10, None)),
+        &Lexicon::empty(),
+        InterventionConfig::default(),
     );
 
     assert_eq!(slice.decision, Some(DecisionState::Suggest));
@@ -427,6 +440,8 @@ fn decision_hysteresis_persists_across_correction_calls() {
         &ScoreConfig::default(),
         &DecisionConfig::default(),
         None,
+        &Lexicon::empty(),
+        InterventionConfig::default(),
     );
     assert_eq!(first.decision, Some(DecisionState::Suggest));
 
@@ -442,6 +457,8 @@ fn decision_hysteresis_persists_across_correction_calls() {
         &ScoreConfig::default(),
         &DecisionConfig::default(),
         None,
+        &Lexicon::empty(),
+        InterventionConfig::default(),
     );
     assert_eq!(second.decision, Some(DecisionState::Suggest));
 }

@@ -1,6 +1,8 @@
 //! Milestone 7C: per-token, left-context diacritics suggestions.
 
-use openvikey_core::correction::{AutoEditContext, run_learning_correction_slice};
+use openvikey_core::correction::{
+    AutoEditContext, InterventionConfig, run_learning_correction_slice,
+};
 use openvikey_core::decision::{DecisionConfig, DecisionState};
 use openvikey_core::feedback::LearningSession;
 use openvikey_core::generate::diacritics::DiacriticsGenerator;
@@ -158,6 +160,8 @@ fn promoted_diacritics_rule_still_emits_suggestions_not_auto_replace() {
             },
             delimiter: None,
         }),
+        &lexicon,
+        InterventionConfig::default(),
     );
 
     assert_eq!(slice.decision, Some(DecisionState::Suggest));
