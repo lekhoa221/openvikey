@@ -231,6 +231,13 @@ fn unique_abbrev_expansion<'a>(
     (unique_text == Some(top.text.as_str())).then_some(top)
 }
 
+/// Unique-candidate heuristic assist.
+///
+/// Fuzzy assist requires the sole ranked candidate, so its top1–top2 margin is
+/// vacuously 1.0. Abbrev cold-start uniqueness is scoped to Abbreviation-source
+/// candidates only: a near-tie candidate from another source does not block the
+/// replace, and the `auto_margin` guard is not consulted on this path (v1
+/// compat; `product_v2` turns the flag off).
 fn unique_heuristic_candidate<'a>(
     snapshot: &CompositionSnapshot,
     ranked: &'a [Candidate],
@@ -512,6 +519,8 @@ pub fn plan_intervention(
         (top.final_score - second.final_score).max(0.0)
     });
     // v1 order through Lát 8: learned Auto, then structural, then heuristic.
+    // `auto_margin` guards only this learned-Auto branch; the structural and
+    // heuristic replaces below never consult it.
     if !guard_cooldown_active && state == DecisionState::Auto && auto_edit_valid {
         if breakdown.top1_top2_margin < config.auto_margin {
             return InterventionPlan {

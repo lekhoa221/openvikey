@@ -17,6 +17,11 @@ pub struct LearningConfigV2 {
     pub decision: DecisionConfig,
     pub score: ScoreConfig,
     pub context_shrinkage_k: f64,
+    /// Minimum top1–top2 final-score gap for a learned-Auto replace.
+    ///
+    /// Consulted only by the learned-Auto branch of the planner; structural and
+    /// unique-heuristic replaces never read it. Default is an uncalibrated
+    /// compatibility value — fit on the calibration split at M9/M10.
     pub auto_margin: f64,
     pub weak_positive_cap: f64,
     pub max_unigrams: usize,

@@ -491,3 +491,23 @@ fn small_margin_blocks_learned_auto() {
     assert_eq!(plan.reason, InterventionReason::LowMargin);
     assert!((plan.score_breakdown.top1_top2_margin - 0.01).abs() < 1e-12);
 }
+
+#[test]
+fn abbrev_cold_start_replaces_despite_close_second_candidate() {
+    // Characterization: abbrev uniqueness is source-scoped, so a near-tie
+    // candidate from another source (gap 0.005 < auto_margin 0.02) still
+    // replaces via UniqueHeuristicAssist. product_v2 disables this path.
+    let snapshot = CompositionSnapshot::new(1, "ko".into(), "ko".into());
+    let abbrev = abbrev_candidate("không");
+    let second = Candidate {
+        id: 44,
+        text: "kho".into(),
+        source: CandidateSource::Fuzzy,
+        evidence: "fuzzy:ko:kho".into(),
+        base_score: 0.795,
+        final_score: 0.795,
+    };
+    let plan = plan_on(&snapshot, &[abbrev, second], &lex(&["không", "kho"]));
+    assert_eq!(plan.action, InterventionAction::Replace);
+    assert_eq!(plan.reason, InterventionReason::UniqueHeuristicAssist);
+}
