@@ -2,9 +2,11 @@
 //!
 //! Generators remain pure; this module owns model-aware ranking and decision.
 
-use crate::decision::{DecisionConfig, DecisionState, decide};
+use crate::decision::{DecisionConfig, DecisionState};
 use crate::feedback::LearningSession;
 use crate::generate::{Generator, LeftContext, collect_candidates};
+use crate::intervention::{InterventionAction, plan_intervention};
+use crate::learning_config::LearningConfigV2;
 use crate::lexicon::Lexicon;
 use crate::model::{ModelView, RuleContextKey};
 use crate::rank::{RankingContext, ScoreConfig, rank};
@@ -112,6 +114,7 @@ pub fn run_correction_slice(
         evaluate_at_ms,
         score_config,
         decision_config,
+        false,
     );
     if slice.decision == Some(DecisionState::Auto) {
         slice.decision = Some(DecisionState::Suggest);
@@ -134,6 +137,7 @@ fn evaluate_correction_slice(
     evaluate_at_ms: i64,
     score_config: &ScoreConfig,
     decision_config: &DecisionConfig,
+    auto_edit_valid: bool,
 ) -> CorrectionSlice {
     let raw = collect_candidates(snapshot, left_context, context, generators);
     if raw.is_empty() {
@@ -155,28 +159,30 @@ fn evaluate_correction_slice(
             left_token_nfc: left_context.prev_token_nfc.clone(),
         }),
     );
-    let decision = candidates.first().map(|top| {
-        let rule = RuleContextKey {
-            input_method,
-            source: top.source,
-            original_nfc: snapshot.normalized.clone(),
-            candidate_nfc: top.text.clone(),
-            left_token_nfc: left_context.prev_token_nfc.clone(),
-            source_rule_id: primary_rule_id(&top.evidence).to_string(),
-        };
-        decide(
-            model.state(&rule, evaluate_at_ms),
-            top.final_score,
-            model.confidence(&rule, evaluate_at_ms),
-            model.positive_mass(&rule, evaluate_at_ms),
-            if model.auto_allowed(&rule, evaluate_at_ms) {
-                top.source.max_action()
-            } else {
-                crate::decision::ActionCap::Suggest
-            },
-            decision_config,
-        )
-    });
+    let mut learning = LearningConfigV2::compatibility_v1();
+    learning.decision = decision_config.clone();
+    learning.score = score_config.clone();
+    let plan = plan_intervention(
+        snapshot,
+        &candidates,
+        &Lexicon::empty(),
+        model,
+        &learning,
+        InterventionConfig::default(),
+        context,
+        None,
+        None,
+        evaluate_at_ms,
+        auto_edit_valid,
+        input_method,
+        left_context.prev_token_nfc.as_deref(),
+    );
+    let decision = match plan.action {
+        InterventionAction::None if candidates.is_empty() => None,
+        InterventionAction::None => Some(DecisionState::Ignore),
+        InterventionAction::DisplaySuggestion => Some(DecisionState::Suggest),
+        InterventionAction::Replace => Some(DecisionState::Auto),
+    };
     let action = match decision {
         Some(DecisionState::Suggest) => Some(EngineAction::ShowSuggestions {
             revision: snapshot.revision,
@@ -207,6 +213,10 @@ pub fn run_learning_correction_slice(
     decision_config: &DecisionConfig,
     auto_edit: Option<AutoEditContext>,
 ) -> CorrectionSlice {
+    let auto_edit_valid = auto_edit.as_ref().is_some_and(|edit| {
+        edit.range.revision == snapshot.revision
+            && edit.range.length_grapheme == snapshot.rendered.graphemes(true).count()
+    });
     let mut slice = evaluate_correction_slice(
         snapshot,
         left_context,
@@ -217,6 +227,7 @@ pub fn run_learning_correction_slice(
         evaluate_at_ms,
         score_config,
         decision_config,
+        auto_edit_valid,
     );
     let Some(top) = slice.candidates.first() else {
         return slice;

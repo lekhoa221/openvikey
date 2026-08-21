@@ -1,9 +1,10 @@
 //! Single decision point for None / Suggest / Replace.
 
 use crate::correction::InterventionConfig;
+use crate::decision::{ActionCap, DecisionState, decide};
 use crate::learning_config::LearningConfigV2;
 use crate::lexicon::Lexicon;
-use crate::model::ModelView;
+use crate::model::{ModelView, RuleContextKey};
 use crate::types::{Candidate, CandidateSource, CompositionSnapshot, InputContext, InputMethod};
 use serde::{Deserialize, Serialize};
 
@@ -93,21 +94,51 @@ fn none_plan(reason: InterventionReason) -> InterventionPlan {
     }
 }
 
+fn breakdown_for(candidate: &Candidate) -> ScoreBreakdown {
+    ScoreBreakdown {
+        generator_base: candidate.base_score,
+        final_score: candidate.final_score,
+        ..ScoreBreakdown::default()
+    }
+}
+
+fn primary_rule_id(evidence: &str) -> &str {
+    evidence.split('+').next().unwrap_or("")
+}
+
+fn rule_key(
+    snapshot: &CompositionSnapshot,
+    candidate: &Candidate,
+    input_method: InputMethod,
+    left_token_nfc: Option<&str>,
+) -> RuleContextKey {
+    RuleContextKey {
+        input_method,
+        source: candidate.source,
+        original_nfc: snapshot.normalized.clone(),
+        candidate_nfc: candidate.text.clone(),
+        left_token_nfc: left_token_nfc.map(ToOwned::to_owned),
+        source_rule_id: primary_rule_id(&candidate.evidence).to_string(),
+    }
+}
+
 /// Decide None / Suggest / Replace for one ranked candidate set.
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub fn plan_intervention(
-    _snapshot: &CompositionSnapshot,
+    snapshot: &CompositionSnapshot,
     ranked: &[Candidate],
     _lexicon: &Lexicon,
-    _model: &dyn ModelView,
-    _config: &LearningConfigV2,
+    model: &dyn ModelView,
+    config: &LearningConfigV2,
     _intervention: InterventionConfig,
     context: InputContext,
     _delimiter: Option<char>,
     _revert_guard: Option<&RevertGuard>,
-    _evaluate_at_ms: i64,
-    _auto_edit_valid: bool,
+    evaluate_at_ms: i64,
+    auto_edit_valid: bool,
+    input_method: InputMethod,
+    left_token_nfc: Option<&str>,
 ) -> InterventionPlan {
     if !context.allow_transform {
         return none_plan(InterventionReason::UnsafeContext);
@@ -115,5 +146,49 @@ pub fn plan_intervention(
     if ranked.is_empty() {
         return none_plan(InterventionReason::NoCandidate);
     }
-    none_plan(InterventionReason::LowScore)
+    let Some(top) = ranked.first() else {
+        return none_plan(InterventionReason::NoCandidate);
+    };
+    let rule = rule_key(snapshot, top, input_method, left_token_nfc);
+    let cap = if model.auto_allowed(&rule, evaluate_at_ms) {
+        top.source.max_action()
+    } else {
+        ActionCap::Suggest
+    };
+    let state = decide(
+        model.state(&rule, evaluate_at_ms),
+        top.final_score,
+        model.confidence(&rule, evaluate_at_ms),
+        model.positive_mass(&rule, evaluate_at_ms),
+        cap,
+        &config.decision,
+    );
+    let breakdown = breakdown_for(top);
+    match state {
+        DecisionState::Auto if auto_edit_valid => InterventionPlan {
+            action: InterventionAction::Replace,
+            reason: InterventionReason::LearnedCorrection,
+            candidate_id: Some(top.id),
+            score_breakdown: breakdown,
+            undo_contract: UndoContract {
+                required: true,
+                uses_original_rendered: true,
+            },
+        },
+        DecisionState::Auto | DecisionState::Suggest => InterventionPlan {
+            action: InterventionAction::DisplaySuggestion,
+            reason: if state == DecisionState::Auto {
+                InterventionReason::LearnedCorrection
+            } else {
+                InterventionReason::LowScore
+            },
+            candidate_id: Some(top.id),
+            score_breakdown: breakdown,
+            undo_contract: UndoContract {
+                required: false,
+                uses_original_rendered: true,
+            },
+        },
+        DecisionState::Ignore => none_plan(InterventionReason::LowScore),
+    }
 }
