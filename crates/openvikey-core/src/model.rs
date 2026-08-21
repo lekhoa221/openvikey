@@ -100,6 +100,9 @@ pub struct ModelInspectionRow {
     pub positive_evidence: f64,
     pub negative_evidence: f64,
     pub last_evidence_at_ms: Option<i64>,
+    pub shown_count: u64,
+    pub selected_count: u64,
+    pub last_shown_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -168,6 +171,7 @@ impl AdaptiveModel {
             event,
             config.max_events_per_rule.max(1),
             config.auto_undo_window.max(1),
+            LearningConfigV2::compatibility_v1().weak_positive_cap,
         )
     }
 
@@ -210,6 +214,22 @@ impl AdaptiveModel {
             at_ms,
             undo_window,
         );
+    }
+
+    /// Records one suggestion that was actually exposed by the intervention plan.
+    pub fn record_impression(
+        &mut self,
+        key: &RuleContextKey,
+        seq: u64,
+        at_ms: i64,
+        allow_learning: bool,
+    ) -> bool {
+        if !allow_learning {
+            return false;
+        }
+        self.prepare_for(key);
+        self.correction_memory
+            .record_impression(&key.identity(), seq, at_ms)
     }
 
     /// Records the operational veto from an immediate revert without adding evidence mass.
@@ -258,6 +278,13 @@ impl AdaptiveModel {
                     ));
                 }
                 let max_rules = model.config().max_rules;
+                let weak_positive_cap = LearningConfigV2::compatibility_v1().weak_positive_cap;
+                model
+                    .correction_memory
+                    .normalize_weak_positive_totals(weak_positive_cap);
+                model
+                    .correction_memory
+                    .normalize_legacy_suggestion_settlements();
                 model.correction_memory.normalize_personal_transactions();
                 model
                     .correction_memory
@@ -299,6 +326,9 @@ impl AdaptiveModel {
                 positive_evidence: row.positive_evidence,
                 negative_evidence: row.negative_evidence,
                 last_evidence_at_ms: row.last_evidence_at_ms,
+                shown_count: row.shown_count,
+                selected_count: row.selected_count,
+                last_shown_at_ms: row.last_shown_at_ms,
             })
             .collect()
     }
@@ -419,48 +449,33 @@ impl AdaptiveModel {
             .sort_by(|left, right| left.key.cmp(&right.key));
         let mut memory = CorrectionMemory::with_half_life(legacy.config.half_life_ms);
         let mut fallback_states = BTreeMap::<CorrectionIdentity, (bool, DecisionState)>::new();
+        let mut legacy_impressions = BTreeMap::<CorrectionIdentity, BTreeSet<u64>>::new();
+        let mut legacy_auto_settlements = BTreeMap::<CorrectionIdentity, BTreeSet<u64>>::new();
+        let weak_positive_cap = LearningConfigV2::compatibility_v1().weak_positive_cap;
         for entry in legacy.entries {
-            let identity = entry.key.identity();
-            let has_global = entry.key.left_token_nfc.is_none();
-            let fallback = fallback_states
-                .entry(identity.clone())
-                .or_insert((false, DecisionState::Ignore));
-            fallback.0 |= has_global;
-            fallback.1 = fallback.1.max(entry.state);
-            for evidence in entry.evidence {
-                memory.apply(
-                    &identity,
-                    entry.key.left_token_nfc.as_deref(),
-                    CorrectionEvidence {
-                        seq: evidence.seq,
-                        at_ms: evidence.at_ms,
-                        positive: evidence.positive_add,
-                        negative: evidence.negative_add,
-                    },
-                );
-            }
-            memory.record_state(&identity, entry.key.left_token_nfc.as_deref(), entry.state);
-            let recent_auto = entry
-                .recent_auto
-                .iter()
-                .map(|item| (item.edit_id, item.at_ms, item.undone))
-                .collect::<Vec<_>>();
-            memory.import_operational_metadata(
-                &identity,
-                entry.key.left_token_nfc.as_deref(),
-                &ImportedOperationalMetadata {
-                    recent_auto: &recent_auto,
-                    handled_sequences: &entry.handled_feedback_seqs,
-                    settled_auto_ids: &entry.settled_auto_ids,
-                    settled_suggestion_ids: &entry.settled_suggestion_ids,
-                    auto_demoted_at_seq: entry.auto_demoted_at_seq,
-                },
+            migrate_legacy_rule_entry(
+                &mut memory,
+                &mut fallback_states,
+                &mut legacy_impressions,
+                &mut legacy_auto_settlements,
+                weak_positive_cap,
+                entry,
             );
         }
         for (identity, (has_global, state)) in fallback_states {
             if !has_global {
                 memory.set_global_fallback_state(&identity, state);
             }
+        }
+        for (identity, impression_ids) in legacy_impressions {
+            memory.import_impressions(
+                &identity,
+                u64::try_from(impression_ids.len()).unwrap_or(u64::MAX),
+            );
+        }
+        for (identity, settlement_ids) in legacy_auto_settlements {
+            let total = f64::from(u32::try_from(settlement_ids.len()).unwrap_or(u32::MAX)) * 0.3;
+            memory.import_weak_positive_total(&identity, None, total.min(weak_positive_cap));
         }
         let promoted = legacy
             .personal
@@ -505,6 +520,73 @@ impl AdaptiveModel {
             },
         }
     }
+}
+
+fn migrate_legacy_rule_entry(
+    memory: &mut CorrectionMemory,
+    fallback_states: &mut BTreeMap<CorrectionIdentity, (bool, DecisionState)>,
+    legacy_impressions: &mut BTreeMap<CorrectionIdentity, BTreeSet<u64>>,
+    legacy_auto_settlements: &mut BTreeMap<CorrectionIdentity, BTreeSet<u64>>,
+    weak_positive_cap: f64,
+    entry: LegacyRuleEntry,
+) {
+    let identity = entry.key.identity();
+    let fallback = fallback_states
+        .entry(identity.clone())
+        .or_insert((false, DecisionState::Ignore));
+    fallback.0 |= entry.key.left_token_nfc.is_none();
+    fallback.1 = fallback.1.max(entry.state);
+    legacy_impressions
+        .entry(identity.clone())
+        .or_default()
+        .extend(entry.settled_suggestion_ids.iter().copied());
+    legacy_auto_settlements
+        .entry(identity.clone())
+        .or_default()
+        .extend(entry.settled_auto_ids.iter().copied());
+    let context_weak_total =
+        f64::from(u32::try_from(entry.settled_auto_ids.len()).unwrap_or(u32::MAX)) * 0.3;
+    memory.import_weak_positive_total(
+        &identity,
+        entry.key.left_token_nfc.as_deref(),
+        context_weak_total.min(weak_positive_cap),
+    );
+    let had_legacy_suggestion_settlement = !entry.settled_suggestion_ids.is_empty();
+    for evidence in entry.evidence {
+        if had_legacy_suggestion_settlement
+            && evidence.positive_add.abs() < f64::EPSILON
+            && (evidence.negative_add - 0.2).abs() < f64::EPSILON
+        {
+            continue;
+        }
+        memory.apply(
+            &identity,
+            entry.key.left_token_nfc.as_deref(),
+            CorrectionEvidence {
+                seq: evidence.seq,
+                at_ms: evidence.at_ms,
+                positive: evidence.positive_add,
+                negative: evidence.negative_add,
+            },
+        );
+    }
+    memory.record_state(&identity, entry.key.left_token_nfc.as_deref(), entry.state);
+    let recent_auto = entry
+        .recent_auto
+        .iter()
+        .map(|item| (item.edit_id, item.at_ms, item.undone))
+        .collect::<Vec<_>>();
+    memory.import_operational_metadata(
+        &identity,
+        entry.key.left_token_nfc.as_deref(),
+        &ImportedOperationalMetadata {
+            recent_auto: &recent_auto,
+            handled_sequences: &entry.handled_feedback_seqs,
+            settled_auto_ids: &entry.settled_auto_ids,
+            settled_suggestion_ids: &entry.settled_suggestion_ids,
+            auto_demoted_at_seq: entry.auto_demoted_at_seq,
+        },
+    );
 }
 
 impl Default for AdaptiveModel {

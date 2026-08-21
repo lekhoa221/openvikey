@@ -166,6 +166,38 @@ fn exceeding_max_rules_evicts_oldest_ignore_before_strong_rows() {
 }
 
 #[test]
+fn high_impression_unselected_row_is_evicted_before_quiet_row() {
+    let config = ModelConfig {
+        max_rules: 2,
+        ..ModelConfig::default()
+    };
+    let mut model = AdaptiveModel::new(config);
+    let noisy = named_rule("z-noisy");
+    let quiet = named_rule("a-quiet");
+    for seq in 1..=5 {
+        model.record_impression(&noisy, seq, i64::try_from(seq).unwrap(), true);
+    }
+    model.record_impression(&quiet, 6, 6, true);
+
+    model.apply_feedback(
+        &named_rule("newcomer"),
+        &feedback(7, 7, FeedbackKind::Accept { candidate_id: 7 }),
+        true,
+    );
+
+    let rows = model.inspection_rows();
+    assert!(
+        !rows
+            .iter()
+            .any(|row| row.original_nfc == "original-z-noisy")
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.original_nfc == "original-a-quiet")
+    );
+}
+
+#[test]
 fn inserting_personal_at_both_caps_evicts_only_one_row() {
     let config = ModelConfig {
         max_rules: 2,

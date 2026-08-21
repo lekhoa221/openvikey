@@ -312,6 +312,47 @@ fn type_paht1_commit(
 }
 
 #[test]
+fn displayed_suggestion_records_impression_and_accept_records_selection() {
+    let mut session = telex_session();
+    session.inject(
+        InputKind::Key {
+            logical: 'k',
+            physical: None,
+        },
+        InputContext::default(),
+        0,
+    );
+    session.inject(
+        InputKind::Key {
+            logical: 'o',
+            physical: None,
+        },
+        InputContext::default(),
+        1,
+    );
+
+    let shown = session
+        .model()
+        .inspection_rows()
+        .into_iter()
+        .find(|row| row.original_nfc == "ko")
+        .expect("visible suggestion records an inspection row");
+    assert_eq!(shown.shown_count, 1);
+    assert_eq!(shown.selected_count, 0);
+    assert!(shown.negative_evidence.abs() < f64::EPSILON);
+
+    session.accept_top(2);
+    let selected = session
+        .model()
+        .inspection_rows()
+        .into_iter()
+        .find(|row| row.original_nfc == "ko")
+        .unwrap();
+    assert_eq!(selected.shown_count, 1);
+    assert_eq!(selected.selected_count, 1);
+}
+
+#[test]
 fn accept_top_writes_expansion_into_document_and_adds_mass() {
     let mut session = telex_session();
     session.inject(

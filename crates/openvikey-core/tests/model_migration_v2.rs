@@ -159,6 +159,54 @@ fn pre_transaction_v2_fixture_upgrades_to_transaction_records() {
     let payload = String::from_utf8(model.to_json_payload().unwrap()).unwrap();
     assert!(!payload.contains("personal_observation_count"));
     assert!(payload.contains("personal_transactions"));
+    let legacy_suggestion = RuleContextKey {
+        input_method: InputMethod::Telex,
+        source: CandidateSource::Abbreviation,
+        original_nfc: "legacy-v2-suggestion".into(),
+        candidate_nfc: "legacy-v2-expansion".into(),
+        left_token_nfc: None,
+        source_rule_id: "seed:legacy-v2".into(),
+    };
+    assert!(model.negative_mass(&legacy_suggestion, 100).abs() < f64::EPSILON);
+    assert_eq!(
+        model
+            .inspection_rows()
+            .into_iter()
+            .find(|row| row.original_nfc == "legacy-v2-suggestion")
+            .unwrap()
+            .shown_count,
+        1
+    );
+}
+
+#[test]
+fn migration_turns_legacy_suggestion_settlement_into_impression_only() {
+    let legacy = r#"{
+        "version":1,
+        "config":{"half_life_ms":2592000000,"max_events_per_rule":512,"auto_undo_window":10},
+        "entries":[{
+            "key":{"input_method":"Telex","source":"Abbreviation","original_nfc":"ko","candidate_nfc":"không","left_token_nfc":null,"source_rule_id":"seed:ko"},
+            "state":"Suggest",
+            "evidence":[{"seq":1,"at_ms":100,"positive_add":0.0,"negative_add":0.2}],
+            "recent_auto":[],
+            "handled_feedback_seqs":[1],
+            "settled_auto_ids":[],
+            "settled_suggestion_ids":[9],
+            "auto_demoted_at_seq":null
+        }]
+    }"#;
+    let model = AdaptiveModel::from_json_payload(legacy.as_bytes()).unwrap();
+    let rule = RuleContextKey {
+        input_method: InputMethod::Telex,
+        source: CandidateSource::Abbreviation,
+        original_nfc: "ko".into(),
+        candidate_nfc: "không".into(),
+        left_token_nfc: None,
+        source_rule_id: "seed:ko".into(),
+    };
+
+    assert!(model.negative_mass(&rule, 100).abs() < f64::EPSILON);
+    assert_eq!(model.inspection_rows()[0].shown_count, 1);
 }
 
 #[test]

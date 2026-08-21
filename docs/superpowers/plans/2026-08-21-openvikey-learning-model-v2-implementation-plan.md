@@ -1392,7 +1392,7 @@ git commit -am "feat: separate immediate revert from explicit undo and confirmed
 - Consumes: `weak_positive_cap = 7.2`, settlement 10 events + 3_000 ms
 - Produces: no runtime `SuggestionSettled` -0.2; `shown_count` / `selected_count` on the row
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```rust
 #[test]
@@ -1417,13 +1417,13 @@ fn suggestion_settled_from_old_payload_does_not_apply_minus_zero_two_after_migra
 
 Stop emitting `SuggestionSettled` from session. Keep enum for old JSON.
 
-- [ ] **Step 2: Run — expect FAIL**
+- [x] **Step 2: Run — expect FAIL**
 
-- [ ] **Step 3: Implement cap in settlement application; impression fields; migration maps old `SuggestionSettled` mass to 0 and optionally `shown_count`.
+- [x] **Step 3: Implement cap in settlement application; impression fields; migration maps old `SuggestionSettled` mass to 0 and `shown_count`. The cap is durable even when idempotency ID sets are trimmed below 24 entries.
 
-- [ ] **Step 4: Run** learning_state_machine (update any test that expected -0.2 from live `SuggestionSettled`)
+- [x] **Step 4: Run** learning_state_machine (update any test that expected -0.2 from live `SuggestionSettled`)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git commit -am "feat: cap weak settlement and stop scoring ignored suggestions"

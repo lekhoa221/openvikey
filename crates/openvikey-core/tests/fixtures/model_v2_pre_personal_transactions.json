@@ -6,6 +6,43 @@
     "rows": [
       {
         "identity": {
+          "input_method": "Telex",
+          "source": "Abbreviation",
+          "original_nfc": "legacy-v2-suggestion",
+          "candidate_nfc": "legacy-v2-expansion",
+          "source_rule_id": "seed:legacy-v2"
+        },
+        "global": {
+          "state": "Suggest",
+          "summary": {
+            "positive_at_checkpoint": 0.0,
+            "negative_at_checkpoint": 0.0,
+            "checkpoint_at_ms": null
+          },
+          "events": [
+            {
+              "seq": 77,
+              "at_ms": 100,
+              "positive": 0.0,
+              "negative": 0.2
+            }
+          ],
+          "handled_sequences": [
+            77
+          ],
+          "recent_auto": [],
+          "settled_auto_ids": [],
+          "settled_suggestion_ids": [
+            9
+          ],
+          "auto_demoted_at_seq": null
+        },
+        "contexts": [],
+        "personal_observation_count": 0,
+        "personal_promoted": false
+      },
+      {
+        "identity": {
           "input_method": "Vni",
           "source": "Personal",
           "original_nfc": "legacy-v2-original",

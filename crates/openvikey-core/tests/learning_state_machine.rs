@@ -10,6 +10,7 @@ use openvikey_core::decision::{ActionCap, DecisionConfig, DecisionState, decide}
 use openvikey_core::feedback::LearningSession;
 use openvikey_core::generate::personal::PersonalGenerator;
 use openvikey_core::generate::{Generator, LeftContext};
+use openvikey_core::learning_config::LearningConfigV2;
 use openvikey_core::lexicon::Lexicon;
 use openvikey_core::model::{AdaptiveModel, ModelConfig, ModelView, RuleContextKey};
 use openvikey_core::rank::{RankingContext, ScoreConfig, rank};
@@ -483,6 +484,21 @@ fn evidence_decay_uses_injected_time_and_clamps_negative_age() {
 }
 
 #[test]
+fn shown_suggestion_increments_impression_not_negative_mass() {
+    let mut model = AdaptiveModel::default();
+    let rule = key("ko", "không");
+
+    model.record_impression(&rule, 1, 100, true);
+    model.record_impression(&rule, 1, 100, true);
+
+    let row = model.inspection_rows().into_iter().next().unwrap();
+    assert_eq!(row.shown_count, 1);
+    assert_eq!(row.selected_count, 0);
+    assert_eq!(row.last_shown_at_ms, Some(100));
+    assert_eq!(model.negative_mass(&rule, 100), 0.0);
+}
+
+#[test]
 fn settled_signals_are_recorded_exactly_once() {
     let mut model = AdaptiveModel::default();
     let rule = key("ko", "không");
@@ -508,7 +524,8 @@ fn settled_signals_are_recorded_exactly_once() {
     );
 
     assert!((model.positive_mass(&rule, 0) - 0.3).abs() < 1e-12);
-    assert!((model.negative_mass(&rule, 0) - 0.2).abs() < 1e-12);
+    assert!(model.negative_mass(&rule, 0).abs() < 1e-12);
+    assert_eq!(model.inspection_rows()[0].shown_count, 1);
 }
 
 #[test]
@@ -703,17 +720,25 @@ fn sibling_context_auto_does_not_force_an_unseen_context() {
 }
 
 #[test]
-fn auto_settled_mass_caps_at_twenty_four_settlements() {
-    let mut model = AdaptiveModel::default();
+fn settlement_alone_cannot_cross_the_weak_positive_cap_or_promote() {
+    let mut model = AdaptiveModel::new(ModelConfig {
+        max_events_per_rule: 1,
+        ..ModelConfig::default()
+    });
     let rule = key("ko", "không");
-    for edit_id in 1..=25 {
+    model.record_decision(&rule, DecisionState::Suggest, true);
+    for edit_id in 1..=100 {
         model.apply_feedback(
             &rule,
             &feedback(edit_id, 0, FeedbackKind::AutoSettled { edit_id }),
             true,
         );
     }
-    assert!((model.positive_mass(&rule, 0) - 7.2).abs() < 1e-12);
+    assert!(
+        model.positive_mass(&rule, 0)
+            <= LearningConfigV2::compatibility_v1().weak_positive_cap + 1e-12
+    );
+    assert_eq!(model.state(&rule, 0), DecisionState::Suggest);
 }
 
 #[test]

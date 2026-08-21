@@ -114,7 +114,7 @@ fn accept_event(seq: u64) -> FeedbackEvent {
 }
 
 #[test]
-fn suggestion_settled_still_adds_negative_zero_point_two_in_v1() {
+fn legacy_suggestion_settled_is_impression_only_in_v2_runtime() {
     let mut model = AdaptiveModel::default();
     let key = ko_rule();
     model.apply_feedback(
@@ -126,7 +126,8 @@ fn suggestion_settled_still_adds_negative_zero_point_two_in_v1() {
         },
         true,
     );
-    assert!((model.negative_mass(&key, 0) - 0.2).abs() < 1e-9);
+    assert!(model.negative_mass(&key, 0).abs() < 1e-9);
+    assert_eq!(model.inspection_rows()[0].shown_count, 1);
 }
 
 #[test]

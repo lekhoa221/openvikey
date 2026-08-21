@@ -899,6 +899,14 @@ impl LabSession {
             self.intervention,
             guard.as_ref(),
         );
+        if event.context.allow_learning {
+            for candidate in slice.display_candidates() {
+                let key = candidate_rule_key(snapshot, &self.left_context, method, candidate);
+                self.learning
+                    .model_mut()
+                    .record_impression(&key, event.seq, event.at_ms, true);
+            }
+        }
         if at_commit && let Some(EngineAction::ReplaceRange(action)) = &slice.action {
             let reason = slice.plan.as_ref().map(|plan| plan.reason);
             let structural = reason == Some(InterventionReason::SafeStructuralFix);

@@ -15,7 +15,6 @@ use std::collections::BTreeSet;
 const DEFAULT_HALF_LIFE_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
 const IMPLICIT_CORRECTION_MASS: f64 = 1.5;
 const SETTLEMENT_ADD: f64 = 0.3;
-const MAX_SETTLEMENTS_PER_CORRECTION: usize = 24;
 const PERSONAL_PROMOTE_K: u32 = 2;
 const MAX_PERSONAL_TRANSACTIONS: usize = 64;
 const PERSONAL_RULE_ID: &str = "personal-correction";
@@ -67,6 +66,8 @@ struct EvidenceBucket {
     #[serde(default)]
     settled_auto_ids: BTreeSet<u64>,
     #[serde(default)]
+    weak_positive_total: f64,
+    #[serde(default)]
     settled_suggestion_ids: BTreeSet<u64>,
     #[serde(default)]
     auto_demoted_at_seq: Option<u64>,
@@ -81,6 +82,7 @@ impl Default for EvidenceBucket {
             handled_sequences: BTreeSet::new(),
             recent_auto: Vec::new(),
             settled_auto_ids: BTreeSet::new(),
+            weak_positive_total: 0.0,
             settled_suggestion_ids: BTreeSet::new(),
             auto_demoted_at_seq: None,
         }
@@ -226,6 +228,14 @@ struct CorrectionRow {
     personal_transactions: Vec<PersonalTransaction>,
     #[serde(default)]
     personal_promoted: bool,
+    #[serde(default)]
+    shown_count: u64,
+    #[serde(default)]
+    selected_count: u64,
+    #[serde(default)]
+    last_shown_at_ms: Option<i64>,
+    #[serde(default)]
+    last_impression_seq: Option<u64>,
 }
 
 impl CorrectionRow {
@@ -237,6 +247,10 @@ impl CorrectionRow {
             legacy_personal_observation_count: 0,
             personal_transactions: Vec::new(),
             personal_promoted: false,
+            shown_count: 0,
+            selected_count: 0,
+            last_shown_at_ms: None,
+            last_impression_seq: None,
         }
     }
 
@@ -294,6 +308,9 @@ pub(crate) struct CorrectionInspection {
     pub positive_evidence: f64,
     pub negative_evidence: f64,
     pub last_evidence_at_ms: Option<i64>,
+    pub shown_count: u64,
+    pub selected_count: u64,
+    pub last_shown_at_ms: Option<i64>,
 }
 
 pub(crate) struct ImportedOperationalMetadata<'a> {
@@ -357,6 +374,26 @@ impl CorrectionMemory {
         if bucket.state == DecisionState::Auto {
             bucket.auto_demoted_at_seq = None;
         }
+    }
+
+    /// Records one actually displayed suggestion without changing confidence evidence.
+    pub fn record_impression(
+        &mut self,
+        identity: &CorrectionIdentity,
+        seq: u64,
+        at_ms: i64,
+    ) -> bool {
+        let row = self.row_mut(identity);
+        if row
+            .last_impression_seq
+            .is_some_and(|last_seq| seq <= last_seq)
+        {
+            return false;
+        }
+        row.shown_count = row.shown_count.saturating_add(1);
+        row.last_shown_at_ms = Some(row.last_shown_at_ms.map_or(at_ms, |last| last.max(at_ms)));
+        row.last_impression_seq = Some(seq);
+        true
     }
 
     /// Confidence blended toward global evidence according to context support.
@@ -493,6 +530,7 @@ impl CorrectionMemory {
         event: &FeedbackEvent,
         max_events: usize,
         undo_window: usize,
+        weak_positive_cap: f64,
     ) -> (f64, f64) {
         if self
             .row(identity)
@@ -500,7 +538,12 @@ impl CorrectionMemory {
         {
             return (0.0, 0.0);
         }
-        let delta = self.feedback_delta(identity, left_token_nfc, event);
+        let delta = self.feedback_delta(
+            identity,
+            left_token_nfc,
+            event,
+            finite_non_negative(weak_positive_cap),
+        );
         self.apply(
             identity,
             left_token_nfc,
@@ -806,6 +849,25 @@ impl CorrectionMemory {
         }
     }
 
+    pub(crate) fn import_impressions(&mut self, identity: &CorrectionIdentity, shown_count: u64) {
+        let row = self.row_mut(identity);
+        row.shown_count = row.shown_count.max(shown_count);
+    }
+
+    pub(crate) fn import_weak_positive_total(
+        &mut self,
+        identity: &CorrectionIdentity,
+        left_token_nfc: Option<&str>,
+        total: f64,
+    ) {
+        let row = self.row_mut(identity);
+        row.global.weak_positive_total = row.global.weak_positive_total.max(total);
+        if let Some(left) = left_token_nfc {
+            let context = row.context_mut(left);
+            context.weak_positive_total = context.weak_positive_total.max(total);
+        }
+    }
+
     pub(crate) fn set_global_fallback_state(
         &mut self,
         identity: &CorrectionIdentity,
@@ -814,6 +876,44 @@ impl CorrectionMemory {
         let row = self.row_mut(identity);
         if row.global.state == DecisionState::Ignore {
             row.global.state = cap_state(identity, state.min(DecisionState::Suggest));
+        }
+    }
+
+    pub(crate) fn normalize_weak_positive_totals(&mut self, weak_positive_cap: f64) {
+        let cap = finite_non_negative(weak_positive_cap);
+        for row in &mut self.rows {
+            let global_count = u32::try_from(row.global.settled_auto_ids.len()).unwrap_or(u32::MAX);
+            row.global.weak_positive_total = row
+                .global
+                .weak_positive_total
+                .max((f64::from(global_count) * SETTLEMENT_ADD).min(cap));
+            for context in &mut row.contexts {
+                let context_count =
+                    u32::try_from(context.evidence.settled_auto_ids.len()).unwrap_or(u32::MAX);
+                context.evidence.weak_positive_total = context
+                    .evidence
+                    .weak_positive_total
+                    .max((f64::from(context_count) * SETTLEMENT_ADD).min(cap));
+            }
+        }
+    }
+
+    pub(crate) fn normalize_legacy_suggestion_settlements(&mut self) {
+        for row in &mut self.rows {
+            let mut legacy_ids = row.global.settled_suggestion_ids.clone();
+            for context in &row.contexts {
+                legacy_ids.extend(context.evidence.settled_suggestion_ids.iter().copied());
+            }
+            if legacy_ids.is_empty() {
+                continue;
+            }
+            row.shown_count = row
+                .shown_count
+                .max(u64::try_from(legacy_ids.len()).unwrap_or(u64::MAX));
+            remove_legacy_suggestion_mass(&mut row.global);
+            for context in &mut row.contexts {
+                remove_legacy_suggestion_mass(&mut context.evidence);
+            }
         }
     }
 
@@ -863,10 +963,13 @@ impl CorrectionMemory {
         identity: &CorrectionIdentity,
         left_token_nfc: Option<&str>,
         event: &FeedbackEvent,
+        weak_positive_cap: f64,
     ) -> (f64, f64) {
         match event.kind {
             FeedbackKind::Accept { .. } => {
                 self.promote_suggest(identity, left_token_nfc);
+                let row = self.row_mut(identity);
+                row.selected_count = row.selected_count.saturating_add(1);
                 (1.0, 0.0)
             }
             FeedbackKind::ImplicitCorrection { .. } => {
@@ -880,29 +983,32 @@ impl CorrectionMemory {
             }
             FeedbackKind::AutoSettled { edit_id } => {
                 let row = self.row_mut(identity);
-                if !row.global.settled_auto_ids.insert(edit_id)
-                    || row.global.settled_auto_ids.len() > MAX_SETTLEMENTS_PER_CORRECTION
-                {
-                    (0.0, 0.0)
-                } else {
-                    if let Some(left) = left_token_nfc {
-                        row.context_mut(left).settled_auto_ids.insert(edit_id);
-                    }
-                    (SETTLEMENT_ADD, 0.0)
+                if !row.global.settled_auto_ids.insert(edit_id) {
+                    return (0.0, 0.0);
                 }
+                if let Some(left) = left_token_nfc {
+                    row.context_mut(left).settled_auto_ids.insert(edit_id);
+                }
+                let remaining = (weak_positive_cap - row.global.weak_positive_total).max(0.0);
+                let delta = SETTLEMENT_ADD.min(remaining);
+                row.global.weak_positive_total += delta;
+                if let Some(left) = left_token_nfc {
+                    row.context_mut(left).weak_positive_total += delta;
+                }
+                (delta, 0.0)
             }
             FeedbackKind::SuggestionSettled { candidate_id } => {
                 let row = self.row_mut(identity);
-                if row.global.settled_suggestion_ids.insert(candidate_id) {
+                let newly_seen = row.global.settled_suggestion_ids.insert(candidate_id);
+                if newly_seen {
                     if let Some(left) = left_token_nfc {
                         row.context_mut(left)
                             .settled_suggestion_ids
                             .insert(candidate_id);
                     }
-                    (0.0, 0.2)
-                } else {
-                    (0.0, 0.0)
+                    self.record_impression(identity, event.seq, event.at_ms);
                 }
+                (0.0, 0.0)
             }
         }
     }
@@ -1037,6 +1143,15 @@ impl CorrectionMemory {
     }
 }
 
+fn remove_legacy_suggestion_mass(bucket: &mut EvidenceBucket) {
+    if bucket.settled_suggestion_ids.is_empty() {
+        return;
+    }
+    bucket.events.retain(|event| {
+        event.positive.abs() >= f64::EPSILON || (event.negative - 0.2).abs() >= f64::EPSILON
+    });
+}
+
 fn bucket_mut<'a>(
     row: &'a mut CorrectionRow,
     left_token_nfc: Option<&str>,
@@ -1096,6 +1211,8 @@ fn push_inspection(
         && bucket.summary.checkpoint_at_ms.is_none()
         && bucket.state == DecisionState::Ignore
         && row.personal_transactions.is_empty()
+        && row.shown_count == 0
+        && row.selected_count == 0
     {
         return;
     }
@@ -1109,6 +1226,9 @@ fn push_inspection(
         positive_evidence: raw.0,
         negative_evidence: raw.1,
         last_evidence_at_ms: bucket.last_activity_at_ms(),
+        shown_count: row.shown_count,
+        selected_count: row.selected_count,
+        last_shown_at_ms: row.last_shown_at_ms,
     });
 }
 
@@ -1126,6 +1246,8 @@ fn row_priority(left: &CorrectionRow, right: &CorrectionRow) -> Ordering {
         // silently erase the safety signal and allow an unwanted Auto again.
         .then_with(|| left.has_demotion_marker().cmp(&right.has_demotion_marker()))
         .then_with(|| left.personal_promoted.cmp(&right.personal_promoted))
+        // Repeatedly shown but never selected is an eviction signal, not negative evidence.
+        .then_with(|| unused_impressions(right).cmp(&unused_impressions(left)))
         .then_with(|| evidence_strength(&left.global).total_cmp(&evidence_strength(&right.global)))
         .then_with(|| {
             left.global
@@ -1160,6 +1282,14 @@ fn context_priority(
         })
         .then_with(|| left_row.identity.cmp(&right_row.identity))
         .then_with(|| left.left_token_nfc.cmp(&right.left_token_nfc))
+}
+
+fn unused_impressions(row: &CorrectionRow) -> u64 {
+    if row.selected_count == 0 {
+        row.shown_count
+    } else {
+        0
+    }
 }
 
 fn evidence_strength(bucket: &EvidenceBucket) -> f64 {
