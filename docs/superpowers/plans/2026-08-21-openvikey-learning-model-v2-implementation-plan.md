@@ -1223,7 +1223,7 @@ git commit -am "feat: compact correction evidence without changing query results
 - Consumes: v1 `{version, config, entries, personal}`
 - Produces: v2 `{version:2, config_hash, correction_memory, user_language_model, maintenance_metadata}`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```rust
 #[test]
@@ -1248,15 +1248,15 @@ fn serde_default_cannot_smuggle_v1_as_v2_meanings() {
 
 Build the v1 fixture from a real `to_json_payload()` of current code (capture in test setup generator, then freeze bytes).
 
-- [ ] **Step 2: Run — expect FAIL** (`version == 1`)
+- [x] **Step 2: Run — expect FAIL** (`version == 1`)
 
-- [ ] **Step 3: Implement migration exactly as spec §11.2.** Encrypted envelope unchanged (lab). Windows open JSON (ADR 0008) still stores payload bytes. Backup remains the existing `.bak` path. Do not auto-upgrade intervention rights.
+- [x] **Step 3: Implement migration exactly as spec §11.2.** Encrypted envelope unchanged (lab). Windows open JSON (ADR 0008) still stores payload bytes. Backup remains the existing `.bak` path. Do not auto-upgrade intervention rights.
 
 Wire `ModelView` to blended query. Invert `state_uses_max_across_left_token_buckets`.
 
 Empty language model namespace is `{"unigrams":[],"bigrams":[]}` for now.
 
-- [ ] **Step 4: Run**
+- [x] **Step 4: Run**
 
 ```powershell
 cargo test -p openvikey-core --test model_migration_v2 --test learning_state_machine --test physical_forget
@@ -1264,7 +1264,7 @@ cargo test -p openvikey-lab --test session_capture
 cargo test -p openvikey-win --test ui_rules
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git commit -am "feat: migrate adaptive model payload to v2 correction memory"

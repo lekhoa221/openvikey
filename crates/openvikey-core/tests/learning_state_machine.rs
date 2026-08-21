@@ -607,7 +607,7 @@ fn learning_disabled_does_not_mutate_model() {
 }
 
 #[test]
-fn left_token_backoff_sums_mass_and_keeps_other_candidates_isolated() {
+fn left_token_refinement_blends_mass_and_keeps_other_candidates_isolated() {
     let toi = key("khogn", "không");
     let mut rat = toi.clone();
     rat.left_token_nfc = Some("rất".to_string());
@@ -632,8 +632,8 @@ fn left_token_backoff_sums_mass_and_keeps_other_candidates_isolated() {
         true,
     );
 
-    assert_eq!(model.positive_mass(&toi, 100), 2.0);
-    assert_eq!(model.positive_mass(&rat, 100), 2.0);
+    assert!((model.positive_mass(&toi, 100) - 5.0 / 3.0).abs() < 1e-12);
+    assert!((model.positive_mass(&rat, 100) - 5.0 / 3.0).abs() < 1e-12);
     assert_eq!(model.positive_mass(&other, 100), 1.0);
 }
 
@@ -673,13 +673,14 @@ fn personal_store_promotes_on_second_repeat_and_old_payload_loads() {
 }
 
 #[test]
-fn left_token_backoff_uses_max_decision_state() {
+fn sibling_context_auto_does_not_force_an_unseen_context() {
     let toi = key("khogn", "không");
     let mut rat = toi.clone();
     rat.left_token_nfc = Some("rất".to_string());
     let mut model = AdaptiveModel::default();
     model.record_decision(&toi, DecisionState::Auto, true);
-    assert_eq!(model.state(&rat, 0), DecisionState::Auto);
+    assert_eq!(model.state(&toi, 0), DecisionState::Auto);
+    assert_eq!(model.state(&rat, 0), DecisionState::Ignore);
 }
 
 #[test]

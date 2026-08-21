@@ -6,11 +6,18 @@
 
 use crate::decision::{ActionCap, DecisionState};
 use crate::intervention::CorrectionIdentity;
+use crate::types::{CandidateSource, FeedbackEvent, FeedbackKind, InputMethod};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
 const DEFAULT_HALF_LIFE_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
+const IMPLICIT_CORRECTION_MASS: f64 = 1.5;
+const SETTLEMENT_ADD: f64 = 0.3;
+const MAX_SETTLEMENTS_PER_CORRECTION: usize = 24;
+const PERSONAL_PROMOTE_K: u32 = 2;
+const PERSONAL_RULE_ID: &str = "personal-correction";
 
 const fn default_half_life_ms() -> i64 {
     DEFAULT_HALF_LIFE_MS
@@ -32,6 +39,13 @@ struct EvidenceSummary {
     checkpoint_at_ms: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct AutoEmission {
+    edit_id: u64,
+    at_ms: i64,
+    undone: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct EvidenceBucket {
     state: DecisionState,
@@ -40,6 +54,14 @@ struct EvidenceBucket {
     events: Vec<CorrectionEvidence>,
     #[serde(default)]
     handled_sequences: BTreeSet<u64>,
+    #[serde(default)]
+    recent_auto: Vec<AutoEmission>,
+    #[serde(default)]
+    settled_auto_ids: BTreeSet<u64>,
+    #[serde(default)]
+    settled_suggestion_ids: BTreeSet<u64>,
+    #[serde(default)]
+    auto_demoted_at_seq: Option<u64>,
 }
 
 impl Default for EvidenceBucket {
@@ -49,6 +71,10 @@ impl Default for EvidenceBucket {
             summary: EvidenceSummary::default(),
             events: Vec::new(),
             handled_sequences: BTreeSet::new(),
+            recent_auto: Vec::new(),
+            settled_auto_ids: BTreeSet::new(),
+            settled_suggestion_ids: BTreeSet::new(),
+            auto_demoted_at_seq: None,
         }
     }
 }
@@ -63,8 +89,10 @@ impl EvidenceBucket {
             negative: finite_non_negative(evidence.negative),
             ..evidence
         };
-        self.events.push(evidence);
-        self.events.sort_by_key(|event| (event.at_ms, event.seq));
+        if evidence.positive > 0.0 || evidence.negative > 0.0 {
+            self.events.push(evidence);
+            self.events.sort_by_key(|event| (event.at_ms, event.seq));
+        }
     }
 
     fn mass(&self, evaluate_at_ms: i64, half_life_ms: i64) -> (f64, f64) {
@@ -83,6 +111,16 @@ impl EvidenceBucket {
                     mass.1 + event.negative * factor,
                 )
             },
+        )
+    }
+
+    fn raw_mass(&self) -> (f64, f64) {
+        self.events.iter().fold(
+            (
+                self.summary.positive_at_checkpoint,
+                self.summary.negative_at_checkpoint,
+            ),
+            |mass, event| (mass.0 + event.positive, mass.1 + event.negative),
         )
     }
 
@@ -107,10 +145,59 @@ impl EvidenceBucket {
             checkpoint_at_ms: Some(evaluate_at_ms),
         };
         self.events.drain(..excess);
-        trim_handled_sequences(
+        trim_set(
             &mut self.handled_sequences,
             max_recent_events.saturating_mul(2),
         );
+    }
+
+    fn record_auto_emission(&mut self, edit_id: u64, at_ms: i64, undo_window: usize) {
+        if self.recent_auto.iter().any(|item| item.edit_id == edit_id) {
+            return;
+        }
+        self.recent_auto.push(AutoEmission {
+            edit_id,
+            at_ms,
+            undone: false,
+        });
+        trim_vec_front(&mut self.recent_auto, undo_window);
+    }
+
+    fn mark_undo(&mut self, edit_id: u64, seq: u64) {
+        if let Some(emission) = self
+            .recent_auto
+            .iter_mut()
+            .find(|emission| emission.edit_id == edit_id)
+        {
+            emission.undone = true;
+        }
+        if self.recent_auto.iter().filter(|item| item.undone).count() >= 2 {
+            self.state = DecisionState::Suggest;
+            self.auto_demoted_at_seq.get_or_insert(seq);
+        }
+    }
+
+    fn auto_allowed(&self, evaluate_at_ms: i64, half_life_ms: i64) -> bool {
+        let Some(demoted_at_seq) = self.auto_demoted_at_seq else {
+            return true;
+        };
+        self.events
+            .iter()
+            .filter(|event| event.seq > demoted_at_seq)
+            .map(|event| {
+                event.positive * decay_factor(event.at_ms, evaluate_at_ms, half_life_ms.max(1))
+            })
+            .sum::<f64>()
+            >= 18.0
+    }
+
+    fn last_activity_at_ms(&self) -> Option<i64> {
+        self.events
+            .iter()
+            .map(|event| event.at_ms)
+            .chain(self.recent_auto.iter().map(|emission| emission.at_ms))
+            .chain(self.summary.checkpoint_at_ms)
+            .max()
     }
 }
 
@@ -125,6 +212,10 @@ struct CorrectionRow {
     identity: CorrectionIdentity,
     global: EvidenceBucket,
     contexts: Vec<ContextBucket>,
+    #[serde(default)]
+    personal_observation_count: u32,
+    #[serde(default)]
+    personal_promoted: bool,
 }
 
 impl CorrectionRow {
@@ -133,6 +224,8 @@ impl CorrectionRow {
             identity,
             global: EvidenceBucket::default(),
             contexts: Vec::new(),
+            personal_observation_count: 0,
+            personal_promoted: false,
         }
     }
 
@@ -161,10 +254,48 @@ impl CorrectionRow {
             }
         }
     }
+
+    fn retention_state(&self) -> DecisionState {
+        self.contexts
+            .iter()
+            .map(|context| context.evidence.state)
+            .chain(std::iter::once(self.global.state))
+            .max()
+            .unwrap_or(DecisionState::Ignore)
+    }
+
+    fn has_demotion_marker(&self) -> bool {
+        self.global.auto_demoted_at_seq.is_some()
+            || self
+                .contexts
+                .iter()
+                .any(|context| context.evidence.auto_demoted_at_seq.is_some())
+    }
+}
+
+/// Owned read projection used by the payload facade and inspection UI.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CorrectionInspection {
+    pub identity: CorrectionIdentity,
+    pub left_token_nfc: Option<String>,
+    pub state: DecisionState,
+    pub evidence_count: usize,
+    pub positive_evidence: f64,
+    pub negative_evidence: f64,
+    pub last_evidence_at_ms: Option<i64>,
+}
+
+pub(crate) struct ImportedOperationalMetadata<'a> {
+    pub recent_auto: &'a [(u64, i64, bool)],
+    pub handled_sequences: &'a BTreeSet<u64>,
+    pub settled_auto_ids: &'a BTreeSet<u64>,
+    pub settled_suggestion_ids: &'a BTreeSet<u64>,
+    pub auto_demoted_at_seq: Option<u64>,
 }
 
 /// Bounded payload namespace for exact-correction rows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CorrectionMemory {
     #[serde(default = "default_half_life_ms")]
     half_life_ms: i64,
@@ -173,14 +304,18 @@ pub struct CorrectionMemory {
 
 impl Default for CorrectionMemory {
     fn default() -> Self {
-        Self {
-            half_life_ms: DEFAULT_HALF_LIFE_MS,
-            rows: Vec::new(),
-        }
+        Self::with_half_life(DEFAULT_HALF_LIFE_MS)
     }
 }
 
 impl CorrectionMemory {
+    pub(crate) fn with_half_life(half_life_ms: i64) -> Self {
+        Self {
+            half_life_ms: half_life_ms.max(1),
+            rows: Vec::new(),
+        }
+    }
+
     /// Record evidence globally and, when supplied, in exactly one context bucket.
     pub fn apply(
         &mut self,
@@ -206,11 +341,11 @@ impl CorrectionMemory {
         state: DecisionState,
     ) {
         let row = self.row_mut(identity);
-        let bucket = match left_token_nfc {
-            Some(left) => row.context_mut(left),
-            None => &mut row.global,
-        };
+        let bucket = bucket_mut(row, left_token_nfc);
         bucket.state = cap_state(identity, state);
+        if bucket.state == DecisionState::Auto {
+            bucket.auto_demoted_at_seq = None;
+        }
     }
 
     /// Confidence blended toward global evidence according to context support.
@@ -235,7 +370,7 @@ impl CorrectionMemory {
         if support <= 0.0 {
             return global_confidence;
         }
-        let weight = support / (support + finite_non_negative(shrinkage_k));
+        let weight = context_weight(support, shrinkage_k);
         weight * confidence(context_mass) + (1.0 - weight) * global_confidence
     }
 
@@ -255,15 +390,15 @@ impl CorrectionMemory {
         let Some(context) = left_token_nfc.and_then(|left| row.context(left)) else {
             return global;
         };
-        let support = context.mass(evaluate_at_ms, self.half_life_ms);
-        let total_support = support.0 + support.1;
-        if total_support <= 0.0 {
+        let contextual = context.mass(evaluate_at_ms, self.half_life_ms);
+        let support = contextual.0 + contextual.1;
+        if support <= 0.0 {
             return global;
         }
-        let weight = total_support / (total_support + finite_non_negative(shrinkage_k));
+        let weight = context_weight(support, shrinkage_k);
         (
-            weight * support.0 + (1.0 - weight) * global.0,
-            weight * support.1 + (1.0 - weight) * global.1,
+            weight * contextual.0 + (1.0 - weight) * global.0,
+            weight * contextual.1 + (1.0 - weight) * global.1,
         )
     }
 
@@ -287,12 +422,8 @@ impl CorrectionMemory {
         identity: &CorrectionIdentity,
         left_token_nfc: Option<&str>,
     ) -> usize {
-        let Some(row) = self.row(identity) else {
-            return 0;
-        };
-        left_token_nfc
-            .and_then(|left| row.context(left))
-            .map_or(row.global.events.len(), |bucket| bucket.events.len())
+        self.bucket(identity, left_token_nfc)
+            .map_or(0, |bucket| bucket.events.len())
     }
 
     /// Stable SHA-256 over canonical in-memory ordering.
@@ -309,13 +440,374 @@ impl CorrectionMemory {
         identity: &CorrectionIdentity,
         left_token_nfc: Option<&str>,
     ) -> DecisionState {
-        let Some(row) = self.row(identity) else {
-            return DecisionState::Ignore;
-        };
-        let state = left_token_nfc
-            .and_then(|left| row.context(left))
-            .map_or(row.global.state, |bucket| bucket.state);
-        cap_state(identity, state)
+        self.bucket(identity, left_token_nfc)
+            .map_or(DecisionState::Ignore, |bucket| {
+                cap_state(identity, bucket.state)
+            })
+    }
+
+    pub(crate) fn contains(&self, identity: &CorrectionIdentity) -> bool {
+        self.row(identity).is_some()
+    }
+
+    pub(crate) fn prepare_for(
+        &mut self,
+        identity: &CorrectionIdentity,
+        left_token_nfc: Option<&str>,
+        max_corrections: usize,
+        max_context_rows: usize,
+    ) {
+        if self.row(identity).is_none() {
+            while self.rows.len() >= max_corrections.max(1) {
+                let victim = weakest_row_index(&self.rows)
+                    .expect("a non-empty capped correction store has a victim");
+                self.rows.remove(victim);
+            }
+        }
+        if let Some(left) = left_token_nfc {
+            let context_exists = self
+                .row(identity)
+                .and_then(|row| row.context(left))
+                .is_some();
+            if !context_exists {
+                self.evict_contexts_to_fit(max_context_rows.max(1));
+            }
+        }
+    }
+
+    pub(crate) fn apply_feedback(
+        &mut self,
+        identity: &CorrectionIdentity,
+        left_token_nfc: Option<&str>,
+        event: &FeedbackEvent,
+        max_events: usize,
+        undo_window: usize,
+    ) -> (f64, f64) {
+        if self
+            .row(identity)
+            .is_some_and(|row| row.global.handled_sequences.contains(&event.seq))
+        {
+            return (0.0, 0.0);
+        }
+        let delta = self.feedback_delta(identity, left_token_nfc, event);
+        self.apply(
+            identity,
+            left_token_nfc,
+            CorrectionEvidence {
+                seq: event.seq,
+                at_ms: event.at_ms,
+                positive: delta.0,
+                negative: delta.1,
+            },
+        );
+        self.trim_operational(
+            identity,
+            left_token_nfc,
+            max_events.max(1),
+            undo_window.max(1),
+        );
+        delta
+    }
+
+    pub(crate) fn record_auto_emission(
+        &mut self,
+        identity: &CorrectionIdentity,
+        left_token_nfc: Option<&str>,
+        edit_id: u64,
+        at_ms: i64,
+        undo_window: usize,
+    ) {
+        let row = self.row_mut(identity);
+        row.global
+            .record_auto_emission(edit_id, at_ms, undo_window.max(1));
+        if let Some(left) = left_token_nfc {
+            row.context_mut(left)
+                .record_auto_emission(edit_id, at_ms, undo_window.max(1));
+        }
+    }
+
+    pub(crate) fn raw_totals(
+        &self,
+        identity: &CorrectionIdentity,
+        left_token_nfc: Option<&str>,
+    ) -> (f64, f64) {
+        self.bucket(identity, left_token_nfc)
+            .map_or((0.0, 0.0), EvidenceBucket::raw_mass)
+    }
+
+    pub(crate) fn auto_allowed(
+        &self,
+        identity: &CorrectionIdentity,
+        left_token_nfc: Option<&str>,
+        evaluate_at_ms: i64,
+    ) -> bool {
+        self.bucket(identity, left_token_nfc)
+            .is_none_or(|bucket| bucket.auto_allowed(evaluate_at_ms, self.half_life_ms))
+    }
+
+    pub(crate) fn inspection_rows(&self) -> Vec<CorrectionInspection> {
+        let mut rows = Vec::new();
+        for row in &self.rows {
+            // The global bucket duplicates all contextual evidence by design.
+            // Expose it only when no context row exists, avoiding a duplicate UI row.
+            if row.contexts.is_empty() {
+                push_inspection(&mut rows, row, None, &row.global);
+            } else {
+                for context in &row.contexts {
+                    push_inspection(
+                        &mut rows,
+                        row,
+                        Some(context.left_token_nfc.clone()),
+                        &context.evidence,
+                    );
+                }
+            }
+        }
+        rows
+    }
+
+    pub(crate) fn max_recorded_edit_id(&self) -> u64 {
+        self.rows
+            .iter()
+            .flat_map(|row| {
+                std::iter::once(&row.global)
+                    .chain(row.contexts.iter().map(|context| &context.evidence))
+            })
+            .fold(0, |maximum, bucket| {
+                let auto_max = bucket
+                    .recent_auto
+                    .iter()
+                    .map(|emission| emission.edit_id)
+                    .max()
+                    .unwrap_or(0);
+                let settled_max = bucket.settled_auto_ids.last().copied().unwrap_or(0);
+                maximum.max(auto_max).max(settled_max)
+            })
+    }
+
+    pub(crate) fn forget(&mut self, identity: &CorrectionIdentity) -> bool {
+        let before = self.rows.len();
+        self.rows.retain(|row| &row.identity != identity);
+        self.rows.len() != before
+    }
+
+    pub(crate) fn record_personal_count(
+        &mut self,
+        input_method: InputMethod,
+        original_nfc: String,
+        replacement_nfc: String,
+        max_personal_pairs: usize,
+    ) -> bool {
+        let identity = personal_identity(input_method, original_nfc, replacement_nfc);
+        if self.row(&identity).is_none() && !self.make_room_for_personal(max_personal_pairs.max(1))
+        {
+            return false;
+        }
+        let row = self.row_mut(&identity);
+        row.personal_observation_count = row.personal_observation_count.saturating_add(1);
+        if row.personal_observation_count < PERSONAL_PROMOTE_K || row.personal_promoted {
+            return false;
+        }
+        row.personal_promoted = true;
+        row.global.state = DecisionState::Suggest;
+        true
+    }
+
+    pub(crate) fn import_personal(
+        &mut self,
+        input_method: InputMethod,
+        original_nfc: String,
+        replacement_nfc: String,
+        count: u32,
+        promoted: bool,
+    ) {
+        let identity = personal_identity(input_method, original_nfc, replacement_nfc);
+        let row = self.row_mut(&identity);
+        row.personal_observation_count = row.personal_observation_count.max(count);
+        row.personal_promoted |= promoted;
+        if row.personal_promoted {
+            row.global.state = DecisionState::Suggest;
+        }
+    }
+
+    pub(crate) fn personal_count(
+        &self,
+        input_method: InputMethod,
+        original_nfc: &str,
+        replacement_nfc: &str,
+    ) -> u32 {
+        let identity = personal_identity(
+            input_method,
+            original_nfc.to_string(),
+            replacement_nfc.to_string(),
+        );
+        self.row(&identity)
+            .map_or(0, |row| row.personal_observation_count)
+    }
+
+    pub(crate) fn promoted_personal(&self) -> Vec<(InputMethod, String, String)> {
+        self.rows
+            .iter()
+            .filter(|row| row.identity.source == CandidateSource::Personal && row.personal_promoted)
+            .map(|row| {
+                (
+                    row.identity.input_method,
+                    row.identity.original_nfc.clone(),
+                    row.identity.candidate_nfc.clone(),
+                )
+            })
+            .collect()
+    }
+
+    pub(crate) fn forget_personal(
+        &mut self,
+        input_method: InputMethod,
+        original_nfc: &str,
+        replacement_nfc: &str,
+    ) -> bool {
+        self.forget(&personal_identity(
+            input_method,
+            original_nfc.to_string(),
+            replacement_nfc.to_string(),
+        ))
+    }
+
+    pub(crate) fn import_operational_metadata(
+        &mut self,
+        identity: &CorrectionIdentity,
+        left_token_nfc: Option<&str>,
+        metadata: &ImportedOperationalMetadata<'_>,
+    ) {
+        let row = self.row_mut(identity);
+        import_bucket_metadata(&mut row.global, metadata);
+        if let Some(left) = left_token_nfc {
+            import_bucket_metadata(row.context_mut(left), metadata);
+        }
+    }
+
+    pub(crate) fn set_global_fallback_state(
+        &mut self,
+        identity: &CorrectionIdentity,
+        state: DecisionState,
+    ) {
+        let row = self.row_mut(identity);
+        if row.global.state == DecisionState::Ignore {
+            row.global.state = cap_state(identity, state.min(DecisionState::Suggest));
+        }
+    }
+
+    pub(crate) fn enforce_limits(&mut self, max_corrections: usize, max_context_rows: usize) {
+        while self.rows.len() > max_corrections.max(1) {
+            let victim = weakest_row_index(&self.rows)
+                .expect("an over-cap correction store has an eviction candidate");
+            self.rows.remove(victim);
+        }
+        while self.context_count() > max_context_rows.max(1) {
+            self.remove_weakest_context();
+        }
+    }
+
+    fn feedback_delta(
+        &mut self,
+        identity: &CorrectionIdentity,
+        left_token_nfc: Option<&str>,
+        event: &FeedbackEvent,
+    ) -> (f64, f64) {
+        match event.kind {
+            FeedbackKind::Accept { .. } => {
+                self.promote_suggest(identity, left_token_nfc);
+                (1.0, 0.0)
+            }
+            FeedbackKind::ImplicitCorrection { .. } => {
+                self.promote_suggest(identity, left_token_nfc);
+                (IMPLICIT_CORRECTION_MASS, 0.0)
+            }
+            FeedbackKind::ExplicitReject { .. } => (0.0, 1.0),
+            FeedbackKind::Undo { edit_id } => {
+                self.mark_undo(identity, left_token_nfc, edit_id, event.seq);
+                (0.0, 1.5)
+            }
+            FeedbackKind::AutoSettled { edit_id } => {
+                let row = self.row_mut(identity);
+                if !row.global.settled_auto_ids.insert(edit_id)
+                    || row.global.settled_auto_ids.len() > MAX_SETTLEMENTS_PER_CORRECTION
+                {
+                    (0.0, 0.0)
+                } else {
+                    if let Some(left) = left_token_nfc {
+                        row.context_mut(left).settled_auto_ids.insert(edit_id);
+                    }
+                    (SETTLEMENT_ADD, 0.0)
+                }
+            }
+            FeedbackKind::SuggestionSettled { candidate_id } => {
+                let row = self.row_mut(identity);
+                if row.global.settled_suggestion_ids.insert(candidate_id) {
+                    if let Some(left) = left_token_nfc {
+                        row.context_mut(left)
+                            .settled_suggestion_ids
+                            .insert(candidate_id);
+                    }
+                    (0.0, 0.2)
+                } else {
+                    (0.0, 0.0)
+                }
+            }
+        }
+    }
+
+    fn promote_suggest(&mut self, identity: &CorrectionIdentity, left_token_nfc: Option<&str>) {
+        let row = self.row_mut(identity);
+        if row.global.state == DecisionState::Ignore {
+            row.global.state = DecisionState::Suggest;
+        }
+        if let Some(left) = left_token_nfc {
+            let context = row.context_mut(left);
+            if context.state == DecisionState::Ignore {
+                context.state = DecisionState::Suggest;
+            }
+        }
+    }
+
+    fn mark_undo(
+        &mut self,
+        identity: &CorrectionIdentity,
+        left_token_nfc: Option<&str>,
+        edit_id: u64,
+        seq: u64,
+    ) {
+        let row = self.row_mut(identity);
+        row.global.mark_undo(edit_id, seq);
+        if let Some(left) = left_token_nfc {
+            row.context_mut(left).mark_undo(edit_id, seq);
+        }
+    }
+
+    fn trim_operational(
+        &mut self,
+        identity: &CorrectionIdentity,
+        left_token_nfc: Option<&str>,
+        max_events: usize,
+        undo_window: usize,
+    ) {
+        let row = self.row_mut(identity);
+        trim_bucket_operational(&mut row.global, max_events, undo_window);
+        if let Some(left) = left_token_nfc {
+            trim_bucket_operational(row.context_mut(left), max_events, undo_window);
+        }
+    }
+
+    fn bucket(
+        &self,
+        identity: &CorrectionIdentity,
+        left_token_nfc: Option<&str>,
+    ) -> Option<&EvidenceBucket> {
+        let row = self.row(identity)?;
+        Some(
+            left_token_nfc
+                .and_then(|left| row.context(left))
+                .unwrap_or(&row.global),
+        )
     }
 
     fn row(&self, identity: &CorrectionIdentity) -> Option<&CorrectionRow> {
@@ -335,6 +827,206 @@ impl CorrectionMemory {
             }
         }
     }
+
+    fn context_count(&self) -> usize {
+        self.rows.iter().map(|row| row.contexts.len()).sum()
+    }
+
+    fn evict_contexts_to_fit(&mut self, max_context_rows: usize) {
+        while self.context_count() >= max_context_rows {
+            self.remove_weakest_context();
+        }
+    }
+
+    fn remove_weakest_context(&mut self) {
+        let victim = self
+            .rows
+            .iter()
+            .enumerate()
+            .flat_map(|(row_index, row)| {
+                row.contexts
+                    .iter()
+                    .enumerate()
+                    .map(move |(context_index, context)| (row_index, context_index, row, context))
+            })
+            .min_by(|left, right| context_priority(left.2, left.3, right.2, right.3))
+            .map(|(row_index, context_index, _, _)| (row_index, context_index))
+            .expect("a non-empty context store has an eviction candidate");
+        self.rows[victim.0].contexts.remove(victim.1);
+    }
+
+    fn make_room_for_personal(&mut self, max_personal_pairs: usize) -> bool {
+        let personal_count = self
+            .rows
+            .iter()
+            .filter(|row| row.identity.source == CandidateSource::Personal)
+            .count();
+        if personal_count < max_personal_pairs {
+            return true;
+        }
+        let victim = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| {
+                row.identity.source == CandidateSource::Personal && !row.personal_promoted
+            })
+            .min_by(|(_, left), (_, right)| {
+                left.personal_observation_count
+                    .cmp(&right.personal_observation_count)
+                    .then_with(|| left.identity.cmp(&right.identity))
+            })
+            .map(|(index, _)| index);
+        let Some(victim) = victim else {
+            return false;
+        };
+        self.rows.remove(victim);
+        true
+    }
+}
+
+fn bucket_mut<'a>(
+    row: &'a mut CorrectionRow,
+    left_token_nfc: Option<&str>,
+) -> &'a mut EvidenceBucket {
+    match left_token_nfc {
+        Some(left) => row.context_mut(left),
+        None => &mut row.global,
+    }
+}
+
+fn import_bucket_metadata(bucket: &mut EvidenceBucket, metadata: &ImportedOperationalMetadata<'_>) {
+    for &(edit_id, at_ms, undone) in metadata.recent_auto {
+        if !bucket
+            .recent_auto
+            .iter()
+            .any(|item| item.edit_id == edit_id)
+        {
+            bucket.recent_auto.push(AutoEmission {
+                edit_id,
+                at_ms,
+                undone,
+            });
+        }
+    }
+    bucket
+        .recent_auto
+        .sort_by_key(|item| (item.at_ms, item.edit_id));
+    bucket
+        .handled_sequences
+        .extend(metadata.handled_sequences.iter().copied());
+    bucket
+        .settled_auto_ids
+        .extend(metadata.settled_auto_ids.iter().copied());
+    bucket
+        .settled_suggestion_ids
+        .extend(metadata.settled_suggestion_ids.iter().copied());
+    bucket.auto_demoted_at_seq = match (bucket.auto_demoted_at_seq, metadata.auto_demoted_at_seq) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (left, right) => left.or(right),
+    };
+}
+
+fn trim_bucket_operational(bucket: &mut EvidenceBucket, max_events: usize, undo_window: usize) {
+    trim_set(&mut bucket.handled_sequences, max_events);
+    trim_set(&mut bucket.settled_auto_ids, max_events);
+    trim_set(&mut bucket.settled_suggestion_ids, max_events);
+    trim_vec_front(&mut bucket.recent_auto, undo_window);
+}
+
+fn push_inspection(
+    output: &mut Vec<CorrectionInspection>,
+    row: &CorrectionRow,
+    left_token_nfc: Option<String>,
+    bucket: &EvidenceBucket,
+) {
+    if bucket.events.is_empty()
+        && bucket.summary.checkpoint_at_ms.is_none()
+        && bucket.state == DecisionState::Ignore
+        && row.personal_observation_count == 0
+    {
+        return;
+    }
+    let raw = bucket.raw_mass();
+    let personal_count = usize::try_from(row.personal_observation_count).unwrap_or(usize::MAX);
+    output.push(CorrectionInspection {
+        identity: row.identity.clone(),
+        left_token_nfc,
+        state: cap_state(&row.identity, bucket.state),
+        evidence_count: bucket.events.len().max(personal_count),
+        positive_evidence: raw.0.max(f64::from(row.personal_observation_count)),
+        negative_evidence: raw.1,
+        last_evidence_at_ms: bucket.last_activity_at_ms(),
+    });
+}
+
+fn weakest_row_index(rows: &[CorrectionRow]) -> Option<usize> {
+    rows.iter()
+        .enumerate()
+        .min_by(|(_, left), (_, right)| row_priority(left, right))
+        .map(|(index, _)| index)
+}
+
+fn row_priority(left: &CorrectionRow, right: &CorrectionRow) -> Ordering {
+    left.retention_state()
+        .cmp(&right.retention_state())
+        // A demotion marker is a recent user veto. Keep it so eviction cannot
+        // silently erase the safety signal and allow an unwanted Auto again.
+        .then_with(|| left.has_demotion_marker().cmp(&right.has_demotion_marker()))
+        .then_with(|| left.personal_promoted.cmp(&right.personal_promoted))
+        .then_with(|| evidence_strength(&left.global).total_cmp(&evidence_strength(&right.global)))
+        .then_with(|| {
+            left.global
+                .last_activity_at_ms()
+                .cmp(&right.global.last_activity_at_ms())
+        })
+        .then_with(|| left.identity.cmp(&right.identity))
+}
+
+fn context_priority(
+    left_row: &CorrectionRow,
+    left: &ContextBucket,
+    right_row: &CorrectionRow,
+    right: &ContextBucket,
+) -> Ordering {
+    left.evidence
+        .state
+        .cmp(&right.evidence.state)
+        .then_with(|| {
+            left.evidence
+                .auto_demoted_at_seq
+                .is_some()
+                .cmp(&right.evidence.auto_demoted_at_seq.is_some())
+        })
+        .then_with(|| {
+            evidence_strength(&left.evidence).total_cmp(&evidence_strength(&right.evidence))
+        })
+        .then_with(|| {
+            left.evidence
+                .last_activity_at_ms()
+                .cmp(&right.evidence.last_activity_at_ms())
+        })
+        .then_with(|| left_row.identity.cmp(&right_row.identity))
+        .then_with(|| left.left_token_nfc.cmp(&right.left_token_nfc))
+}
+
+fn evidence_strength(bucket: &EvidenceBucket) -> f64 {
+    let mass = bucket.raw_mass();
+    mass.0 + mass.1
+}
+
+fn personal_identity(
+    input_method: InputMethod,
+    original_nfc: String,
+    replacement_nfc: String,
+) -> CorrectionIdentity {
+    CorrectionIdentity {
+        input_method,
+        source: CandidateSource::Personal,
+        original_nfc,
+        candidate_nfc: replacement_nfc,
+        source_rule_id: PERSONAL_RULE_ID.to_string(),
+    }
 }
 
 fn cap_state(identity: &CorrectionIdentity, state: DecisionState) -> DecisionState {
@@ -345,9 +1037,20 @@ fn cap_state(identity: &CorrectionIdentity, state: DecisionState) -> DecisionSta
     }
 }
 
-fn trim_handled_sequences(sequences: &mut BTreeSet<u64>, max_entries: usize) {
-    while sequences.len() > max_entries {
-        sequences.pop_first();
+fn context_weight(support: f64, shrinkage_k: f64) -> f64 {
+    support / (support + finite_non_negative(shrinkage_k))
+}
+
+fn trim_set(set: &mut BTreeSet<u64>, max_entries: usize) {
+    while set.len() > max_entries {
+        set.pop_first();
+    }
+}
+
+fn trim_vec_front<T>(items: &mut Vec<T>, max_entries: usize) {
+    if items.len() > max_entries {
+        let excess = items.len() - max_entries;
+        items.drain(..excess);
     }
 }
 

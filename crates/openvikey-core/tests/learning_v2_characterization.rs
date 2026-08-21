@@ -159,15 +159,15 @@ fn forget_rule_removes_original_strings_from_payload() {
 }
 
 #[test]
-fn state_uses_max_across_left_token_buckets() {
-    // Superseded by Lát 4 `sibling_context_auto_does_not_force_other_context_auto`.
+fn context_state_no_longer_uses_max_across_siblings() {
     let global = khogn_rule();
     let mut viet = global.clone();
     viet.left_token_nfc = Some("Việt".to_string());
     let mut model = AdaptiveModel::default();
     model.record_decision(&global, DecisionState::Suggest, true);
     model.record_decision(&viet, DecisionState::Auto, true);
-    assert_eq!(model.state(&global, 0), DecisionState::Auto);
+    assert_eq!(model.state(&global, 0), DecisionState::Suggest);
+    assert_eq!(model.state(&viet, 0), DecisionState::Auto);
 }
 
 #[test]

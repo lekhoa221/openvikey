@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "config": {
+    "half_life_ms": 2592000000,
+    "max_events_per_rule": 512,
+    "auto_undo_window": 10,
+    "max_rules": 10000,
+    "max_personal_pairs": 512
+  },
+  "entries": [
+    {
+      "key": {
+        "input_method": "Telex",
+        "source": "Fuzzy",
+        "original_nfc": "original-migration",
+        "candidate_nfc": "candidate-migration",
+        "left_token_nfc": null,
+        "source_rule_id": "rule-migration"
+      },
+      "state": "Suggest",
+      "evidence": [
+        {
+          "seq": 10,
+          "at_ms": 1000,
+          "positive_add": 1.0,
+          "negative_add": 0.0
+        }
+      ],
+      "recent_auto": [],
+      "handled_feedback_seqs": [10],
+      "settled_auto_ids": [],
+      "settled_suggestion_ids": [],
+      "auto_demoted_at_seq": null
+    },
+    {
+      "key": {
+        "input_method": "Telex",
+        "source": "Fuzzy",
+        "original_nfc": "original-migration",
+        "candidate_nfc": "candidate-migration",
+        "left_token_nfc": "tôi",
+        "source_rule_id": "rule-migration"
+      },
+      "state": "Auto",
+      "evidence": [
+        {
+          "seq": 11,
+          "at_ms": 2000,
+          "positive_add": 1.0,
+          "negative_add": 0.0
+        }
+      ],
+      "recent_auto": [
+        {
+          "edit_id": 91,
+          "at_ms": 2100,
+          "undone": false
+        }
+      ],
+      "handled_feedback_seqs": [11],
+      "settled_auto_ids": [],
+      "settled_suggestion_ids": [],
+      "auto_demoted_at_seq": null
+    }
+  ],
+  "personal": {
+    "counts": [
+      {
+        "input_method": "Vni",
+        "original_nfc": "x3uong",
+        "replacement_nfc": "xưởng",
+        "count": 2
+      }
+    ],
+    "promoted": [
+      {
+        "input_method": "Vni",
+        "original_nfc": "x3uong",
+        "replacement_nfc": "xưởng",
+        "count": 0
+      }
+    ]
+  }
+}

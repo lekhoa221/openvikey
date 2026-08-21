@@ -320,42 +320,9 @@ pub fn decode_personal_store_pair(
     if !log.header.model_sha256.is_empty() && log.header.model_sha256 != sha256_hex(model_bytes) {
         return Err(SessionStoreError::InconsistentStore);
     }
-    let max_edit_id = max_edit_id_in_model_payload(model_bytes);
+    let max_edit_id = model.max_recorded_edit_id();
     if max_edit_id > 0 && log.header.next_edit_id <= max_edit_id {
         return Err(SessionStoreError::EditCursorBehindModel);
     }
     Ok((model, log))
-}
-
-fn max_edit_id_in_model_payload(payload: &[u8]) -> u64 {
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(payload) else {
-        return 0;
-    };
-    let Some(entries) = value.get("entries").and_then(serde_json::Value::as_array) else {
-        return 0;
-    };
-    let mut max_id = 0;
-    for entry in entries {
-        if let Some(autos) = entry
-            .get("recent_auto")
-            .and_then(serde_json::Value::as_array)
-        {
-            for auto in autos {
-                if let Some(id) = auto.get("edit_id").and_then(serde_json::Value::as_u64) {
-                    max_id = max_id.max(id);
-                }
-            }
-        }
-        if let Some(ids) = entry
-            .get("settled_auto_ids")
-            .and_then(serde_json::Value::as_array)
-        {
-            for id in ids {
-                if let Some(id) = id.as_u64() {
-                    max_id = max_id.max(id);
-                }
-            }
-        }
-    }
-    max_id
 }

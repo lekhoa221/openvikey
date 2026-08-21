@@ -216,7 +216,7 @@ fn model_dump_writes_nothing_before_successful_authentication() {
     let correct = run_dump(&model_path, "correct horse\n");
     assert!(correct.status.success());
     let dumped: Value = serde_json::from_slice(&correct.stdout).unwrap();
-    assert_eq!(dumped["version"], 1);
+    assert_eq!(dumped["version"], 2);
 }
 
 fn run_dump(path: &Path, passphrase: &str) -> std::process::Output {
