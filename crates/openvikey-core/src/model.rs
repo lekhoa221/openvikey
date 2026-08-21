@@ -11,7 +11,7 @@ use crate::decision::DecisionState;
 use crate::intervention::CorrectionIdentity;
 use crate::learning_config::LearningConfigV2;
 use crate::types::{CandidateSource, FeedbackEvent, InputMethod};
-use crate::user_language::UserLanguageModel;
+use crate::user_language::{UnigramInspectionRow, UserLanguageModel};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -235,15 +235,33 @@ impl AdaptiveModel {
         transaction_id: u64,
         allow_learning: bool,
     ) -> bool {
-        allow_learning
-            && self
-                .user_language_model
-                .commit_transaction(token, left_token, at_ms, transaction_id)
+        if !allow_learning {
+            return false;
+        }
+        let config = LearningConfigV2::compatibility_v1();
+        self.user_language_model.commit_transaction_bounded(
+            token,
+            left_token,
+            at_ms,
+            transaction_id,
+            config.max_unigrams,
+            config.max_bigrams,
+        )
     }
 
     #[must_use]
     pub fn unigram_count(&self, token: &str) -> u64 {
         self.user_language_model.unigram(token)
+    }
+
+    #[must_use]
+    pub fn language_unigrams(&self) -> Vec<UnigramInspectionRow> {
+        self.user_language_model.unigram_rows()
+    }
+
+    /// Removes only language-history rows for one token.
+    pub fn forget_token(&mut self, token: &str) -> bool {
+        self.user_language_model.forget_token(token)
     }
 
     /// Records the operational veto from an immediate revert without adding evidence mass.
@@ -303,6 +321,10 @@ impl AdaptiveModel {
                 model
                     .correction_memory
                     .enforce_limits(max_rules, DEFAULT_MAX_CONTEXT_ROWS);
+                let config = LearningConfigV2::compatibility_v1();
+                model
+                    .user_language_model
+                    .enforce_limits(config.max_unigrams, config.max_bigrams);
                 Ok(model)
             }
             _ => Err(ModelError::UnsupportedVersion),

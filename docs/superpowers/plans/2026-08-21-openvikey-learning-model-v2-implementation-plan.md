@@ -1574,7 +1574,7 @@ git commit -am "feat: learn settled unigrams and use them only to rerank suggest
 **Interfaces:**
 - Produces: `forget_token("Nam")` vs `forget_correction(X→Y)` as distinct operations
 
-- [ ] **Step 1: Tests**
+- [x] **Step 1: Tests**
 
 ```rust
 #[test]
@@ -1585,9 +1585,9 @@ fn forget_token_does_not_delete_correction_row() { /* */ }
 fn forget_correction_does_not_delete_unigram_if_user_typed_the_word() { /* */ }
 ```
 
-- [ ] **Step 2: Implement eviction order spec §8.6. Forget-word API on `AdaptiveModel`.
+- [x] **Step 2: Implement eviction order spec §8.6. Forget-word API on `AdaptiveModel`.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```powershell
 git commit -am "feat: prune unigrams and separate forget-word from forget-correction"

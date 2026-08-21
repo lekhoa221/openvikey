@@ -2,10 +2,11 @@ use openvikey_core::correction::InterventionConfig;
 use openvikey_core::intervention::{InterventionAction, plan_intervention};
 use openvikey_core::learning_config::LearningConfigV2;
 use openvikey_core::lexicon::Lexicon;
-use openvikey_core::model::AdaptiveModel;
+use openvikey_core::model::{AdaptiveModel, ModelView, RuleContextKey};
 use openvikey_core::rank::{RankingContext, ScoreConfig, rank};
 use openvikey_core::types::{
-    Candidate, CandidateSource, CompositionSnapshot, InputContext, InputMethod,
+    Candidate, CandidateSource, CompositionSnapshot, FeedbackEvent, FeedbackKind, InputContext,
+    InputMethod,
 };
 use openvikey_core::user_language::UserLanguageModel;
 
@@ -112,4 +113,82 @@ fn unigram_can_rerank_but_cannot_grant_auto_without_exact_evidence() {
     );
     assert_eq!(plan.action, InterventionAction::DisplaySuggestion);
     assert!(plan.score_breakdown.unigram > 0.0);
+}
+
+#[test]
+fn prune_when_over_cap_drops_stale_low_count_first() {
+    let mut language = UserLanguageModel::default();
+    assert!(language.commit_bounded("stale", None, 0, 3, 30));
+    assert!(language.commit_bounded("strong", None, 1, 3, 30));
+    assert!(language.commit_bounded("strong", None, 2, 3, 30));
+    assert!(language.commit_bounded("recent", None, 100, 3, 30));
+
+    assert!(language.commit_bounded("new", None, 200, 3, 30));
+
+    assert_eq!(language.unigram("stale"), 0);
+    assert_eq!(language.unigram("strong"), 2);
+    assert_eq!(language.unigram("recent"), 1);
+    assert_eq!(language.unigram("new"), 1);
+    assert_eq!(language.unigram_count(), 3);
+}
+
+fn correction_rule() -> RuleContextKey {
+    RuleContextKey {
+        input_method: InputMethod::Telex,
+        source: CandidateSource::Fuzzy,
+        original_nfc: "khogn".into(),
+        candidate_nfc: "không".into(),
+        left_token_nfc: None,
+        source_rule_id: "fuzzy:khogn".into(),
+    }
+}
+
+fn seed_correction(model: &mut AdaptiveModel) {
+    model.apply_feedback(
+        &correction_rule(),
+        &FeedbackEvent {
+            seq: 1,
+            at_ms: 0,
+            kind: FeedbackKind::Accept { candidate_id: 42 },
+        },
+        true,
+    );
+}
+
+#[test]
+fn forget_token_does_not_delete_correction_row() {
+    let mut model = AdaptiveModel::default();
+    seed_correction(&mut model);
+    assert!(model.record_language_commit("không", None, 1, 2, true));
+    let correction_mass = model.positive_mass(&correction_rule(), 1);
+
+    assert!(model.forget_token("không"));
+
+    assert_eq!(model.unigram_count("không"), 0);
+    assert!((model.positive_mass(&correction_rule(), 1) - correction_mass).abs() < 1e-12);
+}
+
+#[test]
+fn forget_correction_does_not_delete_unigram() {
+    let mut model = AdaptiveModel::default();
+    seed_correction(&mut model);
+    assert!(model.record_language_commit("không", None, 1, 2, true));
+
+    assert!(model.forget_rule(&correction_rule()));
+
+    assert_eq!(model.unigram_count("không"), 1);
+    assert!(model.positive_mass(&correction_rule(), 1).abs() < 1e-12);
+}
+
+#[test]
+fn unigram_inspection_and_forget_survive_payload_round_trip() {
+    let mut model = AdaptiveModel::default();
+    assert!(model.record_language_commit("Nam", None, 10, 1, true));
+    assert_eq!(model.language_unigrams()[0].token_nfc, "Nam");
+
+    assert!(model.forget_token("Nam"));
+    let payload = model.to_json_payload().unwrap();
+    let reloaded = AdaptiveModel::from_json_payload(&payload).unwrap();
+
+    assert!(reloaded.language_unigrams().is_empty());
 }
