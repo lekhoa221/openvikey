@@ -171,8 +171,7 @@ fn state_uses_max_across_left_token_buckets() {
 }
 
 #[test]
-fn personal_store_rejects_new_pair_at_512() {
-    // Superseded by Lát 3 `personal_at_cap_evicts_weak_count_row_instead_of_dropping_new_pair`.
+fn personal_store_evicts_weak_pair_at_512_instead_of_rejecting_new_pair() {
     let mut model = AdaptiveModel::default();
     for index in 0..512_u32 {
         let original = format!("orig{index}");
@@ -190,8 +189,12 @@ fn personal_store_rejects_new_pair_at_512() {
     );
     assert!(!model.record_personal_correction(InputMethod::Telex, "orig512", "repl512", true));
     assert_eq!(
-        model.personal_correction_count(InputMethod::Telex, "orig512", "repl512"),
+        model.personal_correction_count(InputMethod::Telex, "orig0", "repl0"),
         0
+    );
+    assert_eq!(
+        model.personal_correction_count(InputMethod::Telex, "orig512", "repl512"),
+        1
     );
 }
 

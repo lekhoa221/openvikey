@@ -14,7 +14,16 @@ const IMPLICIT_CORRECTION_MASS: f64 = 1.5;
 const SETTLEMENT_ADD: f64 = 0.3;
 const MAX_SETTLEMENTS_PER_RULE: usize = 24;
 const PERSONAL_PROMOTE_K: u32 = 2;
-const MAX_PERSONAL_PAIRS: usize = 512;
+const DEFAULT_MAX_RULES: usize = 10_000;
+const DEFAULT_MAX_PERSONAL_PAIRS: usize = 512;
+
+const fn default_max_rules() -> usize {
+    DEFAULT_MAX_RULES
+}
+
+const fn default_max_personal_pairs() -> usize {
+    DEFAULT_MAX_PERSONAL_PAIRS
+}
 
 /// Stable learning key. Two original→candidate pairs never share evidence.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -44,6 +53,10 @@ pub struct ModelConfig {
     pub half_life_ms: i64,
     pub max_events_per_rule: usize,
     pub auto_undo_window: usize,
+    #[serde(default = "default_max_rules")]
+    pub max_rules: usize,
+    #[serde(default = "default_max_personal_pairs")]
+    pub max_personal_pairs: usize,
 }
 
 impl Default for ModelConfig {
@@ -52,6 +65,8 @@ impl Default for ModelConfig {
             half_life_ms: DEFAULT_HALF_LIFE_MS,
             max_events_per_rule: 512,
             auto_undo_window: 10,
+            max_rules: DEFAULT_MAX_RULES,
+            max_personal_pairs: DEFAULT_MAX_PERSONAL_PAIRS,
         }
     }
 }
@@ -97,6 +112,61 @@ impl RuleEntry {
             auto_demoted_at_seq: None,
         }
     }
+}
+
+fn find_entry_and_eviction_candidate(
+    entries: &[RuleEntry],
+    key: &RuleContextKey,
+) -> (Option<usize>, Option<usize>) {
+    let mut victim = None;
+    for (index, entry) in entries.iter().enumerate() {
+        if &entry.key == key {
+            return (Some(index), victim);
+        }
+        if victim.is_none_or(|current| eviction_priority(entry, &entries[current]).is_lt()) {
+            victim = Some(index);
+        }
+    }
+    (None, victim)
+}
+
+fn eviction_candidate(entries: &[RuleEntry]) -> Option<usize> {
+    entries
+        .iter()
+        .enumerate()
+        .min_by(|(_, left), (_, right)| eviction_priority(left, right))
+        .map(|(index, _)| index)
+}
+
+fn eviction_priority(left: &RuleEntry, right: &RuleEntry) -> std::cmp::Ordering {
+    left.state
+        .cmp(&right.state)
+        .then_with(|| {
+            left.auto_demoted_at_seq
+                .is_some()
+                .cmp(&right.auto_demoted_at_seq.is_some())
+        })
+        .then_with(|| evidence_strength(left).total_cmp(&evidence_strength(right)))
+        .then_with(|| last_rule_activity(left).cmp(&last_rule_activity(right)))
+        .then_with(|| left.key.cmp(&right.key))
+}
+
+fn evidence_strength(entry: &RuleEntry) -> f64 {
+    entry
+        .evidence
+        .iter()
+        .map(|event| event.positive_add.max(0.0) + event.negative_add.max(0.0))
+        .sum()
+}
+
+fn last_rule_activity(entry: &RuleEntry) -> i64 {
+    entry
+        .evidence
+        .iter()
+        .map(|event| event.at_ms)
+        .chain(entry.recent_auto.iter().map(|emission| emission.at_ms))
+        .max()
+        .unwrap_or(i64::MIN)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -324,6 +394,7 @@ impl AdaptiveModel {
             return Err(ModelError::UnsupportedVersion);
         }
         model.entries.sort_by(|a, b| a.key.cmp(&b.key));
+        model.enforce_limits();
         Ok(model)
     }
 
@@ -386,11 +457,37 @@ impl AdaptiveModel {
     }
 
     fn entry_mut(&mut self, key: &RuleContextKey) -> &mut RuleEntry {
-        if let Some(index) = self.entries.iter().position(|entry| &entry.key == key) {
+        let (existing, first_victim) = find_entry_and_eviction_candidate(&self.entries, key);
+        if let Some(index) = existing {
             return &mut self.entries[index];
+        }
+        let max_rules = self.config.max_rules.max(1);
+        let mut first_victim = first_victim;
+        while self.entries.len() >= max_rules {
+            let victim = first_victim
+                .take()
+                .or_else(|| eviction_candidate(&self.entries))
+                .expect("a non-empty capped store has an eviction candidate");
+            self.entries.remove(victim);
         }
         self.entries.push(RuleEntry::new(key.clone()));
         self.entries.last_mut().expect("entry was just pushed")
+    }
+
+    fn enforce_limits(&mut self) {
+        let max_rules = self.config.max_rules.max(1);
+        while self.entries.len() > max_rules {
+            let victim = eviction_candidate(&self.entries)
+                .expect("an over-cap rule store has an eviction candidate");
+            self.entries.remove(victim);
+        }
+        let max_personal = self.config.max_personal_pairs.max(1);
+        while self.personal.counts.len() > max_personal {
+            let victim = weakest_personal_index(&self.personal, false)
+                .or_else(|| weakest_personal_index(&self.personal, true))
+                .expect("an over-cap personal store has an eviction candidate");
+            remove_personal_at(&mut self.personal, victim);
+        }
     }
 
     fn entry(&self, key: &RuleContextKey) -> Option<&RuleEntry> {
@@ -445,8 +542,12 @@ impl AdaptiveModel {
                 row.count,
             )
         } else {
-            if self.personal.counts.len() >= MAX_PERSONAL_PAIRS {
-                return false;
+            let max_personal = self.config.max_personal_pairs.max(1);
+            if self.personal.counts.len() >= max_personal {
+                let Some(victim) = weakest_personal_index(&self.personal, false) else {
+                    return false;
+                };
+                remove_personal_at(&mut self.personal, victim);
             }
             self.personal.counts.push(PersonalCountRow {
                 input_method,
@@ -459,6 +560,7 @@ impl AdaptiveModel {
         if count >= PERSONAL_PROMOTE_K {
             return promote_personal(
                 &mut self.personal,
+                self.config.max_personal_pairs.max(1),
                 input_method,
                 &original_nfc,
                 &replacement_nfc,
@@ -632,8 +734,47 @@ fn decayed_mass(entry: &RuleEntry, evaluate_at_ms: i64, half_life_ms: i64) -> (f
     })
 }
 
+fn weakest_personal_index(
+    store: &PersonalCorrectionStore,
+    include_promoted: bool,
+) -> Option<usize> {
+    store
+        .counts
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| include_promoted || !personal_is_promoted(store, row))
+        .min_by(|(_, left), (_, right)| {
+            left.count.cmp(&right.count).then_with(|| {
+                (left.input_method, &left.original_nfc, &left.replacement_nfc).cmp(&(
+                    right.input_method,
+                    &right.original_nfc,
+                    &right.replacement_nfc,
+                ))
+            })
+        })
+        .map(|(index, _)| index)
+}
+
+fn personal_is_promoted(store: &PersonalCorrectionStore, row: &PersonalCountRow) -> bool {
+    store.promoted.iter().any(|promoted| {
+        promoted.input_method == row.input_method
+            && promoted.original_nfc == row.original_nfc
+            && promoted.replacement_nfc == row.replacement_nfc
+    })
+}
+
+fn remove_personal_at(store: &mut PersonalCorrectionStore, index: usize) {
+    let removed = store.counts.remove(index);
+    store.promoted.retain(|promoted| {
+        promoted.input_method != removed.input_method
+            || promoted.original_nfc != removed.original_nfc
+            || promoted.replacement_nfc != removed.replacement_nfc
+    });
+}
+
 fn promote_personal(
     store: &mut PersonalCorrectionStore,
+    max_personal_pairs: usize,
     input_method: InputMethod,
     original_nfc: &str,
     replacement_nfc: &str,
@@ -643,7 +784,7 @@ fn promote_personal(
             && row.original_nfc == original_nfc
             && row.replacement_nfc == replacement_nfc
     });
-    if exists || store.promoted.len() >= MAX_PERSONAL_PAIRS {
+    if exists || store.promoted.len() >= max_personal_pairs {
         return false;
     }
     store.promoted.push(PersonalCountRow {

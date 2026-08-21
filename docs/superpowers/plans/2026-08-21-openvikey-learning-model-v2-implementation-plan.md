@@ -1061,7 +1061,7 @@ git commit -am "fix: physically scrub forgotten correction rows from model paylo
 - Consumes: `max_corrections = 10_000` (use a smaller test override via `ModelConfig` if adding a field needs ADR — prefer new `ModelConfig.max_rules` with default 10_000)
 - Produces: deterministic eviction instead of silent growth / personal 512 hard-reject
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```rust
 #[test]
@@ -1079,13 +1079,13 @@ fn personal_at_cap_evicts_weak_count_row_instead_of_dropping_new_pair() {
 
 Eviction order (spec §11.5): keep suppression/user-authored, recently used, strong evidence, intervention-eligible, Personal promoted; evict old Ignore/probation, high-impression unused (impression may be 0 until Lát 5), expired.
 
-- [ ] **Step 2: Run — expect FAIL**
+- [x] **Step 2: Run — expect FAIL**
 
-- [ ] **Step 3: Implement bounded insert on `entry_mut` / `promote_personal`. Never scan the whole model on the hook path beyond the already-keyed lookup; eviction runs when inserting a **new** rule, still in-memory.
+- [x] **Step 3: Implement bounded insert on `entry_mut` / `promote_personal`. Never scan the whole model on the hook path beyond the already-keyed lookup; eviction runs when inserting a **new** rule, still in-memory.
 
-- [ ] **Step 4: Run** `cargo test -p openvikey-core --test physical_forget --test learning_state_machine`
+- [x] **Step 4: Run** `cargo test -p openvikey-core --test physical_forget --test learning_state_machine`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git commit -am "feat: bound adaptive and personal stores with deterministic eviction"

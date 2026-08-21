@@ -1,5 +1,6 @@
 //! Physical deletion contracts for learned personal data.
 
+use openvikey_core::learning_config::LearningConfigV2;
 use openvikey_core::model::{AdaptiveModel, ModelConfig, RuleContextKey};
 use openvikey_core::types::{CandidateSource, FeedbackEvent, FeedbackKind, InputMethod};
 
@@ -20,6 +21,21 @@ fn accept_event(seq: u64) -> FeedbackEvent {
         at_ms: 10,
         kind: FeedbackKind::Accept { candidate_id: 7 },
     }
+}
+
+fn named_rule(name: &str) -> RuleContextKey {
+    RuleContextKey {
+        input_method: InputMethod::Telex,
+        source: CandidateSource::Fuzzy,
+        original_nfc: format!("original-{name}"),
+        candidate_nfc: format!("candidate-{name}"),
+        left_token_nfc: None,
+        source_rule_id: format!("rule-{name}"),
+    }
+}
+
+fn feedback(seq: u64, at_ms: i64, kind: FeedbackKind) -> FeedbackEvent {
+    FeedbackEvent { seq, at_ms, kind }
 }
 
 #[test]
@@ -92,4 +108,85 @@ fn forget_all_learning_data_resets_to_cold_start_hash() {
         AdaptiveModel::default().to_json_payload().unwrap()
     );
     assert!(!model.forget_all());
+}
+
+#[test]
+fn v1_model_uses_the_versioned_correction_limit() {
+    assert_eq!(
+        ModelConfig::default().max_rules,
+        LearningConfigV2::compatibility_v1().max_corrections
+    );
+}
+
+#[test]
+fn exceeding_max_rules_evicts_oldest_ignore_before_strong_rows() {
+    let config = ModelConfig {
+        max_rules: 3,
+        max_personal_pairs: 2,
+        ..ModelConfig::default()
+    };
+    let mut model = AdaptiveModel::new(config);
+    let old_ignore = named_rule("old-ignore");
+    let newer_ignore = named_rule("newer-ignore");
+    let suggest = named_rule("suggest");
+    let newcomer = named_rule("newcomer");
+    model.apply_feedback(
+        &old_ignore,
+        &feedback(1, 1, FeedbackKind::ExplicitReject { candidate_id: 1 }),
+        true,
+    );
+    model.apply_feedback(
+        &newer_ignore,
+        &feedback(2, 2, FeedbackKind::ExplicitReject { candidate_id: 2 }),
+        true,
+    );
+    model.apply_feedback(
+        &suggest,
+        &feedback(3, 3, FeedbackKind::Accept { candidate_id: 3 }),
+        true,
+    );
+
+    model.apply_feedback(
+        &newcomer,
+        &feedback(4, 4, FeedbackKind::Accept { candidate_id: 4 }),
+        true,
+    );
+
+    assert_eq!(model.evidence_totals(&old_ignore), (0.0, 0.0));
+    assert_eq!(model.evidence_totals(&newer_ignore), (0.0, 1.0));
+    assert_eq!(model.evidence_totals(&suggest), (1.0, 0.0));
+    assert_eq!(model.evidence_totals(&newcomer), (1.0, 0.0));
+    assert_eq!(model.inspection_rows().len(), 3);
+}
+
+#[test]
+fn personal_at_cap_evicts_weak_probation_before_promoted_pair() {
+    let config = ModelConfig {
+        max_rules: 3,
+        max_personal_pairs: 2,
+        ..ModelConfig::default()
+    };
+    let mut model = AdaptiveModel::new(config);
+    model.record_personal_correction(InputMethod::Telex, "weak", "w", true);
+    model.record_personal_correction(InputMethod::Telex, "kept", "k", true);
+    assert!(model.record_personal_correction(InputMethod::Telex, "kept", "k", true));
+
+    model.record_personal_correction(InputMethod::Telex, "new", "n", true);
+
+    assert_eq!(
+        model.personal_correction_count(InputMethod::Telex, "weak", "w"),
+        0
+    );
+    assert_eq!(
+        model.personal_correction_count(InputMethod::Telex, "kept", "k"),
+        2
+    );
+    assert_eq!(
+        model.personal_correction_count(InputMethod::Telex, "new", "n"),
+        1
+    );
+    assert_eq!(
+        model.personal_promoted(),
+        vec![(InputMethod::Telex, "kept".into(), "k".into())]
+    );
 }
