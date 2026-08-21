@@ -2,19 +2,23 @@
 
 use crate::session::{LabSession, SessionCursors};
 use openvikey_core::engine::EngineConfig;
+use openvikey_core::intervention::CorrectionIdentity;
+use openvikey_core::learning_config::LearningConfigV2;
 use openvikey_core::lexicon::Lexicon;
 use openvikey_core::model::{AdaptiveModel, ModelError};
 use openvikey_core::store::file::FileModelStore;
 use openvikey_core::store::passphrase::PassphraseProvider;
 use openvikey_core::store::{StoreError, envelope};
-use openvikey_core::types::InputEvent;
+use openvikey_core::types::{CandidateSource, InputEvent};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
 
-pub const CAPTURE_VERSION: u32 = 1;
+pub const CAPTURE_VERSION: u32 = 2;
+const LEGACY_CAPTURE_VERSION: u32 = 1;
 /// Newest records kept in RAM and on disk. Older events stay in the model.
 pub const MAX_CAPTURE_RECORDS: usize = 20_000;
 
@@ -32,10 +36,65 @@ pub struct CaptureHeader {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CaptureRecord {
-    Input { event: InputEvent },
-    AcceptTop { seq: u64, at_ms: i64 },
-    RejectTop { seq: u64, at_ms: i64 },
-    UndoLast { seq: u64, at_ms: i64 },
+    Input {
+        event: InputEvent,
+    },
+    AcceptTop {
+        seq: u64,
+        at_ms: i64,
+    },
+    RejectTop {
+        seq: u64,
+        at_ms: i64,
+    },
+    UndoLast {
+        seq: u64,
+        at_ms: i64,
+    },
+    CandidateSetEvaluated {
+        seq: u64,
+        at_ms: i64,
+        ids: Vec<u64>,
+        sources: Vec<CandidateSource>,
+        identity_hashes: Vec<String>,
+        config_hash: String,
+    },
+    InterventionApplied {
+        seq: u64,
+        at_ms: i64,
+        edit_id: u64,
+        candidate_id: u64,
+        reason: String,
+    },
+    InterventionReverted {
+        seq: u64,
+        at_ms: i64,
+        edit_id: u64,
+        revert_kind: String,
+    },
+    InterventionSettled {
+        seq: u64,
+        at_ms: i64,
+        edit_id: u64,
+    },
+    CorrectionConfirmed {
+        seq: u64,
+        at_ms: i64,
+        identity: CorrectionIdentity,
+        left_token_nfc: Option<String>,
+    },
+    LanguageCommitSettled {
+        seq: u64,
+        at_ms: i64,
+        token: String,
+        left_token: Option<String>,
+        transaction_id: u64,
+    },
+    DataForgotten {
+        seq: u64,
+        at_ms: i64,
+        identity: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,8 +113,19 @@ impl CaptureLog {
     }
 
     pub fn validate(&self) -> Result<(), SessionStoreError> {
-        if self.header.v != CAPTURE_VERSION {
+        if !matches!(self.header.v, LEGACY_CAPTURE_VERSION | CAPTURE_VERSION) {
             return Err(SessionStoreError::UnsupportedVersion);
+        }
+        if self.header.v == LEGACY_CAPTURE_VERSION && self.records.iter().any(is_v2_record) {
+            return Err(SessionStoreError::UnsupportedVersion);
+        }
+        if !self.header.model_sha256.is_empty() && !is_sha256_hex(&self.header.model_sha256) {
+            return Err(SessionStoreError::InvalidCaptureRecord(
+                "model_sha256 must be an empty string or a lowercase SHA-256",
+            ));
+        }
+        for record in &self.records {
+            validate_record(record)?;
         }
         let max_seq = self.records.iter().map(record_seq).max();
         if let Some(max_seq) = max_seq
@@ -63,8 +133,74 @@ impl CaptureLog {
         {
             return Err(SessionStoreError::CursorBehindLog);
         }
+        let max_edit_id = self.records.iter().filter_map(record_edit_id).max();
+        if let Some(max_edit_id) = max_edit_id
+            && self.header.next_edit_id <= max_edit_id
+        {
+            return Err(SessionStoreError::EditCursorBehindLog);
+        }
         Ok(())
     }
+
+    fn migrate_legacy_checkpoint(&mut self) {
+        if self.header.v != LEGACY_CAPTURE_VERSION {
+            return;
+        }
+        // The paired model is the authoritative snapshot. V1 records lack the
+        // semantic identities required for selective compaction, so start a
+        // clean bounded v2 journal without changing either cursor.
+        self.records.clear();
+        self.header.v = CAPTURE_VERSION;
+    }
+}
+
+fn is_v2_record(record: &CaptureRecord) -> bool {
+    !matches!(
+        record,
+        CaptureRecord::Input { .. }
+            | CaptureRecord::AcceptTop { .. }
+            | CaptureRecord::RejectTop { .. }
+            | CaptureRecord::UndoLast { .. }
+    )
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+fn validate_record(record: &CaptureRecord) -> Result<(), SessionStoreError> {
+    match record {
+        CaptureRecord::CandidateSetEvaluated {
+            ids,
+            sources,
+            identity_hashes,
+            config_hash,
+            ..
+        } => {
+            if ids.len() != sources.len() || ids.len() != identity_hashes.len() {
+                return Err(SessionStoreError::InvalidCaptureRecord(
+                    "candidate ids, sources, and identity hashes must be parallel",
+                ));
+            }
+            if !is_sha256_hex(config_hash)
+                || identity_hashes.iter().any(|hash| !is_sha256_hex(hash))
+            {
+                return Err(SessionStoreError::InvalidCaptureRecord(
+                    "candidate and config identities must be lowercase SHA-256 values",
+                ));
+            }
+        }
+        CaptureRecord::DataForgotten { identity, .. } if !is_sha256_hex(identity) => {
+            return Err(SessionStoreError::InvalidCaptureRecord(
+                "forgotten identity must be a lowercase SHA-256",
+            ));
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn record_seq(record: &CaptureRecord) -> u64 {
@@ -72,7 +208,23 @@ fn record_seq(record: &CaptureRecord) -> u64 {
         CaptureRecord::Input { event } => event.seq,
         CaptureRecord::AcceptTop { seq, .. }
         | CaptureRecord::RejectTop { seq, .. }
-        | CaptureRecord::UndoLast { seq, .. } => *seq,
+        | CaptureRecord::UndoLast { seq, .. }
+        | CaptureRecord::CandidateSetEvaluated { seq, .. }
+        | CaptureRecord::InterventionApplied { seq, .. }
+        | CaptureRecord::InterventionReverted { seq, .. }
+        | CaptureRecord::InterventionSettled { seq, .. }
+        | CaptureRecord::CorrectionConfirmed { seq, .. }
+        | CaptureRecord::LanguageCommitSettled { seq, .. }
+        | CaptureRecord::DataForgotten { seq, .. } => *seq,
+    }
+}
+
+fn record_edit_id(record: &CaptureRecord) -> Option<u64> {
+    match record {
+        CaptureRecord::InterventionApplied { edit_id, .. }
+        | CaptureRecord::InterventionReverted { edit_id, .. }
+        | CaptureRecord::InterventionSettled { edit_id, .. } => Some(*edit_id),
+        _ => None,
     }
 }
 
@@ -87,14 +239,108 @@ pub fn trim_capture_to(records: &mut Vec<CaptureRecord>, max: usize) {
     }
 }
 
-/// Starts a v1-compatible journal checkpoint after physical forget.
+/// Stable text-free identity used to selectively compact capture-v2 records.
+#[must_use]
+pub fn correction_identity_hash(identity: &CorrectionIdentity) -> String {
+    let mut hash = Sha256::new();
+    hash.update([match identity.input_method {
+        openvikey_core::types::InputMethod::Telex => 0,
+        openvikey_core::types::InputMethod::Vni => 1,
+    }]);
+    hash.update([match identity.source {
+        CandidateSource::TelexFix => 0,
+        CandidateSource::Fuzzy => 1,
+        CandidateSource::Abbreviation => 2,
+        CandidateSource::Diacritics => 3,
+        CandidateSource::Personal => 4,
+    }]);
+    for field in [
+        identity.original_nfc.as_bytes(),
+        identity.candidate_nfc.as_bytes(),
+        identity.source_rule_id.as_bytes(),
+    ] {
+        hash.update(u64::try_from(field.len()).unwrap_or(u64::MAX).to_le_bytes());
+        hash.update(field);
+    }
+    hex::encode(hash.finalize())
+}
+
+/// Removes only records that can reconstruct one forgotten identity.
 ///
-/// V1 input records do not carry enough identity metadata to selectively remove
-/// every implicit correction. Clearing the bounded journal is the only
-/// fail-closed way to guarantee replay cannot reconstruct forgotten rows; the
-/// current model snapshot remains authoritative.
-pub fn compact_capture_after_forget(records: &mut Vec<CaptureRecord>) {
-    records.clear();
+/// A v1 journal has no identity metadata, so it still falls back to clearing the
+/// whole bounded journal. This is the intentional fail-closed v1 deviation.
+pub fn compact_capture_after_forget(
+    records: &mut Vec<CaptureRecord>,
+    forgotten: &CorrectionIdentity,
+) {
+    let has_v2_identity_metadata = records.iter().any(|record| {
+        matches!(
+            record,
+            CaptureRecord::CandidateSetEvaluated { .. } | CaptureRecord::CorrectionConfirmed { .. }
+        )
+    });
+    if !has_v2_identity_metadata {
+        records.clear();
+        return;
+    }
+
+    let forgotten_hash = correction_identity_hash(forgotten);
+    let mut related_seqs = records
+        .iter()
+        .filter(|record| record_matches_identity(record, forgotten, &forgotten_hash))
+        .map(record_seq)
+        .collect::<BTreeSet<_>>();
+    let related_edit_ids = records
+        .iter()
+        .filter_map(|record| match record {
+            CaptureRecord::InterventionApplied { seq, edit_id, .. }
+                if related_seqs.contains(seq) =>
+            {
+                Some(*edit_id)
+            }
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    related_seqs.extend(records.iter().filter_map(|record| match record {
+        CaptureRecord::InterventionReverted { seq, edit_id, .. }
+        | CaptureRecord::InterventionSettled { seq, edit_id, .. }
+            if related_edit_ids.contains(edit_id) =>
+        {
+            Some(*seq)
+        }
+        _ => None,
+    }));
+    records.retain(|record| {
+        let replay_command = matches!(
+            record,
+            CaptureRecord::Input { .. }
+                | CaptureRecord::AcceptTop { .. }
+                | CaptureRecord::RejectTop { .. }
+                | CaptureRecord::UndoLast { .. }
+        );
+        (replay_command || !related_seqs.contains(&record_seq(record)))
+            && !record_matches_identity(record, forgotten, &forgotten_hash)
+            && !matches!(
+                record,
+                CaptureRecord::DataForgotten { identity, .. } if identity == &forgotten_hash
+            )
+    });
+}
+
+fn record_matches_identity(
+    record: &CaptureRecord,
+    identity: &CorrectionIdentity,
+    identity_hash: &str,
+) -> bool {
+    match record {
+        CaptureRecord::CandidateSetEvaluated {
+            identity_hashes, ..
+        } => identity_hashes.iter().any(|hash| hash == identity_hash),
+        CaptureRecord::CorrectionConfirmed {
+            identity: recorded, ..
+        } => recorded == identity,
+        _ => false,
+    }
 }
 
 pub fn ensure_distinct_store_paths(
@@ -156,9 +402,14 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 /// Replays command records through a fresh reducer. Capture is disabled so the
-/// log is not duplicated. AutoSettled is regenerated by the live path.
-#[must_use]
-pub fn replay(engine_config: EngineConfig, lexicon: Lexicon, log: &CaptureLog) -> LabSession {
+/// log is not duplicated. V2 replay fails closed when its recorded learning
+/// configuration is unavailable rather than re-deciding history under a new
+/// policy. AutoSettled is regenerated by the matching live path.
+pub fn replay(
+    engine_config: EngineConfig,
+    lexicon: Lexicon,
+    log: &CaptureLog,
+) -> Result<LabSession, SessionStoreError> {
     replay_with_model(
         engine_config,
         lexicon,
@@ -168,14 +419,15 @@ pub fn replay(engine_config: EngineConfig, lexicon: Lexicon, log: &CaptureLog) -
     )
 }
 
-#[must_use]
 pub fn replay_with_model(
     engine_config: EngineConfig,
     lexicon: Lexicon,
     model: AdaptiveModel,
     cursors: SessionCursors,
     log: &CaptureLog,
-) -> LabSession {
+) -> Result<LabSession, SessionStoreError> {
+    log.validate()?;
+    validate_replay_config(log)?;
     let mut session = LabSession::new_with_model(engine_config, lexicon, model, cursors);
     session.set_capturing(false);
     for record in &log.records {
@@ -192,9 +444,37 @@ pub fn replay_with_model(
             CaptureRecord::UndoLast { at_ms, .. } => {
                 let _ = session.undo_last(*at_ms);
             }
+            CaptureRecord::CandidateSetEvaluated { .. }
+            | CaptureRecord::InterventionApplied { .. }
+            | CaptureRecord::InterventionReverted { .. }
+            | CaptureRecord::InterventionSettled { .. }
+            | CaptureRecord::CorrectionConfirmed { .. }
+            | CaptureRecord::LanguageCommitSettled { .. } => {}
+            CaptureRecord::DataForgotten { identity, .. } => {
+                session.forget_identity_hash_for_replay(identity);
+            }
         }
     }
-    session
+    Ok(session)
+}
+
+fn validate_replay_config(log: &CaptureLog) -> Result<(), SessionStoreError> {
+    if log.header.v == LEGACY_CAPTURE_VERSION {
+        return Ok(());
+    }
+    let available = LearningConfigV2::compatibility_v1().hash();
+    if let Some(captured) = log.records.iter().find_map(|record| match record {
+        CaptureRecord::CandidateSetEvaluated { config_hash, .. } if config_hash != &available => {
+            Some(config_hash.clone())
+        }
+        _ => None,
+    }) {
+        return Err(SessionStoreError::ReplayConfigUnavailable {
+            captured,
+            available,
+        });
+    }
+    Ok(())
 }
 
 #[derive(Debug, Error)]
@@ -209,6 +489,14 @@ pub enum SessionStoreError {
     CursorBehindLog,
     #[error("capture edit cursor is behind model auto-emission ids")]
     EditCursorBehindModel,
+    #[error("capture edit cursor is behind recorded intervention ids")]
+    EditCursorBehindLog,
+    #[error("invalid capture record: {0}")]
+    InvalidCaptureRecord(&'static str),
+    #[error(
+        "capture requires unavailable learning config {captured}; current replay config is {available}"
+    )]
+    ReplayConfigUnavailable { captured: String, available: String },
     #[error("model and capture paths must be distinct")]
     SameStorePath,
     #[error("personal model does not match its capture log")]
@@ -280,6 +568,9 @@ pub fn load_personal_store(
                 SessionStoreError::InconsistentStore
                 | SessionStoreError::UnsupportedVersion
                 | SessionStoreError::CursorBehindLog
+                | SessionStoreError::EditCursorBehindLog
+                | SessionStoreError::InvalidCaptureRecord(_)
+                | SessionStoreError::ReplayConfigUnavailable { .. }
                 | SessionStoreError::CapturePayload(_)
                 | SessionStoreError::Model(_),
             ) => {}
@@ -314,7 +605,7 @@ pub fn decode_personal_store_pair(
     log_bytes: &[u8],
 ) -> Result<(AdaptiveModel, CaptureLog), SessionStoreError> {
     let model = AdaptiveModel::from_json_payload(model_bytes)?;
-    let log = CaptureLog::from_payload(log_bytes)
+    let mut log = CaptureLog::from_payload(log_bytes)
         .map_err(|error| SessionStoreError::CapturePayload(error.to_string()))?;
     log.validate()?;
     if !log.header.model_sha256.is_empty() && log.header.model_sha256 != sha256_hex(model_bytes) {
@@ -324,5 +615,6 @@ pub fn decode_personal_store_pair(
     if max_edit_id > 0 && log.header.next_edit_id <= max_edit_id {
         return Err(SessionStoreError::EditCursorBehindModel);
     }
+    log.migrate_legacy_checkpoint();
     Ok((model, log))
 }

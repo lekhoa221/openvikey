@@ -4,6 +4,7 @@
 
 use openvikey_core::correction::InterventionConfig;
 use openvikey_core::engine::EngineConfig;
+use openvikey_core::intervention::CorrectionIdentity;
 use openvikey_core::lexicon::{Lexicon, LexiconEntry};
 use openvikey_core::model::{AdaptiveModel, ModelView, RuleContextKey};
 use openvikey_core::types::{
@@ -11,8 +12,9 @@ use openvikey_core::types::{
     InputMethod,
 };
 use openvikey_lab::capture::{
-    CAPTURE_VERSION, CaptureHeader, CaptureLog, SessionStoreError, load_personal_store, replay,
-    replay_with_model, sha256_hex,
+    CAPTURE_VERSION, CaptureHeader, CaptureLog, CaptureRecord, SessionStoreError,
+    compact_capture_after_forget, correction_identity_hash, decode_personal_store_pair,
+    load_personal_store, replay, replay_with_model, sha256_hex,
 };
 use openvikey_lab::document::{CommittedUnit, DocumentBuffer};
 use openvikey_lab::session::{AcceptVisual, LabSession, SessionCursors, SessionSaveSnapshot};
@@ -209,7 +211,10 @@ fn replay_of_captured_inputs_matches_live_model_hash() {
     pop_committed_ko(&mut live);
     commit_khong_via_insert(&mut live, 20);
     let log = live.capture_log();
-    let replayed = replay(EngineConfig::default(), empty_lexicon(), &log);
+    assert_eq!(log.header.v, 2);
+    let payload = log.to_payload().unwrap();
+    let restored_log = CaptureLog::from_payload(&payload).unwrap();
+    let replayed = replay(EngineConfig::default(), empty_lexicon(), &restored_log).unwrap();
     assert_eq!(payload_sha(&live), payload_sha(&replayed));
     assert!(replayed.model().positive_mass(&ko_rule(), 20) >= 1.0);
 }
@@ -600,7 +605,8 @@ fn replay_includes_accept_top_commands() {
         EngineConfig::default(),
         empty_lexicon(),
         &live.capture_log(),
-    );
+    )
+    .unwrap();
     assert_eq!(payload_sha(&live), payload_sha(&replayed));
 }
 
@@ -743,8 +749,127 @@ fn replay_includes_undo_last_commands() {
         seed,
         cursors,
         &live.capture_log(),
-    );
+    )
+    .unwrap();
     assert_eq!(payload_sha(&live), payload_sha(&replayed));
+}
+
+#[test]
+fn capture_v2_records_evaluated_and_applied_interventions() {
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    commit_ko(&mut session);
+    let log = session.capture_log();
+
+    assert_eq!(log.header.v, 2);
+    assert!(log.records.iter().any(|record| matches!(
+        record,
+        CaptureRecord::CandidateSetEvaluated { config_hash, .. } if config_hash.len() == 64
+    )));
+    assert!(
+        log.records
+            .iter()
+            .any(|record| matches!(record, CaptureRecord::InterventionApplied { .. }))
+    );
+}
+
+#[test]
+fn v1_capture_still_loads_and_unknown_future_kind_is_rejected() {
+    let payload = br#"{
+        "header":{"v":1,"next_seq":2,"next_edit_id":1},
+        "records":[{"kind":"accept_top","seq":1,"at_ms":0}]
+    }"#;
+    let log = CaptureLog::from_payload(payload).unwrap();
+    assert!(log.validate().is_ok());
+    assert!(CaptureLog::from_payload(
+        br#"{"header":{"v":2,"next_seq":2,"next_edit_id":1},"records":[{"kind":"future_kind","seq":1,"at_ms":0}]}"#
+    )
+    .is_err());
+}
+
+#[test]
+fn v1_store_pair_migrates_to_a_clean_v2_checkpoint() {
+    let model_payload = AdaptiveModel::default().to_json_payload().unwrap();
+    let log = CaptureLog::from_payload(
+        format!(
+            r#"{{"header":{{"v":1,"next_seq":2,"next_edit_id":1,"model_sha256":"{}"}},"records":[{{"kind":"accept_top","seq":1,"at_ms":0}}]}}"#,
+            sha256_hex(&model_payload)
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+
+    let (_, migrated) =
+        decode_personal_store_pair(&model_payload, &log.to_payload().unwrap()).unwrap();
+
+    assert_eq!(migrated.header.v, CAPTURE_VERSION);
+    assert_eq!(migrated.header.next_seq, 2);
+    assert!(migrated.records.is_empty());
+}
+
+#[test]
+fn v1_header_rejects_v2_records() {
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    commit_ko(&mut session);
+    let mut log = session.capture_log();
+    log.header.v = 1;
+
+    let error = log.validate().unwrap_err();
+
+    assert!(matches!(error, SessionStoreError::UnsupportedVersion));
+}
+
+#[test]
+fn malformed_v2_candidate_record_is_rejected() {
+    let mut log = telex_session().capture_log();
+    log.records.push(CaptureRecord::CandidateSetEvaluated {
+        seq: log.header.next_seq,
+        at_ms: 0,
+        ids: vec![1],
+        sources: Vec::new(),
+        identity_hashes: vec!["0".repeat(64)],
+        config_hash: "0".repeat(64),
+    });
+    log.header.next_seq = log.header.next_seq.saturating_add(1);
+
+    let error = log.validate().unwrap_err();
+
+    assert!(matches!(error, SessionStoreError::InvalidCaptureRecord(_)));
+}
+
+#[test]
+fn v2_replay_fails_closed_when_recorded_config_is_unavailable() {
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    commit_ko(&mut session);
+    let mut log = session.capture_log();
+    for record in &mut log.records {
+        if let CaptureRecord::CandidateSetEvaluated { config_hash, .. } = record {
+            *config_hash = "0".repeat(64);
+        }
+    }
+
+    assert!(matches!(
+        replay(EngineConfig::default(), empty_lexicon(), &log),
+        Err(SessionStoreError::ReplayConfigUnavailable { .. })
+    ));
+}
+
+#[test]
+fn identity_free_v1_records_use_fail_closed_full_compaction() {
+    let mut records = vec![
+        CaptureRecord::AcceptTop { seq: 1, at_ms: 0 },
+        CaptureRecord::UndoLast { seq: 2, at_ms: 1 },
+    ];
+    let forgotten = CorrectionIdentity {
+        input_method: InputMethod::Telex,
+        source: CandidateSource::Abbreviation,
+        original_nfc: "ko".into(),
+        candidate_nfc: "không".into(),
+        source_rule_id: "seed:ko".into(),
+    };
+
+    compact_capture_after_forget(&mut records, &forgotten);
+
+    assert!(records.is_empty());
 }
 
 #[test]
@@ -1614,6 +1739,54 @@ fn forget_last_rule_clears_rewind_mass() {
 }
 
 #[test]
+fn forgetting_one_identity_preserves_unrelated_v2_journal_history() {
+    let mut session = telex_session();
+    type_keys(&mut session, "ko", 0);
+    assert!(session.accept_top(2).is_some());
+    type_keys(&mut session, "ntn", 10);
+    assert!(session.accept_top(13).is_some());
+
+    let ko_row = session
+        .model()
+        .inspection_rows()
+        .into_iter()
+        .find(|row| row.original_nfc == "ko")
+        .unwrap();
+    assert!(session.forget_inspection_row(&ko_row));
+
+    let ntn_identity = CorrectionIdentity {
+        input_method: InputMethod::Telex,
+        source: CandidateSource::Abbreviation,
+        original_nfc: "ntn".into(),
+        candidate_nfc: "như thế nào".into(),
+        source_rule_id: "seed:ntn".into(),
+    };
+    let ntn_hash = correction_identity_hash(&ntn_identity);
+    let log = session.capture_log();
+    assert!(log.records.iter().any(|record| matches!(
+        record,
+        CaptureRecord::CandidateSetEvaluated { identity_hashes, .. }
+            if identity_hashes.contains(&ntn_hash)
+    )));
+    assert!(log.records.iter().any(|record| matches!(
+        record,
+        CaptureRecord::CorrectionConfirmed { identity, .. } if identity == &ntn_identity
+    )));
+
+    let replayed = replay(EngineConfig::default(), empty_lexicon(), &log).unwrap();
+    assert!(replayed.model().positive_mass(&ko_rule(), 20).abs() < f64::EPSILON);
+    let ntn_rule = RuleContextKey {
+        input_method: InputMethod::Telex,
+        source: CandidateSource::Abbreviation,
+        original_nfc: "ntn".into(),
+        candidate_nfc: "như thế nào".into(),
+        left_token_nfc: Some("không".into()),
+        source_rule_id: "seed:ntn".into(),
+    };
+    assert_eq!(replayed.model().evidence_totals(&ntn_rule).0, 1.0);
+}
+
+#[test]
 fn forgotten_rule_cannot_be_resurrected_by_capture_replay() {
     let mut session = telex_session();
     type_keys(&mut session, "ko", 0);
@@ -1623,11 +1796,21 @@ fn forgotten_rule_cannot_be_resurrected_by_capture_replay() {
 
     assert!(session.forget_last_rule());
     let log = session.capture_log();
+    assert_eq!(log.header.v, 2);
+    assert!(matches!(
+        log.records.last(),
+        Some(CaptureRecord::DataForgotten { .. })
+    ));
     assert!(
-        log.records.is_empty(),
-        "v1 forget must checkpoint away reconstructable input records"
+        !log.records
+            .iter()
+            .any(|record| matches!(record, CaptureRecord::CorrectionConfirmed { .. })),
+        "v2 forget must selectively remove reconstructable identity records"
     );
-    let replayed = replay(EngineConfig::default(), empty_lexicon(), &log);
+    let capture_payload = String::from_utf8(log.to_payload().unwrap()).unwrap();
+    assert!(!capture_payload.contains("\"original_nfc\":\"ko\""));
+    assert!(!capture_payload.contains("\"candidate_nfc\":\"không\""));
+    let replayed = replay(EngineConfig::default(), empty_lexicon(), &log).unwrap();
     assert_eq!(replayed.model().positive_mass(&ko_rule(), 2), 0.0);
     let model_payload = String::from_utf8(session.model_payload().unwrap()).unwrap();
     assert!(!model_payload.contains("\"original_nfc\":\"ko\""));

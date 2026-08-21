@@ -1464,7 +1464,7 @@ pub enum CaptureRecord {
 
 Minimize text: prefer ids/hashes already in the model. Do not log extra surrounding text.
 
-- [ ] **Step 1: Tests**
+- [x] **Step 1: Tests**
 
 ```rust
 #[test]
@@ -1479,13 +1479,13 @@ fn forgetting_one_identity_selectively_compacts_only_its_v2_records() { /* prese
 
 Capture v1 intentionally clears the whole journal on forget because its records lack correction identity metadata. Capture v2 must replace that fail-closed fallback with selective compaction by identity.
 
-- [ ] **Step 2: FAIL → implement versioned serde (`#[serde(tag="kind")]` already) + reducer**
+- [x] **Step 2: FAIL → implement versioned serde (`#[serde(tag="kind")]` already) + reducer**
 
-Reducer must ignore unknown future kinds? No: unknown is error. v1 kinds remain.
+Reducer must ignore unknown future kinds? No: unknown is error. v1 kinds remain. V2 validates parallel candidate metadata and edit cursors, consumes `DataForgotten`, and fails closed when the recorded config hash is unavailable instead of re-deciding history with a new policy. A loaded v1 pair migrates to a clean v2 journal checkpoint because its paired model snapshot is authoritative and v1 records lack selective-compaction identities.
 
-- [ ] **Step 3: Run** lab capture + persistence tests
+- [x] **Step 3: Run** lab capture + persistence tests
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```powershell
 git commit -am "feat: version capture logs for intervention replay and forget"

@@ -2,7 +2,7 @@
 
 use crate::capture::{
     CAPTURE_VERSION, CaptureHeader, CaptureLog, CaptureRecord, MAX_CAPTURE_RECORDS,
-    compact_capture_after_forget, sha256_hex, trim_capture_to,
+    compact_capture_after_forget, correction_identity_hash, sha256_hex, trim_capture_to,
 };
 use crate::document::{CommittedUnit, DocumentBuffer};
 use openvikey_core::correction::{
@@ -30,8 +30,8 @@ use openvikey_core::lexicon::Lexicon;
 use openvikey_core::model::{AdaptiveModel, ModelError, ModelInspectionRow, RuleContextKey};
 use openvikey_core::rank::ScoreConfig;
 use openvikey_core::types::{
-    Candidate, CompositionSnapshot, EditRange, EngineAction, FeedbackEvent, FeedbackKind,
-    InputContext, InputEvent, InputKind, InputMethod, Modifiers, RangeBasis,
+    Candidate, CandidateSource, CompositionSnapshot, EditRange, EngineAction, FeedbackEvent,
+    FeedbackKind, InputContext, InputEvent, InputKind, InputMethod, Modifiers, RangeBasis,
 };
 use serde::Serialize;
 use unicode_normalization::UnicodeNormalization;
@@ -215,6 +215,7 @@ pub struct LabSession {
     capturing: bool,
     rewind: CompositionRewindMiner,
     intervention: InterventionConfig,
+    learning_config_hash: String,
     pending_policy_undo: Option<PendingPolicyUndo>,
     pending_confirmed_reject: Option<PendingConfirmedReject>,
     revert_guard: Option<RevertGuard>,
@@ -267,6 +268,7 @@ impl LabSession {
             capturing: true,
             rewind: CompositionRewindMiner::default(),
             intervention: InterventionConfig::win32(),
+            learning_config_hash: LearningConfigV2::compatibility_v1().hash(),
             pending_policy_undo: None,
             pending_confirmed_reject: None,
             revert_guard: None,
@@ -398,7 +400,7 @@ impl LabSession {
 
         if matches!(event.kind, InputKind::Backspace)
             && before.is_empty()
-            && self.try_restore_policy_undo(event.at_ms, allow_learning)
+            && self.try_restore_policy_undo(event.seq, event.at_ms, allow_learning)
         {
             let snapshot = self.engine.snapshot();
             return SessionObservation {
@@ -474,6 +476,17 @@ impl LabSession {
             let settled = self
                 .learning
                 .observe_input_or_edit(self.next_seq, event.at_ms, true);
+            if self.capturing {
+                for feedback in &settled {
+                    if let FeedbackKind::AutoSettled { edit_id } = feedback.kind {
+                        self.record_capture(CaptureRecord::InterventionSettled {
+                            seq: feedback.seq,
+                            at_ms: feedback.at_ms,
+                            edit_id,
+                        });
+                    }
+                }
+            }
             self.next_seq = self
                 .next_seq
                 .saturating_add(u64::try_from(settled.len()).unwrap_or(0));
@@ -509,6 +522,14 @@ impl LabSession {
             self.learning
                 .model_mut()
                 .apply_feedback(&key, &feedback, allow_learning);
+        if self.capturing && allow_learning {
+            self.record_capture(CaptureRecord::CorrectionConfirmed {
+                seq,
+                at_ms,
+                identity: rule_identity(&key),
+                left_token_nfc: key.left_token_nfc.clone(),
+            });
+        }
         if allow_learning {
             let (positive_total, negative_total) = self.learning.model().evidence_totals(&key);
             self.pending_learning_notice = Some(LearningNotice {
@@ -595,6 +616,12 @@ impl LabSession {
         let _ = self.take_seq();
         if self.capturing && allow_learning {
             self.record_capture(CaptureRecord::UndoLast { seq, at_ms });
+            self.record_capture(CaptureRecord::InterventionReverted {
+                seq,
+                at_ms,
+                edit_id: outcome.inverse.edit_id,
+                revert_kind: "explicit_undo".into(),
+            });
         }
         let show_nfc = outcome.inverse.replacement.clone();
         self.document
@@ -705,6 +732,40 @@ impl LabSession {
     fn record_capture(&mut self, record: CaptureRecord) {
         self.capture.push(record);
         trim_capture_to(&mut self.capture, MAX_CAPTURE_RECORDS);
+    }
+
+    fn record_candidate_set(
+        &mut self,
+        snapshot: &CompositionSnapshot,
+        event: &InputEvent,
+        method: InputMethod,
+        slice: &CorrectionSlice,
+    ) {
+        if !self.capturing || !event.context.allow_learning || slice.candidates.is_empty() {
+            return;
+        }
+        self.record_capture(CaptureRecord::CandidateSetEvaluated {
+            seq: event.seq,
+            at_ms: event.at_ms,
+            ids: slice
+                .candidates
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect(),
+            sources: slice
+                .candidates
+                .iter()
+                .map(|candidate| candidate.source)
+                .collect(),
+            identity_hashes: slice
+                .candidates
+                .iter()
+                .map(|candidate| {
+                    correction_identity_hash(&correction_identity(snapshot, candidate, method))
+                })
+                .collect(),
+            config_hash: self.learning_config_hash.clone(),
+        });
     }
 
     pub fn restore_last_at_ms(&mut self, last_at_ms: i64) {
@@ -899,6 +960,7 @@ impl LabSession {
             self.intervention,
             guard.as_ref(),
         );
+        self.record_candidate_set(snapshot, event, method, &slice);
         if event.context.allow_learning {
             for candidate in slice.display_candidates() {
                 let key = candidate_rule_key(snapshot, &self.left_context, method, candidate);
@@ -923,6 +985,15 @@ impl LabSession {
                 });
             if let Some(fix) = chosen {
                 let rule = candidate_rule_key(snapshot, &self.left_context, method, &fix);
+                if self.capturing && event.context.allow_learning {
+                    self.record_capture(CaptureRecord::InterventionApplied {
+                        seq: event.seq,
+                        at_ms: event.at_ms,
+                        edit_id: action.edit_id,
+                        candidate_id: fix.id,
+                        reason: format!("{:?}", reason.unwrap_or(InterventionReason::LowScore)),
+                    });
+                }
                 self.pending_policy_undo = Some(PendingPolicyUndo {
                     raw_token: snapshot.raw_keys.clone(),
                     identity: correction_identity(snapshot, &fix, method),
@@ -1058,6 +1129,14 @@ impl LabSession {
         self.learning
             .model_mut()
             .apply_feedback(&pending.rule_key, &feedback, true);
+        if self.capturing {
+            self.record_capture(CaptureRecord::CorrectionConfirmed {
+                seq: feedback.seq,
+                at_ms,
+                identity: rule_identity(&pending.rule_key),
+                left_token_nfc: pending.rule_key.left_token_nfc,
+            });
+        }
     }
 
     fn leftover_committed_prefix(&self) -> bool {
@@ -1125,6 +1204,14 @@ impl LabSession {
             .model_mut()
             .apply_feedback(&key, &feedback, true);
         let (positive_total, negative_total) = self.learning.model().evidence_totals(&key);
+        if self.capturing {
+            self.record_capture(CaptureRecord::CorrectionConfirmed {
+                seq,
+                at_ms,
+                identity: rule_identity(&key),
+                left_token_nfc: key.left_token_nfc.clone(),
+            });
+        }
         self.pending_learning_notice = Some(LearningNotice {
             kind: LearningNoticeKind::Observed,
             original_nfc: key.original_nfc.clone(),
@@ -1154,6 +1241,14 @@ impl LabSession {
                         .apply_feedback(&key, &feedback, true);
                     let (positive_total, negative_total) =
                         self.learning.model().evidence_totals(&key);
+                    if self.capturing {
+                        self.record_capture(CaptureRecord::CorrectionConfirmed {
+                            seq,
+                            at_ms,
+                            identity: rule_identity(&key),
+                            left_token_nfc: key.left_token_nfc.clone(),
+                        });
+                    }
                     self.pending_learning_notice = Some(LearningNotice {
                         kind: LearningNoticeKind::Observed,
                         original_nfc: key.original_nfc.clone(),
@@ -1190,6 +1285,20 @@ impl LabSession {
                         &replacement_nfc,
                     );
                     if count > previous_count {
+                        if self.capturing {
+                            self.record_capture(CaptureRecord::CorrectionConfirmed {
+                                seq,
+                                at_ms,
+                                identity: CorrectionIdentity {
+                                    input_method,
+                                    source: CandidateSource::Personal,
+                                    original_nfc: original_nfc.clone(),
+                                    candidate_nfc: replacement_nfc.clone(),
+                                    source_rule_id: "personal-correction".into(),
+                                },
+                                left_token_nfc: None,
+                            });
+                        }
                         self.pending_learning_notice = Some(LearningNotice {
                             kind: if promoted {
                                 LearningNoticeKind::Promoted
@@ -1214,7 +1323,12 @@ impl LabSession {
         }
     }
 
-    fn try_restore_policy_undo(&mut self, at_ms: i64, allow_learning: bool) -> bool {
+    fn try_restore_policy_undo(
+        &mut self,
+        event_seq: u64,
+        at_ms: i64,
+        allow_learning: bool,
+    ) -> bool {
         let Some(pending) = self.pending_policy_undo.clone() else {
             return false;
         };
@@ -1239,6 +1353,14 @@ impl LabSession {
             return false;
         }
         let _ = self.take_seq();
+        if self.capturing && allow_learning {
+            self.record_capture(CaptureRecord::InterventionReverted {
+                seq: event_seq,
+                at_ms,
+                edit_id: pending.edit_id,
+                revert_kind: "immediate_backspace".into(),
+            });
+        }
         self.document.pop_last();
         self.engine.restore_raw_keys(&pending.raw_token);
         self.clear_auto_anchor();
@@ -1262,31 +1384,45 @@ impl LabSession {
     }
 
     pub fn forget_last_rule(&mut self) -> bool {
-        let (changed, original_nfc, replacement_nfc) = match self.last_learned.take() {
-            Some(LastLearned::Rule(key)) => (
-                self.learning.model_mut().forget_rule(&key),
-                key.original_nfc,
-                key.candidate_nfc,
-            ),
+        let (changed, original_nfc, replacement_nfc, identity) = match self.last_learned.take() {
+            Some(LastLearned::Rule(key)) => {
+                let identity = rule_identity(&key);
+                (
+                    self.learning.model_mut().forget_rule(&key),
+                    key.original_nfc,
+                    key.candidate_nfc,
+                    identity,
+                )
+            }
             Some(LastLearned::Personal {
                 input_method,
                 original_nfc,
                 replacement_nfc,
-            }) => (
-                self.learning.model_mut().forget_personal_pair(
+            }) => {
+                let identity = CorrectionIdentity {
                     input_method,
-                    &original_nfc,
-                    &replacement_nfc,
-                ),
-                original_nfc,
-                replacement_nfc,
-            ),
+                    source: CandidateSource::Personal,
+                    original_nfc: original_nfc.clone(),
+                    candidate_nfc: replacement_nfc.clone(),
+                    source_rule_id: "personal-correction".into(),
+                };
+                (
+                    self.learning.model_mut().forget_personal_pair(
+                        input_method,
+                        &original_nfc,
+                        &replacement_nfc,
+                    ),
+                    original_nfc,
+                    replacement_nfc,
+                    identity,
+                )
+            }
             None => return false,
         };
         if !changed {
             return false;
         }
-        self.checkpoint_after_forget();
+        self.checkpoint_after_forget(&identity);
         self.pending_learning_notice = Some(LearningNotice {
             kind: LearningNoticeKind::Forgotten,
             original_nfc,
@@ -1297,6 +1433,22 @@ impl LabSession {
             negative_total: 0.0,
         });
         true
+    }
+
+    pub(crate) fn forget_identity_hash_for_replay(&mut self, identity_hash: &str) {
+        let rows = self.learning.model().inspection_rows();
+        for row in rows {
+            let identity = CorrectionIdentity {
+                input_method: row.input_method,
+                source: row.source,
+                original_nfc: row.original_nfc.clone(),
+                candidate_nfc: row.candidate_nfc.clone(),
+                source_rule_id: row.source_rule_id.clone(),
+            };
+            if correction_identity_hash(&identity) == identity_hash {
+                self.learning.model_mut().forget_inspection_row(&row);
+            }
+        }
     }
 
     /// Forget exactly one learned row selected from the model inspection projection.
@@ -1310,7 +1462,14 @@ impl LabSession {
             {
                 self.last_learned = None;
             }
-            self.checkpoint_after_forget();
+            let identity = CorrectionIdentity {
+                input_method: row.input_method,
+                source: row.source,
+                original_nfc: row.original_nfc.clone(),
+                candidate_nfc: row.candidate_nfc.clone(),
+                source_rule_id: row.source_rule_id.clone(),
+            };
+            self.checkpoint_after_forget(&identity);
             self.pending_learning_notice = Some(LearningNotice {
                 kind: LearningNoticeKind::Forgotten,
                 original_nfc: row.original_nfc.clone(),
@@ -1324,8 +1483,16 @@ impl LabSession {
         changed
     }
 
-    fn checkpoint_after_forget(&mut self) {
-        compact_capture_after_forget(&mut self.capture);
+    fn checkpoint_after_forget(&mut self, identity: &CorrectionIdentity) {
+        compact_capture_after_forget(&mut self.capture, identity);
+        if self.capturing {
+            let seq = self.take_seq();
+            self.record_capture(CaptureRecord::DataForgotten {
+                seq,
+                at_ms: self.last_at_ms,
+                identity: correction_identity_hash(identity),
+            });
+        }
         self.learning.invalidate_due_to_caret_break();
         self.miner.invalidate_due_to_caret_break();
         self.rewind.invalidate();
@@ -1492,6 +1659,16 @@ pub struct SessionInjectCheckpoint {
     pending_reopen: bool,
     last_learned: Option<LastLearned>,
     pending_learning_notice: Option<LearningNotice>,
+}
+
+fn rule_identity(key: &RuleContextKey) -> CorrectionIdentity {
+    CorrectionIdentity {
+        input_method: key.input_method,
+        source: key.source,
+        original_nfc: key.original_nfc.clone(),
+        candidate_nfc: key.candidate_nfc.clone(),
+        source_rule_id: key.source_rule_id.clone(),
+    }
 }
 
 /// Unicode punctuation the engine's ASCII boundary table does not treat as commit.
