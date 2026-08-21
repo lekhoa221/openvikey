@@ -121,7 +121,7 @@ impl ChartSnapshot {
                 confidence,
                 blended_confidence: confidence,
                 stored_state,
-                state_band: effective_band(memory, identity, stored_state, config, event.at_ms),
+                state_band: effective_band(memory, identity, config, event.at_ms),
                 marker: marker_for(event.positive, event.negative),
             });
         }
@@ -140,7 +140,7 @@ impl ChartSnapshot {
                 top1_top2_margin: 1.0,
                 final_score: breakdown_confidence,
             },
-            conclusion: effective_band(memory, identity, stored_state, config, evaluate_at_ms)
+            conclusion: effective_band(memory, identity, config, evaluate_at_ms)
                 .vietnamese_label()
                 .to_string(),
             config_hash: config.hash(),
@@ -165,13 +165,14 @@ impl ChartSnapshot {
 /// while confidence stays at or above `auto_off_confidence`; otherwise the rule
 /// presents as Suggest (spec §15.2). An active revert demotion veto presents as
 /// Cooldown regardless of the stored state.
-fn effective_band(
+#[must_use]
+pub fn effective_band(
     memory: &CorrectionMemory,
     identity: &CorrectionIdentity,
-    stored_state: DecisionState,
     config: &LearningConfigV2,
     evaluate_at_ms: i64,
 ) -> ChartStateBand {
+    let stored_state = memory.query_state(identity, None);
     match stored_state {
         DecisionState::Ignore => ChartStateBand::Observe,
         DecisionState::Suggest => {

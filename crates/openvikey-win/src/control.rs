@@ -2,6 +2,7 @@
 
 use std::sync::Mutex;
 
+use openvikey_core::chart::ChartSnapshot;
 use openvikey_core::model::ModelInspectionRow;
 use openvikey_core::types::{CandidateSource, InputMethod, TonePlacement};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
@@ -12,6 +13,7 @@ use windows::Win32::Graphics::Gdi::{
     OUT_DEFAULT_PRECIS, RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW, RedrawWindow,
     SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
 };
+use windows::Win32::System::SystemServices::SS_OWNERDRAW;
 use windows::Win32::UI::Controls::{
     DRAWITEMSTRUCT, HIMAGELIST, ICC_LISTVIEW_CLASSES, ILC_COLOR32, ILC_MASK, INITCOMMONCONTROLSEX,
     ImageList_Create, ImageList_Destroy, ImageList_ReplaceIcon, InitCommonControlsEx, LVCF_SUBITEM,
@@ -70,6 +72,7 @@ const IDC_LIST_RULES: usize = 302;
 const IDC_BTN_FORGET_RULE: usize = 303;
 const IDC_BTN_FORGET_LAST: usize = 304;
 const IDC_BTN_REFRESH_RULES: usize = 305;
+const IDC_CHART_CANVAS: usize = 306;
 
 const IDC_LIST_APPS: usize = 401;
 const IDC_EDIT_APP_EXE: usize = 402;
@@ -203,6 +206,11 @@ struct UiControls {
     btn_forget_selected: HWND,
     btn_forget_last: HWND,
     btn_refresh_rules: HWND,
+    chart_canvas: HWND,
+    lbl_chart_overview: HWND,
+    lbl_chart_breakdown: HWND,
+    current_chart: Option<ChartSnapshot>,
+    learning_overview: crate::chart_view::LearningOverview,
     list_apps: HWND,
     edit_app_exe: HWND,
     combo_app_transform: HWND,
@@ -967,7 +975,7 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
             scale_dpi(204, dpi),
             scale_dpi(44, dpi),
             scale_dpi(526, dpi),
-            scale_dpi(236, dpi),
+            scale_dpi(150, dpi),
             Some(hwnd),
             Some(HMENU(IDC_LIST_RULES as *mut core::ffi::c_void)),
             Some(HINSTANCE::default()),
@@ -1009,7 +1017,7 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
             );
         }
     }
-    add_layout(list_rules, 204, 44, 526, 236);
+    add_layout(list_rules, 204, 44, 526, 150);
     page_1.push(list_rules);
 
     let grp_details = unsafe {
@@ -1019,7 +1027,7 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
             w!(" Chi tiết rule "),
             ws(WS_CHILD | WS_VISIBLE, BS_GROUPBOX as u32),
             scale_dpi(204, dpi),
-            scale_dpi(286, dpi),
+            scale_dpi(200, dpi),
             scale_dpi(526, dpi),
             scale_dpi(148, dpi),
             Some(hwnd),
@@ -1028,84 +1036,84 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
             None,
         )?
     };
-    add_layout(grp_details, 204, 286, 526, 148);
+    add_layout(grp_details, 204, 200, 526, 148);
     page_1.push(grp_details);
 
     let lbl_detail_original = create_label(
         hwnd,
         "• Từ gốc:        -",
         scale_dpi(216, dpi),
-        scale_dpi(306, dpi),
+        scale_dpi(220, dpi),
         scale_dpi(240, dpi),
         scale_dpi(18, dpi),
     )?;
-    add_layout(lbl_detail_original, 216, 306, 240, 18);
+    add_layout(lbl_detail_original, 216, 220, 240, 18);
     page_1.push(lbl_detail_original);
 
     let lbl_detail_candidate = create_label(
         hwnd,
         "• Từ thay thế:   -",
         scale_dpi(470, dpi),
-        scale_dpi(306, dpi),
+        scale_dpi(220, dpi),
         scale_dpi(240, dpi),
         scale_dpi(18, dpi),
     )?;
-    add_layout(lbl_detail_candidate, 470, 306, 240, 18);
+    add_layout(lbl_detail_candidate, 470, 220, 240, 18);
     page_1.push(lbl_detail_candidate);
 
     let lbl_detail_method = create_label(
         hwnd,
         "• Kiểu gõ:       -",
         scale_dpi(216, dpi),
-        scale_dpi(328, dpi),
+        scale_dpi(242, dpi),
         scale_dpi(240, dpi),
         scale_dpi(18, dpi),
     )?;
-    add_layout(lbl_detail_method, 216, 328, 240, 18);
+    add_layout(lbl_detail_method, 216, 242, 240, 18);
     page_1.push(lbl_detail_method);
 
     let lbl_detail_source = create_label(
         hwnd,
         "• Nguồn gốc:     -",
         scale_dpi(470, dpi),
-        scale_dpi(328, dpi),
+        scale_dpi(242, dpi),
         scale_dpi(240, dpi),
         scale_dpi(18, dpi),
     )?;
-    add_layout(lbl_detail_source, 470, 328, 240, 18);
+    add_layout(lbl_detail_source, 470, 242, 240, 18);
     page_1.push(lbl_detail_source);
 
     let lbl_detail_evidence = create_label(
         hwnd,
         "• Bằng chứng:    -",
         scale_dpi(216, dpi),
-        scale_dpi(350, dpi),
+        scale_dpi(264, dpi),
         scale_dpi(240, dpi),
         scale_dpi(18, dpi),
     )?;
-    add_layout(lbl_detail_evidence, 216, 350, 240, 18);
+    add_layout(lbl_detail_evidence, 216, 264, 240, 18);
     page_1.push(lbl_detail_evidence);
 
     let lbl_detail_state = create_label(
         hwnd,
         "• Trạng thái:    -",
         scale_dpi(470, dpi),
-        scale_dpi(350, dpi),
+        scale_dpi(264, dpi),
         scale_dpi(240, dpi),
         scale_dpi(18, dpi),
     )?;
-    add_layout(lbl_detail_state, 470, 350, 240, 18);
+    add_layout(lbl_detail_state, 470, 264, 240, 18);
     page_1.push(lbl_detail_state);
 
     let lbl_detail_rule_id = create_label(
         hwnd,
         "• Rule ID:       -",
         scale_dpi(216, dpi),
-        scale_dpi(372, dpi),
+        scale_dpi(286, dpi),
         scale_dpi(500, dpi),
         scale_dpi(18, dpi),
     )?;
-    add_layout(lbl_detail_rule_id, 216, 372, 500, 18);
+    add_layout(lbl_detail_rule_id, 216, 286, 500, 18);
     page_1.push(lbl_detail_rule_id);
 
     let btn_forget_selected = unsafe {
@@ -1115,7 +1123,7 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
             w!("Quên rule đã chọn"),
             ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_PUSHBUTTON as u32),
             scale_dpi(204, dpi),
-            scale_dpi(442, dpi),
+            scale_dpi(354, dpi),
             scale_dpi(140, dpi),
             scale_dpi(30, dpi),
             Some(hwnd),
@@ -1124,7 +1132,7 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
             None,
         )?
     };
-    add_layout(btn_forget_selected, 204, 442, 140, 30);
+    add_layout(btn_forget_selected, 204, 354, 140, 30);
     page_1.push(btn_forget_selected);
 
     let btn_forget_last = unsafe {
@@ -1134,7 +1142,7 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
             w!("Quên rule vừa học"),
             ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_PUSHBUTTON as u32),
             scale_dpi(352, dpi),
-            scale_dpi(442, dpi),
+            scale_dpi(354, dpi),
             scale_dpi(140, dpi),
             scale_dpi(30, dpi),
             Some(hwnd),
@@ -1143,7 +1151,7 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
             None,
         )?
     };
-    add_layout(btn_forget_last, 352, 442, 140, 30);
+    add_layout(btn_forget_last, 352, 354, 140, 30);
     page_1.push(btn_forget_last);
 
     let btn_refresh_rules = unsafe {
@@ -1153,7 +1161,7 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
             w!("Làm mới"),
             ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_PUSHBUTTON as u32),
             scale_dpi(500, dpi),
-            scale_dpi(442, dpi),
+            scale_dpi(354, dpi),
             scale_dpi(105, dpi),
             scale_dpi(30, dpi),
             Some(hwnd),
@@ -1162,8 +1170,49 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
             None,
         )?
     };
-    add_layout(btn_refresh_rules, 500, 442, 105, 30);
+    add_layout(btn_refresh_rules, 500, 354, 105, 30);
     page_1.push(btn_refresh_rules);
+
+    let lbl_chart_overview = create_label(
+        hwnd,
+        "Tổng quan: chưa có dữ liệu.",
+        scale_dpi(204, dpi),
+        scale_dpi(392, dpi),
+        scale_dpi(526, dpi),
+        scale_dpi(16, dpi),
+    )?;
+    add_layout(lbl_chart_overview, 204, 392, 526, 16);
+    page_1.push(lbl_chart_overview);
+
+    let chart_canvas = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("STATIC"),
+            w!(""),
+            WS_CHILD | WS_VISIBLE | WINDOW_STYLE(SS_OWNERDRAW.0),
+            scale_dpi(204, dpi),
+            scale_dpi(410, dpi),
+            scale_dpi(526, dpi),
+            scale_dpi(52, dpi),
+            Some(hwnd),
+            Some(HMENU(IDC_CHART_CANVAS as *mut core::ffi::c_void)),
+            Some(HINSTANCE::default()),
+            None,
+        )?
+    };
+    add_layout(chart_canvas, 204, 410, 526, 52);
+    page_1.push(chart_canvas);
+
+    let lbl_chart_breakdown = create_label(
+        hwnd,
+        "",
+        scale_dpi(216, dpi),
+        scale_dpi(464, dpi),
+        scale_dpi(504, dpi),
+        scale_dpi(20, dpi),
+    )?;
+    add_layout(lbl_chart_breakdown, 216, 464, 504, 20);
+    page_1.push(lbl_chart_breakdown);
 
     let mut make_control = |class: PCWSTR,
                             text: &str,
@@ -1699,6 +1748,11 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
         btn_forget_selected,
         btn_forget_last,
         btn_refresh_rules,
+        chart_canvas,
+        lbl_chart_overview,
+        lbl_chart_breakdown,
+        current_chart: None,
+        learning_overview: crate::chart_view::LearningOverview::default(),
         list_apps,
         edit_app_exe,
         combo_app_transform,
@@ -2118,10 +2172,52 @@ fn apply_rules_filter_inner(controls: &mut UiControls) {
 
 fn populate_rules_inner(controls: &mut UiControls) {
     let snapshot = crate::host::control_snapshot();
-    let mut rows = snapshot.map_or_else(Vec::new, |s| s.learned_rows);
+    let mut rows = snapshot
+        .as_ref()
+        .map_or_else(Vec::new, |s| s.learned_rows.clone());
     rows.reverse();
     controls.all_rows = rows;
+    if let Some(snapshot) = snapshot.as_ref() {
+        controls.learning_overview = snapshot.learning_overview;
+        set_text(
+            controls.lbl_chart_overview,
+            &snapshot.learning_overview.vietnamese_line(),
+        );
+        controls.current_chart.clone_from(&snapshot.chart);
+    } else {
+        controls.current_chart = None;
+        set_text(
+            controls.lbl_chart_overview,
+            "Tổng quan: runtime chưa sẵn sàng.",
+        );
+    }
+    sync_chart_views(controls);
     apply_rules_filter_inner(controls);
+}
+
+/// Rebuilds breakdown text and repaints the timeline for `current_chart`.
+fn sync_chart_views(controls: &mut UiControls) {
+    match controls.current_chart.as_ref() {
+        Some(chart) => set_text(
+            controls.lbl_chart_breakdown,
+            &crate::chart_view::text_alternative(chart),
+        ),
+        None => set_text(controls.lbl_chart_breakdown, ""),
+    }
+    unsafe {
+        let _ = RedrawWindow(
+            Some(controls.chart_canvas),
+            None,
+            None,
+            RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW,
+        );
+    }
+}
+
+/// Rebuilds the chart when the user selects a different learned rule.
+fn update_rule_chart_view(controls: &mut UiControls, row: Option<&ModelInspectionRow>) {
+    controls.current_chart = row.and_then(crate::host::rule_chart_runtime);
+    sync_chart_views(controls);
 }
 
 fn set_text(hwnd: HWND, value: &str) {
@@ -2683,6 +2779,14 @@ unsafe extern "system" fn settings_wnd_proc(
                 return LRESULT(0);
             }
             let item = unsafe { &*(lparam.0 as *const DRAWITEMSTRUCT) };
+            if usize::try_from(item.CtlID).unwrap_or(0) == IDC_CHART_CANVAS {
+                let snapshot = CONTROLS
+                    .try_lock()
+                    .ok()
+                    .and_then(|guard| guard.as_ref().and_then(|c| c.current_chart.clone()));
+                let _ = crate::chart_view::handle_draw_item(item, snapshot.as_ref());
+                return LRESULT(1);
+            }
             if usize::try_from(item.CtlID).unwrap_or(0) != IDC_BTN_APPLY {
                 return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
             }
@@ -2761,13 +2865,14 @@ unsafe extern "system" fn settings_wnd_proc(
                 return LRESULT(0);
             }
             if header.idFrom == IDC_LIST_RULES && header.code == LVN_ITEMCHANGED {
-                let Ok(guard) = CONTROLS.try_lock() else {
+                let Ok(mut guard) = CONTROLS.try_lock() else {
                     return LRESULT(0);
                 };
-                if let Some(controls) = guard.as_ref() {
+                if let Some(controls) = guard.as_mut() {
                     let row = selected_rule_index(controls.list_rules)
-                        .and_then(|index| controls.filtered_rows.get(index));
-                    update_rule_details_view(controls, row);
+                        .and_then(|index| controls.filtered_rows.get(index).cloned());
+                    update_rule_details_view(controls, row.as_ref());
+                    update_rule_chart_view(controls, row.as_ref());
                 }
             }
             LRESULT(0)

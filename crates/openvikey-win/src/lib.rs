@@ -1,5 +1,6 @@
 //! Windows hook host for OpenViKey (GD2a).
 
+pub mod chart_view;
 pub mod classify;
 pub mod console;
 pub mod context_bridge;

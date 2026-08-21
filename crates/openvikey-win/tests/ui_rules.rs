@@ -125,13 +125,17 @@ fn learned_rule_commands_are_exact_durable_and_independent_of_mode() {
 
 #[test]
 fn learned_rules_ui_does_not_render_surrounding_context() {
-    let source = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/control.rs"),
-    )
-    .unwrap();
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let source = std::fs::read_to_string(manifest.join("src/control.rs")).unwrap();
     assert!(!source.contains("Ngữ cảnh trước:"));
     assert!(source.contains("DecisionState::Ignore => \"Observed\""));
     assert!(source.contains("WC_LISTVIEWW"));
+
+    // The learning chart must stay context-free as well: it renders the
+    // context-free identity only and never reads left-token strings.
+    let chart_source = std::fs::read_to_string(manifest.join("src/chart_view.rs")).unwrap();
+    assert!(!chart_source.contains("left_token"));
+    assert!(chart_source.contains("Kết luận"));
 }
 
 #[test]

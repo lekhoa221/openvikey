@@ -258,6 +258,12 @@ impl AdaptiveModel {
         self.user_language_model.unigram(token)
     }
 
+    /// Read-only correction-memory view for Settings/idle chart building.
+    #[must_use]
+    pub const fn correction_memory(&self) -> &CorrectionMemory {
+        &self.correction_memory
+    }
+
     #[must_use]
     pub fn bigram_count(&self, left_token: &str, token: &str) -> u64 {
         self.user_language_model.bigram(left_token, token)

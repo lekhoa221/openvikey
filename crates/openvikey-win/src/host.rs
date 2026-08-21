@@ -5,8 +5,10 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use arc_swap::ArcSwap;
+use openvikey_core::chart::{ChartSnapshot, effective_band};
 use openvikey_core::correction::InterventionConfig;
 use openvikey_core::engine::EngineConfig;
+use openvikey_core::learning_config::LearningConfigV2;
 use openvikey_core::lexicon::{Lexicon, LexiconEntry};
 use openvikey_core::model::{AdaptiveModel, ModelInspectionRow, RuleContextKey};
 use openvikey_core::types::{
@@ -471,6 +473,9 @@ pub fn tray_snapshot() -> Option<HostTraySnapshot> {
 }
 
 /// Read-only product-control snapshot from the one live session.
+///
+/// Learning-chart fields are filled here on the Settings/idle path only; the
+/// hook and inject paths never call `control_snapshot`.
 #[derive(Debug, Clone)]
 pub struct ControlSnapshot {
     pub mode: Mode,
@@ -481,12 +486,90 @@ pub struct ControlSnapshot {
     pub last_external_exe: String,
     pub learning_allowed: bool,
     pub learned_rows: Vec<ModelInspectionRow>,
+    pub learning_overview: crate::chart_view::LearningOverview,
+    /// Chart of the most recently active learned rule (default selection).
+    pub chart: Option<ChartSnapshot>,
+}
+
+/// Builds the read-only chart for one learned rule off the hook path.
+#[must_use]
+pub fn rule_chart_runtime(row: &ModelInspectionRow) -> Option<ChartSnapshot> {
+    let rt = RUNTIME.get()?;
+    let guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
+    let identity = openvikey_core::intervention::CorrectionIdentity {
+        input_method: row.input_method,
+        source: row.source,
+        original_nfc: row.original_nfc.clone(),
+        candidate_nfc: row.candidate_nfc.clone(),
+        source_rule_id: row.source_rule_id.clone(),
+    };
+    let config = LearningConfigV2::compatibility_v1();
+    ChartSnapshot::from_memory(
+        guard.session.model().correction_memory(),
+        &identity,
+        &config,
+        row.last_evidence_at_ms.unwrap_or(0),
+    )
+}
+
+fn learning_overview_from_rows(
+    model: &AdaptiveModel,
+    rows: &[ModelInspectionRow],
+) -> crate::chart_view::LearningOverview {
+    let config = LearningConfigV2::compatibility_v1();
+    let memory = model.correction_memory();
+    let mut bands = Vec::with_capacity(rows.len());
+    for row in rows {
+        let identity = openvikey_core::intervention::CorrectionIdentity {
+            input_method: row.input_method,
+            source: row.source,
+            original_nfc: row.original_nfc.clone(),
+            candidate_nfc: row.candidate_nfc.clone(),
+            source_rule_id: row.source_rule_id.clone(),
+        };
+        bands.push(effective_band(
+            memory,
+            &identity,
+            &config,
+            row.last_evidence_at_ms.unwrap_or(0),
+        ));
+    }
+    crate::chart_view::LearningOverview::from_bands(&bands)
+}
+
+fn most_recent_row(rows: &[ModelInspectionRow]) -> Option<ModelInspectionRow> {
+    rows.iter()
+        .enumerate()
+        .max_by(|(left_index, left), (right_index, right)| {
+            left.last_evidence_at_ms
+                .cmp(&right.last_evidence_at_ms)
+                .then_with(|| right_index.cmp(left_index))
+        })
+        .map(|(_, row)| row.clone())
 }
 
 #[must_use]
 pub fn control_snapshot() -> Option<ControlSnapshot> {
     let rt = RUNTIME.get()?;
     let guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
+    let learned_rows = guard.session.model().inspection_rows();
+    let learning_overview = learning_overview_from_rows(guard.session.model(), &learned_rows);
+    let chart = most_recent_row(&learned_rows).and_then(|row| {
+        let identity = openvikey_core::intervention::CorrectionIdentity {
+            input_method: row.input_method,
+            source: row.source,
+            original_nfc: row.original_nfc.clone(),
+            candidate_nfc: row.candidate_nfc.clone(),
+            source_rule_id: row.source_rule_id.clone(),
+        };
+        let config = LearningConfigV2::compatibility_v1();
+        ChartSnapshot::from_memory(
+            guard.session.model().correction_memory(),
+            &identity,
+            &config,
+            row.last_evidence_at_ms.unwrap_or(0),
+        )
+    });
     Some(ControlSnapshot {
         mode: guard.mode,
         engine_config: guard.session.engine_config(),
@@ -495,7 +578,9 @@ pub fn control_snapshot() -> Option<ControlSnapshot> {
         foreground_exe: guard.foreground_exe.clone(),
         last_external_exe: guard.last_external_exe.clone(),
         learning_allowed: guard.allow_learning_for_foreground(),
-        learned_rows: guard.session.model().inspection_rows(),
+        learned_rows,
+        learning_overview,
+        chart,
     })
 }
 
