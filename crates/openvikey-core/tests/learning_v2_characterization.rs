@@ -23,10 +23,11 @@
 use openvikey_core::correction::{
     InterventionConfig, boundary_assist_candidate, unique_telex_fix_candidate,
 };
+use openvikey_core::decision::DecisionState;
 use openvikey_core::generate::telex_fix::TelexFixGenerator;
 use openvikey_core::generate::{Generator, LeftContext};
 use openvikey_core::lexicon::{Lexicon, LexiconEntry};
-use openvikey_core::model::{AdaptiveModel, RuleContextKey};
+use openvikey_core::model::{AdaptiveModel, ModelView, RuleContextKey};
 use openvikey_core::types::{
     Candidate, CandidateSource, CompositionSnapshot, FeedbackEvent, FeedbackKind, InputMethod,
     TonePlacement,
@@ -132,4 +133,66 @@ fn allow_learning_false_is_zero_mutation() {
     let before = model.to_json_payload().unwrap();
     model.apply_feedback(&ko_rule(), &accept_event(1), false);
     assert_eq!(model.to_json_payload().unwrap(), before);
+}
+
+fn khogn_rule() -> RuleContextKey {
+    RuleContextKey {
+        input_method: InputMethod::Telex,
+        source: CandidateSource::Fuzzy,
+        original_nfc: "khogn".to_string(),
+        candidate_nfc: "không".to_string(),
+        left_token_nfc: None,
+        source_rule_id: "fuzzy:khogn".to_string(),
+    }
+}
+
+#[test]
+fn forget_rule_v1_keeps_original_strings_in_payload() {
+    // Superseded by Lát 3 `forget_rule_removes_original_and_candidate_from_serialized_model`.
+    let mut model = AdaptiveModel::default();
+    let key = khogn_rule();
+    model.apply_feedback(&key, &accept_event(1), true);
+    assert!(model.forget_rule(&key));
+    let payload = String::from_utf8(model.to_json_payload().unwrap()).unwrap();
+    assert!(
+        payload.contains("khogn") && payload.contains("không"),
+        "v1 forget hides evidence but keeps strings; Lát 3 must invert this test: {payload}"
+    );
+}
+
+#[test]
+fn state_uses_max_across_left_token_buckets() {
+    // Superseded by Lát 4 `sibling_context_auto_does_not_force_other_context_auto`.
+    let global = khogn_rule();
+    let mut viet = global.clone();
+    viet.left_token_nfc = Some("Việt".to_string());
+    let mut model = AdaptiveModel::default();
+    model.record_decision(&global, DecisionState::Suggest, true);
+    model.record_decision(&viet, DecisionState::Auto, true);
+    assert_eq!(model.state(&global, 0), DecisionState::Auto);
+}
+
+#[test]
+fn personal_store_rejects_new_pair_at_512() {
+    // Superseded by Lát 3 `personal_at_cap_evicts_weak_count_row_instead_of_dropping_new_pair`.
+    let mut model = AdaptiveModel::default();
+    for index in 0..512_u32 {
+        let original = format!("orig{index}");
+        let replacement = format!("repl{index}");
+        assert!(!model.record_personal_correction(
+            InputMethod::Telex,
+            &original,
+            &replacement,
+            true
+        ));
+    }
+    assert_eq!(
+        model.personal_correction_count(InputMethod::Telex, "orig511", "repl511"),
+        1
+    );
+    assert!(!model.record_personal_correction(InputMethod::Telex, "orig512", "repl512", true));
+    assert_eq!(
+        model.personal_correction_count(InputMethod::Telex, "orig512", "repl512"),
+        0
+    );
 }
