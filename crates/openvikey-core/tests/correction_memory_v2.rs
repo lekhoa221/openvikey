@@ -93,3 +93,65 @@ fn source_cap_prevents_personal_auto_state() {
 
     assert_eq!(memory.query_state(&id, None), DecisionState::Suggest);
 }
+
+#[test]
+fn compaction_preserves_decayed_mass_within_1e_9() {
+    const DAY_MS: i64 = 24 * 60 * 60 * 1_000;
+    let id = identity();
+    let mut memory = CorrectionMemory::default();
+    for seq in 0..80_u64 {
+        memory.apply(
+            &id,
+            Some("tôi"),
+            CorrectionEvidence {
+                seq: seq + 1,
+                at_ms: i64::try_from(seq).unwrap() * DAY_MS / 2,
+                positive: if seq % 3 == 0 { 1.0 } else { 0.0 },
+                negative: if seq % 3 == 0 { 0.0 } else { 0.5 },
+            },
+        );
+    }
+    let checkpoint = 40 * DAY_MS;
+    let before_confidence = memory.blended_confidence(&id, Some("tôi"), checkpoint, 2.0);
+    let before_mass = memory.blended_mass(&id, Some("tôi"), checkpoint, 2.0);
+
+    memory.compact_at(checkpoint, 64);
+
+    let after_confidence = memory.blended_confidence(&id, Some("tôi"), checkpoint, 2.0);
+    let after_mass = memory.blended_mass(&id, Some("tôi"), checkpoint, 2.0);
+    assert!((before_confidence - after_confidence).abs() < 1e-9);
+    assert!((before_mass.0 - after_mass.0).abs() < 1e-9);
+    assert!((before_mass.1 - after_mass.1).abs() < 1e-9);
+    assert!(memory.recent_event_count(&id, Some("tôi")) <= 64);
+    assert!(memory.recent_event_count(&id, None) <= 64);
+}
+
+#[test]
+fn compaction_is_idempotent_for_same_checkpoint() {
+    let id = identity();
+    let mut memory = CorrectionMemory::default();
+    for seq in 0..80_u64 {
+        memory.apply(&id, Some("tôi"), evidence(seq + 1, 1.0, 0.0));
+    }
+
+    memory.compact_at(1_000, 64);
+    let first_hash = memory.stable_hash();
+    memory.compact_at(1_000, 64);
+
+    assert_eq!(first_hash, memory.stable_hash());
+}
+
+#[test]
+fn replayed_recent_sequence_remains_idempotent_after_compaction() {
+    let id = identity();
+    let mut memory = CorrectionMemory::default();
+    for seq in 0..80_u64 {
+        memory.apply(&id, Some("tôi"), evidence(seq + 1, 1.0, 0.0));
+    }
+    memory.compact_at(1_000, 64);
+    let before = memory.stable_hash();
+
+    memory.apply(&id, Some("tôi"), evidence(1, 1.0, 0.0));
+
+    assert_eq!(before, memory.stable_hash());
+}

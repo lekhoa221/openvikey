@@ -1166,7 +1166,7 @@ git commit -am "feat: add correction memory with support-aware context blending"
 - Consumes: `max_recent_events_per_bucket = 64`
 - Produces: `compact_at(evaluate_at_ms)` preserving query results within `1e-9`
 
-- [ ] **Step 1: Write failing test**
+- [x] **Step 1: Write failing test**
 
 ```rust
 #[test]
@@ -1188,9 +1188,9 @@ fn compaction_is_idempotent_for_same_checkpoint() {
 }
 ```
 
-- [ ] **Step 2: Run — expect FAIL**
+- [x] **Step 2: Run — expect FAIL**
 
-- [ ] **Step 3: Implement per-bucket**
+- [x] **Step 3: Implement per-bucket**
 
 ```text
 decayed_positive_at_checkpoint
@@ -1201,9 +1201,9 @@ recent_events[]
 
 Query decays the summary from checkpoint then adds recent events. Duplicate seq remains idempotent.
 
-- [ ] **Step 4: Run** `cargo test -p openvikey-core --test correction_memory_v2`
+- [x] **Step 4: Run** `cargo test -p openvikey-core --test correction_memory_v2`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git commit -am "feat: compact correction evidence without changing query results"

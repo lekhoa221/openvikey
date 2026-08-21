@@ -7,6 +7,8 @@
 use crate::decision::{ActionCap, DecisionState};
 use crate::intervention::CorrectionIdentity;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 
 const DEFAULT_HALF_LIFE_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
 
@@ -23,24 +25,37 @@ pub struct CorrectionEvidence {
     pub negative: f64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+struct EvidenceSummary {
+    positive_at_checkpoint: f64,
+    negative_at_checkpoint: f64,
+    checkpoint_at_ms: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct EvidenceBucket {
     state: DecisionState,
+    #[serde(default)]
+    summary: EvidenceSummary,
     events: Vec<CorrectionEvidence>,
+    #[serde(default)]
+    handled_sequences: BTreeSet<u64>,
 }
 
 impl Default for EvidenceBucket {
     fn default() -> Self {
         Self {
             state: DecisionState::Ignore,
+            summary: EvidenceSummary::default(),
             events: Vec::new(),
+            handled_sequences: BTreeSet::new(),
         }
     }
 }
 
 impl EvidenceBucket {
     fn apply(&mut self, evidence: CorrectionEvidence) {
-        if self.events.iter().any(|item| item.seq == evidence.seq) {
+        if !self.handled_sequences.insert(evidence.seq) {
             return;
         }
         let evidence = CorrectionEvidence {
@@ -53,13 +68,49 @@ impl EvidenceBucket {
     }
 
     fn mass(&self, evaluate_at_ms: i64, half_life_ms: i64) -> (f64, f64) {
-        self.events.iter().fold((0.0, 0.0), |mass, event| {
-            let factor = decay_factor(event.at_ms, evaluate_at_ms, half_life_ms);
+        let summary_factor = self.summary.checkpoint_at_ms.map_or(0.0, |checkpoint| {
+            decay_factor(checkpoint, evaluate_at_ms, half_life_ms)
+        });
+        self.events.iter().fold(
             (
-                mass.0 + event.positive * factor,
-                mass.1 + event.negative * factor,
-            )
-        })
+                self.summary.positive_at_checkpoint * summary_factor,
+                self.summary.negative_at_checkpoint * summary_factor,
+            ),
+            |mass, event| {
+                let factor = decay_factor(event.at_ms, evaluate_at_ms, half_life_ms);
+                (
+                    mass.0 + event.positive * factor,
+                    mass.1 + event.negative * factor,
+                )
+            },
+        )
+    }
+
+    fn compact_at(&mut self, evaluate_at_ms: i64, max_recent_events: usize, half_life_ms: i64) {
+        if self.events.len() <= max_recent_events {
+            return;
+        }
+        let excess = self.events.len() - max_recent_events;
+        let summary_factor = self.summary.checkpoint_at_ms.map_or(0.0, |checkpoint| {
+            decay_factor(checkpoint, evaluate_at_ms, half_life_ms)
+        });
+        let mut positive = self.summary.positive_at_checkpoint * summary_factor;
+        let mut negative = self.summary.negative_at_checkpoint * summary_factor;
+        for event in &self.events[..excess] {
+            let factor = decay_factor(event.at_ms, evaluate_at_ms, half_life_ms);
+            positive += event.positive * factor;
+            negative += event.negative * factor;
+        }
+        self.summary = EvidenceSummary {
+            positive_at_checkpoint: positive,
+            negative_at_checkpoint: negative,
+            checkpoint_at_ms: Some(evaluate_at_ms),
+        };
+        self.events.drain(..excess);
+        trim_handled_sequences(
+            &mut self.handled_sequences,
+            max_recent_events.saturating_mul(2),
+        );
     }
 }
 
@@ -138,12 +189,7 @@ impl CorrectionMemory {
         evidence: CorrectionEvidence,
     ) {
         let row = self.row_mut(identity);
-        if row
-            .global
-            .events
-            .iter()
-            .any(|item| item.seq == evidence.seq)
-        {
+        if row.global.handled_sequences.contains(&evidence.seq) {
             return;
         }
         row.global.apply(evidence);
@@ -221,6 +267,41 @@ impl CorrectionMemory {
         )
     }
 
+    /// Move old events into a decayed checkpoint summary for every bucket.
+    pub fn compact_at(&mut self, evaluate_at_ms: i64, max_recent_events: usize) {
+        for row in &mut self.rows {
+            row.global
+                .compact_at(evaluate_at_ms, max_recent_events, self.half_life_ms);
+            for context in &mut row.contexts {
+                context
+                    .evidence
+                    .compact_at(evaluate_at_ms, max_recent_events, self.half_life_ms);
+            }
+        }
+    }
+
+    /// Number of raw events still retained in one queried bucket.
+    #[must_use]
+    pub fn recent_event_count(
+        &self,
+        identity: &CorrectionIdentity,
+        left_token_nfc: Option<&str>,
+    ) -> usize {
+        let Some(row) = self.row(identity) else {
+            return 0;
+        };
+        left_token_nfc
+            .and_then(|left| row.context(left))
+            .map_or(row.global.events.len(), |bucket| bucket.events.len())
+    }
+
+    /// Stable SHA-256 over canonical in-memory ordering.
+    #[must_use]
+    pub fn stable_hash(&self) -> String {
+        let bytes = serde_json::to_vec(self).unwrap_or_default();
+        hex_lower(&Sha256::digest(bytes))
+    }
+
     /// Return state for the requested bucket, capped by source policy.
     #[must_use]
     pub fn query_state(
@@ -262,6 +343,22 @@ fn cap_state(identity: &CorrectionIdentity, state: DecisionState) -> DecisionSta
     } else {
         state
     }
+}
+
+fn trim_handled_sequences(sequences: &mut BTreeSet<u64>, max_entries: usize) {
+    while sequences.len() > max_entries {
+        sequences.pop_first();
+    }
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        output.push(HEX[usize::from(byte >> 4)] as char);
+        output.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    output
 }
 
 fn confidence((positive, negative): (f64, f64)) -> f64 {
