@@ -1513,3 +1513,24 @@ fn forget_last_rule_clears_rewind_mass() {
     assert!(session.forget_last_rule());
     assert_eq!(session.model().positive_mass(&ko_rule(), 20), 0.0);
 }
+
+#[test]
+fn forgotten_rule_cannot_be_resurrected_by_capture_replay() {
+    let mut session = telex_session();
+    type_keys(&mut session, "ko", 0);
+    assert!(session.accept_top(2).is_some());
+    assert!(session.model().positive_mass(&ko_rule(), 2) >= 1.0);
+    assert!(!session.capture_log().records.is_empty());
+
+    assert!(session.forget_last_rule());
+    let log = session.capture_log();
+    assert!(
+        log.records.is_empty(),
+        "v1 forget must checkpoint away reconstructable input records"
+    );
+    let replayed = replay(EngineConfig::default(), empty_lexicon(), &log);
+    assert_eq!(replayed.model().positive_mass(&ko_rule(), 2), 0.0);
+    let model_payload = String::from_utf8(session.model_payload().unwrap()).unwrap();
+    assert!(!model_payload.contains("\"original_nfc\":\"ko\""));
+    assert!(!model_payload.contains("\"candidate_nfc\":\"không\""));
+}

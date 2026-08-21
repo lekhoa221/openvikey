@@ -501,26 +501,22 @@ impl AdaptiveModel {
             .collect()
     }
 
-    /// Drops evidence for one exact adaptive key. Returns whether visible learned state changed.
+    /// Physically removes one exact adaptive row and all of its metadata.
     pub fn forget_rule(&mut self, key: &RuleContextKey) -> bool {
-        let Some(entry) = self.entries.iter_mut().find(|entry| &entry.key == key) else {
-            return false;
-        };
-        let changed = !entry.evidence.is_empty() || entry.state != DecisionState::Ignore;
-        entry.evidence.clear();
-        entry.state = DecisionState::Ignore;
-        entry.recent_auto.clear();
-        entry.settled_auto_ids.clear();
-        entry.auto_demoted_at_seq = None;
-        changed
+        let before = self.entries.len();
+        self.entries.retain(|entry| &entry.key != key);
+        self.entries.len() != before
     }
 
+    /// Physically removes one Personal pair from probation and promoted rows.
     pub fn forget_personal_pair(
         &mut self,
         input_method: InputMethod,
         original_nfc: &str,
         replacement_nfc: &str,
-    ) {
+    ) -> bool {
+        let before_counts = self.personal.counts.len();
+        let before_promoted = self.personal.promoted.len();
         self.personal.counts.retain(|row| {
             !(row.input_method == input_method
                 && row.original_nfc == original_nfc
@@ -531,16 +527,28 @@ impl AdaptiveModel {
                 && row.original_nfc == original_nfc
                 && row.replacement_nfc == replacement_nfc)
         });
+        self.personal.counts.len() != before_counts
+            || self.personal.promoted.len() != before_promoted
+    }
+
+    /// Clears all learned state and restores the canonical cold-start configuration.
+    pub fn forget_all(&mut self) -> bool {
+        let empty = Self::default();
+        if self == &empty {
+            return false;
+        }
+        *self = empty;
+        true
     }
 
     /// Forget exactly one row previously returned by [`Self::inspection_rows`].
     pub fn forget_inspection_row(&mut self, row: &ModelInspectionRow) -> bool {
         if row.source == CandidateSource::Personal && row.source_rule_id == "personal-correction" {
-            let before_counts = self.personal.counts.len();
-            let before_promoted = self.personal.promoted.len();
-            self.forget_personal_pair(row.input_method, &row.original_nfc, &row.candidate_nfc);
-            return self.personal.counts.len() != before_counts
-                || self.personal.promoted.len() != before_promoted;
+            return self.forget_personal_pair(
+                row.input_method,
+                &row.original_nfc,
+                &row.candidate_nfc,
+            );
         }
         let key = RuleContextKey {
             input_method: row.input_method,

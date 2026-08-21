@@ -148,17 +148,14 @@ fn khogn_rule() -> RuleContextKey {
 }
 
 #[test]
-fn forget_rule_v1_keeps_original_strings_in_payload() {
-    // Superseded by Lát 3 `forget_rule_removes_original_and_candidate_from_serialized_model`.
+fn forget_rule_removes_original_strings_from_payload() {
     let mut model = AdaptiveModel::default();
     let key = khogn_rule();
     model.apply_feedback(&key, &accept_event(1), true);
     assert!(model.forget_rule(&key));
     let payload = String::from_utf8(model.to_json_payload().unwrap()).unwrap();
-    assert!(
-        payload.contains("khogn") && payload.contains("không"),
-        "v1 forget hides evidence but keeps strings; Lát 3 must invert this test: {payload}"
-    );
+    assert!(!payload.contains("khogn"), "{payload}");
+    assert!(!payload.contains("không"), "{payload}");
 }
 
 #[test]

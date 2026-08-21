@@ -87,6 +87,16 @@ pub fn trim_capture_to(records: &mut Vec<CaptureRecord>, max: usize) {
     }
 }
 
+/// Starts a v1-compatible journal checkpoint after physical forget.
+///
+/// V1 input records do not carry enough identity metadata to selectively remove
+/// every implicit correction. Clearing the bounded journal is the only
+/// fail-closed way to guarantee replay cannot reconstruct forgotten rows; the
+/// current model snapshot remains authoritative.
+pub fn compact_capture_after_forget(records: &mut Vec<CaptureRecord>) {
+    records.clear();
+}
+
 pub fn ensure_distinct_store_paths(
     model_path: &Path,
     capture_path: &Path,

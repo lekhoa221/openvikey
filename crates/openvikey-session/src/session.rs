@@ -1,8 +1,8 @@
 //! Observable deterministic Engine → correction session used by the lab CLI.
 
 use crate::capture::{
-    CAPTURE_VERSION, CaptureHeader, CaptureLog, CaptureRecord, MAX_CAPTURE_RECORDS, sha256_hex,
-    trim_capture_to,
+    CAPTURE_VERSION, CaptureHeader, CaptureLog, CaptureRecord, MAX_CAPTURE_RECORDS,
+    compact_capture_after_forget, sha256_hex, trim_capture_to,
 };
 use crate::document::{CommittedUnit, DocumentBuffer};
 use openvikey_core::correction::{
@@ -26,7 +26,7 @@ use openvikey_core::intervention::{
 };
 use openvikey_core::learning_config::LearningConfigV2;
 use openvikey_core::lexicon::Lexicon;
-use openvikey_core::model::{AdaptiveModel, ModelError, RuleContextKey};
+use openvikey_core::model::{AdaptiveModel, ModelError, ModelInspectionRow, RuleContextKey};
 use openvikey_core::rank::ScoreConfig;
 use openvikey_core::types::{
     Candidate, CompositionSnapshot, EditRange, EngineAction, FeedbackEvent, FeedbackKind,
@@ -140,6 +140,29 @@ enum LastLearned {
         original_nfc: String,
         replacement_nfc: String,
     },
+}
+
+fn last_learned_matches_row(last: &LastLearned, row: &ModelInspectionRow) -> bool {
+    match last {
+        LastLearned::Rule(key) => {
+            key.input_method == row.input_method
+                && key.source == row.source
+                && key.original_nfc == row.original_nfc
+                && key.candidate_nfc == row.candidate_nfc
+                && key.left_token_nfc == row.left_token_nfc
+                && key.source_rule_id == row.source_rule_id
+        }
+        LastLearned::Personal {
+            input_method,
+            original_nfc,
+            replacement_nfc,
+        } => {
+            row.source == openvikey_core::types::CandidateSource::Personal
+                && *input_method == row.input_method
+                && *original_nfc == row.original_nfc
+                && *replacement_nfc == row.candidate_nfc
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1187,52 +1210,55 @@ impl LabSession {
     }
 
     pub fn forget_last_rule(&mut self) -> bool {
-        match self.last_learned.take() {
-            Some(LastLearned::Rule(key)) => {
-                self.learning.model_mut().forget_rule(&key);
-                self.pending_learning_notice = Some(LearningNotice {
-                    kind: LearningNoticeKind::Forgotten,
-                    original_nfc: key.original_nfc,
-                    replacement_nfc: key.candidate_nfc,
-                    positive_delta: 0.0,
-                    negative_delta: 0.0,
-                    positive_total: 0.0,
-                    negative_total: 0.0,
-                });
-                true
-            }
+        let (changed, original_nfc, replacement_nfc) = match self.last_learned.take() {
+            Some(LastLearned::Rule(key)) => (
+                self.learning.model_mut().forget_rule(&key),
+                key.original_nfc,
+                key.candidate_nfc,
+            ),
             Some(LastLearned::Personal {
                 input_method,
                 original_nfc,
                 replacement_nfc,
-            }) => {
+            }) => (
                 self.learning.model_mut().forget_personal_pair(
                     input_method,
                     &original_nfc,
                     &replacement_nfc,
-                );
-                self.pending_learning_notice = Some(LearningNotice {
-                    kind: LearningNoticeKind::Forgotten,
-                    original_nfc,
-                    replacement_nfc,
-                    positive_delta: 0.0,
-                    negative_delta: 0.0,
-                    positive_total: 0.0,
-                    negative_total: 0.0,
-                });
-                true
-            }
-            None => false,
+                ),
+                original_nfc,
+                replacement_nfc,
+            ),
+            None => return false,
+        };
+        if !changed {
+            return false;
         }
+        self.checkpoint_after_forget();
+        self.pending_learning_notice = Some(LearningNotice {
+            kind: LearningNoticeKind::Forgotten,
+            original_nfc,
+            replacement_nfc,
+            positive_delta: 0.0,
+            negative_delta: 0.0,
+            positive_total: 0.0,
+            negative_total: 0.0,
+        });
+        true
     }
 
     /// Forget exactly one learned row selected from the model inspection projection.
-    pub fn forget_inspection_row(
-        &mut self,
-        row: &openvikey_core::model::ModelInspectionRow,
-    ) -> bool {
+    pub fn forget_inspection_row(&mut self, row: &ModelInspectionRow) -> bool {
         let changed = self.learning.model_mut().forget_inspection_row(row);
         if changed {
+            if self
+                .last_learned
+                .as_ref()
+                .is_some_and(|last| last_learned_matches_row(last, row))
+            {
+                self.last_learned = None;
+            }
+            self.checkpoint_after_forget();
             self.pending_learning_notice = Some(LearningNotice {
                 kind: LearningNoticeKind::Forgotten,
                 original_nfc: row.original_nfc.clone(),
@@ -1244,6 +1270,16 @@ impl LabSession {
             });
         }
         changed
+    }
+
+    fn checkpoint_after_forget(&mut self) {
+        compact_capture_after_forget(&mut self.capture);
+        self.learning.invalidate_due_to_caret_break();
+        self.miner.invalidate_due_to_caret_break();
+        self.rewind.invalidate();
+        self.mining_snapshot = None;
+        self.clear_auto_anchor();
+        self.revert_guard = None;
     }
 
     fn invalidate_caret(&mut self) {

@@ -1004,7 +1004,7 @@ Lát 2 done when: 1-grapheme tokens never suggest/replace; undo loop tests pass;
 - Consumes: `CorrectionIdentity` (may still use `RuleContextKey` in v1 payload)
 - Produces: forget APIs that remove rows; capture compact so forgotten strings cannot be rebuilt
 
-- [ ] **Step 1: Write failing test**
+- [x] **Step 1: Write failing test**
 
 ```rust
 #[test]
@@ -1028,13 +1028,13 @@ fn forget_all_learning_data_resets_to_cold_start_hash() {
 
 Add a session/lab test: after forget, trimmed capture replay cannot resurrect the rule. If capture still has raw `Input` events that would re-learn, compaction must drop or anonymize reconstructable correction records for that identity (spec §11.3 / §12.2). Minimum for Lát 3 on v1 capture: drop `AcceptTop`/`RejectTop`/`UndoLast` tied to forgotten seqs and rewrite log + model as one pair. Do not add full v2 capture records yet (Lát 5).
 
-- [ ] **Step 2: Run — expect FAIL** (v1 forget only clears evidence)
+- [x] **Step 2: Run — expect FAIL** (v1 forget only clears evidence)
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `forget_rule` **removes** the `RuleEntry` from `entries` (do not leave an empty entry with strings). Forget Personal removes count+promoted rows. `forget_all` resets model to default config/empty entries. Session forget rewrites capture with a new checkpoint (even a v1-compatible trim) and coherent-saves.
 
-- [ ] **Step 4: Run**
+- [x] **Step 4: Run**
 
 ```powershell
 cargo test -p openvikey-core --test physical_forget --test learning_v2_characterization
@@ -1042,7 +1042,7 @@ cargo test -p openvikey-lab --test session_capture
 cargo test -p openvikey-win --test ui_rules
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git commit -am "fix: physically scrub forgotten correction rows from model payload"
