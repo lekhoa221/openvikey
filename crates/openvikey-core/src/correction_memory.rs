@@ -684,8 +684,16 @@ impl CorrectionMemory {
         } else {
             count
         };
-        for transaction in synthetic_personal_transactions(required) {
-            self.observe_personal(input_method, original_nfc, replacement_nfc, transaction);
+        let identity = personal_identity(
+            input_method,
+            original_nfc.to_string(),
+            replacement_nfc.to_string(),
+        );
+        let row = self.row_mut(&identity);
+        row.personal_transactions = synthetic_personal_transactions(required);
+        row.personal_promoted = row.personal_transactions.len() >= PERSONAL_PROMOTE_K as usize;
+        if row.personal_promoted {
+            row.global.state = DecisionState::Suggest;
         }
     }
 
@@ -804,12 +812,6 @@ impl CorrectionMemory {
                     continue;
                 }
                 row.personal_transactions.push(transaction);
-                row.global.apply(CorrectionEvidence {
-                    seq: transaction.anchor,
-                    at_ms: transaction.at_ms,
-                    positive: 1.0,
-                    negative: 0.0,
-                });
             }
             row.personal_transactions.sort_unstable();
             row.legacy_personal_observation_count = 0;
@@ -1140,6 +1142,8 @@ fn evidence_strength(bucket: &EvidenceBucket) -> f64 {
     mass.0 + mass.1
 }
 
+// Legacy Personal counts have no timestamps. These synthetic anchors preserve
+// deduplication/promotion only; migration must not turn them into recency evidence.
 fn synthetic_personal_transactions(count: u32) -> Vec<PersonalTransaction> {
     let retained = count.min(64);
     (0..retained)

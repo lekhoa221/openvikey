@@ -166,6 +166,54 @@ fn exceeding_max_rules_evicts_oldest_ignore_before_strong_rows() {
 }
 
 #[test]
+fn inserting_personal_at_both_caps_evicts_only_one_row() {
+    let config = ModelConfig {
+        max_rules: 2,
+        max_personal_pairs: 1,
+        ..ModelConfig::default()
+    };
+    let mut model = AdaptiveModel::new(config);
+    let global = named_rule("global-kept");
+    model.apply_feedback(
+        &global,
+        &feedback(1, 0, FeedbackKind::Accept { candidate_id: 1 }),
+        true,
+    );
+    model.record_personal_correction(
+        InputMethod::Telex,
+        "old-personal",
+        "old-value",
+        PersonalTransaction {
+            anchor: 2,
+            at_ms: 0,
+        },
+        true,
+    );
+
+    model.record_personal_correction(
+        InputMethod::Telex,
+        "new-personal",
+        "new-value",
+        PersonalTransaction {
+            anchor: 3,
+            at_ms: 0,
+        },
+        true,
+    );
+
+    assert_eq!(model.inspection_rows().len(), 2);
+    assert_eq!(model.evidence_totals(&global), (1.0, 0.0));
+    assert_eq!(
+        model.personal_correction_count(InputMethod::Telex, "old-personal", "old-value"),
+        0
+    );
+    assert_eq!(
+        model.personal_correction_count(InputMethod::Telex, "new-personal", "new-value"),
+        1
+    );
+}
+
+#[test]
 fn personal_at_cap_evicts_weak_probation_before_promoted_pair() {
     let config = ModelConfig {
         max_rules: 3,

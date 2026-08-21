@@ -1308,7 +1308,7 @@ fn replayed_same_seq_does_not_count_as_second_observation() { /* idempotent */ }
 
 - [x] **Step 2: Run — expect FAIL** if still using count-only store
 
-- [x] **Step 3: Implement.** Remove runtime writes to the old `PersonalCorrectionStore` after v2. Keep a deserialize path only inside migration.
+- [x] **Step 3: Implement.** Remove runtime writes to the old `PersonalCorrectionStore` after v2. Keep a deserialize path only inside migration. V1 Personal counts have no timestamp: retain them as transaction support for probation/promotion, but do not fabricate decaying recency evidence at `at_ms = 0`. Keep the intentionally supported pre-transaction v2 checkpoint behind a frozen fixture.
 
 - [x] **Step 4: Run** personal + session_capture personal tests
 
@@ -1659,7 +1659,8 @@ pub struct ChartPoint {
     pub at_ms: i64,
     pub confidence: f64,
     pub blended_confidence: f64,
-    pub state_band: ChartStateBand, // Observe / Suggest / Auto / Cooldown
+    pub stored_state: DecisionState, // persisted hysteresis/metadata state
+    pub state_band: ChartStateBand,  // effective Observe / Suggest / Auto / Cooldown after guards
     pub marker: Option<ChartMarker>, // Accept, Reject, Revert, WeakSettle
 }
 
@@ -1685,6 +1686,8 @@ fn chart_snapshot_is_byte_identical_for_same_model_config_time() {
 
 #[test]
 fn confidence_line_matches_model_query_at_each_recent_event() { /* */ }
+#[test]
+fn migrated_stored_auto_is_presented_as_effective_suggest_when_guards_fail() { /* */ }
 #[test]
 fn compaction_inserts_checkpoint_marker_without_changing_final_confidence() { /* */ }
 #[test]
@@ -1726,7 +1729,7 @@ fn selecting_a_rule_exposes_chart_snapshot_and_text_alternative() {
 }
 
 #[test]
-fn overview_counts_match_inspection_rows() { /* Observe/Suggest/Auto/Cooldown */ }
+fn overview_counts_match_effective_chart_states_not_raw_stored_states() { /* Observe/Suggest/Auto/Cooldown */ }
 
 #[test]
 fn chart_build_is_not_invoked_from_inject_path() {

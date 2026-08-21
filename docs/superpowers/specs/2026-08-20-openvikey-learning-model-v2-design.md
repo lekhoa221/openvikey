@@ -724,6 +724,8 @@ Migration tất định:
 9. nếu v2 guard không chứng minh Auto, rule v1 Auto được hạ về Suggest an toàn;
 10. ghi v2 bằng coherent atomic save, giữ backup v1 cho recovery.
 
+V1 Personal count không có timestamp. Migration giữ count đó như support cho probation/promotion nhưng không bịa evidence gần đây tại `at_ms = 0` hoặc wall clock lúc load. Vì vậy Personal đã migrate bắt đầu với confidence trung tính; evidence có decay chỉ đến từ transaction v2 có caller-time thật. Mọi ranking/calibration sau này phải phân biệt legacy support với recency evidence.
+
 Migration không thay encrypted envelope của core/lab; chỉ thay payload bên trong. Windows development JSON tiếp tục theo ADR 0008 cho đến production storage gate.
 
 ### 11.3 Physical forget
@@ -943,7 +945,8 @@ Mỗi dòng hiển thị:
 - original/replacement;
 - nguồn;
 - kiểu gõ;
-- trạng thái hiện tại do planner tính;
+- trạng thái hiệu lực hiện tại do planner/guard tính;
+- nếu khác, trạng thái đã lưu chỉ hiện như chi tiết kỹ thuật (ví dụ đã lưu Auto nhưng hiện chỉ đủ điều kiện Gợi ý);
 - bằng chứng tốt/xấu;
 - lần dùng gần nhất;
 - lý do bị cooldown/suppression;

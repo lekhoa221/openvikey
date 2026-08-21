@@ -1,0 +1,48 @@
+{
+  "version": 2,
+  "config_hash": "ac0772ed93fc73ebd1e6081de44959457e5e4b625cd235dd0463e16fa83bf1a5",
+  "correction_memory": {
+    "half_life_ms": 2592000000,
+    "rows": [
+      {
+        "identity": {
+          "input_method": "Vni",
+          "source": "Personal",
+          "original_nfc": "legacy-v2-original",
+          "candidate_nfc": "legacy-v2-candidate",
+          "source_rule_id": "personal-correction"
+        },
+        "global": {
+          "state": "Suggest",
+          "summary": {
+            "positive_at_checkpoint": 0.0,
+            "negative_at_checkpoint": 0.0,
+            "checkpoint_at_ms": null
+          },
+          "events": [],
+          "handled_sequences": [],
+          "recent_auto": [],
+          "settled_auto_ids": [],
+          "settled_suggestion_ids": [],
+          "auto_demoted_at_seq": null
+        },
+        "contexts": [],
+        "personal_observation_count": 2,
+        "personal_promoted": true
+      }
+    ]
+  },
+  "user_language_model": {
+    "unigrams": [],
+    "bigrams": []
+  },
+  "maintenance_metadata": {
+    "model_config": {
+      "half_life_ms": 2592000000,
+      "max_events_per_rule": 512,
+      "auto_undo_window": 10,
+      "max_rules": 10000,
+      "max_personal_pairs": 512
+    }
+  }
+}
