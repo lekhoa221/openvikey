@@ -7,7 +7,7 @@ use crate::capture::{
 use crate::document::{CommittedUnit, DocumentBuffer};
 use openvikey_core::correction::{
     AutoEditContext, CorrectionSlice, InterventionConfig, candidate_rule_key,
-    run_learning_correction_slice,
+    run_learning_correction_slice_with_guard,
 };
 use openvikey_core::decision::{DecisionConfig, DecisionState};
 use openvikey_core::engine::{Engine, EngineConfig};
@@ -21,7 +21,10 @@ use openvikey_core::generate::fuzzy::FuzzyGenerator;
 use openvikey_core::generate::personal::PersonalGenerator;
 use openvikey_core::generate::telex_fix::TelexFixGenerator;
 use openvikey_core::generate::{Generator, LeftContext};
-use openvikey_core::intervention::InterventionReason;
+use openvikey_core::intervention::{
+    CorrectionIdentity, InterventionReason, RevertGuard, correction_identity,
+};
+use openvikey_core::learning_config::LearningConfigV2;
 use openvikey_core::lexicon::Lexicon;
 use openvikey_core::model::{AdaptiveModel, ModelError, RuleContextKey};
 use openvikey_core::rank::ScoreConfig;
@@ -139,6 +142,14 @@ enum LastLearned {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingPolicyUndo {
+    raw_token: String,
+    identity: CorrectionIdentity,
+    applied_at_ms: i64,
+    learn_undo: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionSaveSnapshot {
     pub model: AdaptiveModel,
@@ -171,8 +182,9 @@ pub struct LabSession {
     capturing: bool,
     rewind: CompositionRewindMiner,
     intervention: InterventionConfig,
-    pending_restore_raw: Option<String>,
-    pending_restore_learn_undo: bool,
+    pending_policy_undo: Option<PendingPolicyUndo>,
+    revert_guard: Option<RevertGuard>,
+    focus_generation: u64,
     pending_reopen: bool,
     last_learned: Option<LastLearned>,
     pending_learning_notice: Option<LearningNotice>,
@@ -221,8 +233,9 @@ impl LabSession {
             capturing: true,
             rewind: CompositionRewindMiner::default(),
             intervention: InterventionConfig::win32(),
-            pending_restore_raw: None,
-            pending_restore_learn_undo: false,
+            pending_policy_undo: None,
+            revert_guard: None,
+            focus_generation: 0,
             pending_reopen: false,
             last_learned: None,
             pending_learning_notice: None,
@@ -300,6 +313,14 @@ impl LabSession {
         if matches!(event.kind, InputKind::InsertText { .. }) {
             self.rewind.invalidate();
         }
+        if self.revert_guard.is_some()
+            && matches!(
+                event.kind,
+                InputKind::Key { .. } | InputKind::Backspace | InputKind::InsertText { .. }
+            )
+        {
+            self.revert_guard = None;
+        }
         if self.pending_reopen {
             if matches!(event.kind, InputKind::Key { .. }) && allow_transform {
                 let _ = self.reopen_previous_token();
@@ -310,8 +331,7 @@ impl LabSession {
 
         let before = self.engine.snapshot();
         if before.is_empty() && !matches!(event.kind, InputKind::Backspace) {
-            self.pending_restore_raw = None;
-            self.pending_restore_learn_undo = false;
+            self.pending_policy_undo = None;
         }
         let peak_candidates = self
             .last_slice
@@ -602,6 +622,7 @@ impl LabSession {
     pub fn set_engine_config(&mut self, config: EngineConfig) {
         self.engine.set_config(config);
         self.pending_reopen = false;
+        self.revert_guard = None;
         self.last_slice = None;
         self.last_original_nfc.clear();
         self.last_left_token = None;
@@ -825,7 +846,8 @@ impl LabSession {
             },
             delimiter,
         });
-        let slice = run_learning_correction_slice(
+        let guard = self.revert_guard.clone();
+        let slice = run_learning_correction_slice_with_guard(
             snapshot,
             &self.left_context,
             event.context,
@@ -838,6 +860,7 @@ impl LabSession {
             auto_edit,
             &self.lexicon,
             self.intervention,
+            guard.as_ref(),
         );
         if at_commit && let Some(EngineAction::ReplaceRange(action)) = &slice.action {
             let reason = slice.plan.as_ref().map(|plan| plan.reason);
@@ -855,8 +878,12 @@ impl LabSession {
                 });
             if let Some(fix) = chosen {
                 let rule = candidate_rule_key(snapshot, &self.left_context, method, &fix);
-                self.pending_restore_raw = Some(snapshot.raw_keys.clone());
-                self.pending_restore_learn_undo = !structural;
+                self.pending_policy_undo = Some(PendingPolicyUndo {
+                    raw_token: snapshot.raw_keys.clone(),
+                    identity: correction_identity(snapshot, &fix, method),
+                    applied_at_ms: event.at_ms,
+                    learn_undo: !structural,
+                });
                 if !structural {
                     self.pending_learning_notice = Some(LearningNotice {
                         kind: LearningNoticeKind::Corrected,
@@ -906,6 +933,14 @@ impl LabSession {
             method,
             slice.display_candidates().to_vec(),
         ));
+        if delimiter.is_some()
+            && self
+                .revert_guard
+                .as_ref()
+                .is_some_and(|guard| guard.bypass_next_boundary && guard.raw_token == raw_keys)
+        {
+            self.revert_guard = None;
+        }
         self.finish_implicit(
             &token_text,
             event.seq,
@@ -953,8 +988,7 @@ impl LabSession {
     fn clear_auto_anchor(&mut self) {
         self.last_auto_revision = None;
         self.last_auto_token = None;
-        self.pending_restore_raw = None;
-        self.pending_restore_learn_undo = false;
+        self.pending_policy_undo = None;
     }
 
     fn leftover_committed_prefix(&self) -> bool {
@@ -1111,16 +1145,22 @@ impl LabSession {
     }
 
     fn try_restore_policy_undo(&mut self, at_ms: i64, allow_learning: bool) -> bool {
-        let Some(raw) = self.pending_restore_raw.clone() else {
+        let Some(pending) = self.pending_policy_undo.clone() else {
             return false;
         };
+        let config = LearningConfigV2::compatibility_v1();
+        if at_ms < pending.applied_at_ms
+            || at_ms.saturating_sub(pending.applied_at_ms) > config.immediate_revert_window_ms
+        {
+            return false;
+        }
         if !self.auto_token_is_last() {
             return false;
         }
         let Some(revision) = self.last_auto_revision else {
             return false;
         };
-        let learn_undo = allow_learning && self.pending_restore_learn_undo;
+        let learn_undo = allow_learning && pending.learn_undo;
         if self
             .learning
             .undo(revision, self.next_seq, at_ms, learn_undo)
@@ -1130,10 +1170,17 @@ impl LabSession {
         }
         let _ = self.take_seq();
         self.document.pop_last();
-        self.engine.restore_raw_keys(&raw);
-        self.pending_restore_raw = None;
-        self.pending_restore_learn_undo = false;
+        self.engine.restore_raw_keys(&pending.raw_token);
         self.clear_auto_anchor();
+        let restored = self.engine.snapshot();
+        self.revert_guard = Some(RevertGuard {
+            identity: pending.identity,
+            raw_token: pending.raw_token,
+            focus_generation: self.focus_generation,
+            composition_revision: restored.revision,
+            reapply_cooldown_until_ms: at_ms.saturating_add(config.reapply_cooldown_ms),
+            bypass_next_boundary: true,
+        });
         self.sync_left_context();
         self.last_slice = None;
         true
@@ -1201,6 +1248,8 @@ impl LabSession {
 
     fn invalidate_caret(&mut self) {
         self.pending_reopen = false;
+        self.revert_guard = None;
+        self.focus_generation = self.focus_generation.saturating_add(1);
         self.miner.invalidate_due_to_caret_break();
         self.rewind.invalidate();
         self.learning.invalidate_due_to_caret_break();
@@ -1272,8 +1321,9 @@ impl LabSession {
             learning: self.learning.clone(),
             rewind: self.rewind.clone(),
             intervention: self.intervention,
-            pending_restore_raw: self.pending_restore_raw.clone(),
-            pending_restore_learn_undo: self.pending_restore_learn_undo,
+            pending_policy_undo: self.pending_policy_undo.clone(),
+            revert_guard: self.revert_guard.clone(),
+            focus_generation: self.focus_generation,
             pending_reopen: self.pending_reopen,
             last_learned: self.last_learned.clone(),
             pending_learning_notice: self.pending_learning_notice.clone(),
@@ -1314,8 +1364,9 @@ impl LabSession {
         self.learning = checkpoint.learning;
         self.rewind = checkpoint.rewind;
         self.intervention = checkpoint.intervention;
-        self.pending_restore_raw = checkpoint.pending_restore_raw;
-        self.pending_restore_learn_undo = checkpoint.pending_restore_learn_undo;
+        self.pending_policy_undo = checkpoint.pending_policy_undo;
+        self.revert_guard = checkpoint.revert_guard;
+        self.focus_generation = checkpoint.focus_generation;
         self.pending_reopen = checkpoint.pending_reopen;
         self.last_learned = checkpoint.last_learned;
         self.pending_learning_notice = checkpoint.pending_learning_notice;
@@ -1342,8 +1393,9 @@ pub struct SessionInjectCheckpoint {
     learning: LearningSession,
     rewind: CompositionRewindMiner,
     intervention: InterventionConfig,
-    pending_restore_raw: Option<String>,
-    pending_restore_learn_undo: bool,
+    pending_policy_undo: Option<PendingPolicyUndo>,
+    revert_guard: Option<RevertGuard>,
+    focus_generation: u64,
     pending_reopen: bool,
     last_learned: Option<LastLearned>,
     pending_learning_notice: Option<LearningNotice>,

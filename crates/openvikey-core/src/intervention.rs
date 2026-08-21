@@ -7,6 +7,7 @@ use crate::lexicon::Lexicon;
 use crate::model::{ModelView, RuleContextKey};
 use crate::types::{Candidate, CandidateSource, CompositionSnapshot, InputContext, InputMethod};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Planner output action. Callers must not upgrade Suggest to Replace afterwards.
@@ -57,6 +58,8 @@ pub struct InterventionPlan {
     pub action: InterventionAction,
     pub reason: InterventionReason,
     pub candidate_id: Option<u64>,
+    /// Ranked candidates the product may expose when `action` is Suggest.
+    pub display_candidate_ids: Vec<u64>,
     pub score_breakdown: ScoreBreakdown,
     pub undo_contract: UndoContract,
     pub model_transition: Option<DecisionState>,
@@ -97,6 +100,7 @@ fn none_plan(reason: InterventionReason) -> InterventionPlan {
         action: InterventionAction::None,
         reason,
         candidate_id: None,
+        display_candidate_ids: Vec::new(),
         score_breakdown: ScoreBreakdown::default(),
         undo_contract: UndoContract {
             required: false,
@@ -116,6 +120,36 @@ fn breakdown_for(candidate: &Candidate) -> ScoreBreakdown {
 
 fn primary_rule_id(evidence: &str) -> &str {
     evidence.split('+').next().unwrap_or("")
+}
+
+/// Builds the context-free identity used by short-lived intervention guards.
+#[must_use]
+pub fn correction_identity(
+    snapshot: &CompositionSnapshot,
+    candidate: &Candidate,
+    input_method: InputMethod,
+) -> CorrectionIdentity {
+    CorrectionIdentity {
+        input_method,
+        source: candidate.source,
+        original_nfc: snapshot.normalized.clone(),
+        candidate_nfc: candidate.text.clone(),
+        source_rule_id: primary_rule_id(&candidate.evidence).to_string(),
+    }
+}
+
+fn guard_matches_snapshot(guard: &RevertGuard, snapshot: &CompositionSnapshot) -> bool {
+    guard.raw_token == snapshot.raw_keys && guard.composition_revision == snapshot.revision
+}
+
+fn guard_matches_candidate(
+    guard: &RevertGuard,
+    snapshot: &CompositionSnapshot,
+    candidate: &Candidate,
+    input_method: InputMethod,
+) -> bool {
+    guard_matches_snapshot(guard, snapshot)
+        && guard.identity == correction_identity(snapshot, candidate, input_method)
 }
 
 fn policy_auto_allowed(
@@ -221,6 +255,7 @@ fn learned_replace(candidate: &Candidate, breakdown: ScoreBreakdown) -> Interven
         action: InterventionAction::Replace,
         reason: InterventionReason::LearnedCorrection,
         candidate_id: Some(candidate.id),
+        display_candidate_ids: Vec::new(),
         score_breakdown: breakdown,
         undo_contract: UndoContract {
             required: true,
@@ -254,6 +289,7 @@ fn replace_without_persisting(
         action: InterventionAction::Replace,
         reason,
         candidate_id: Some(candidate.id),
+        display_candidate_ids: Vec::new(),
         score_breakdown: breakdown_for(candidate),
         undo_contract: UndoContract {
             required: true,
@@ -279,6 +315,97 @@ fn rule_key(
     }
 }
 
+struct GuardedCandidates<'a> {
+    ranked: Cow<'a, [Candidate]>,
+    cooldown_active: bool,
+    stop_plan: Option<InterventionPlan>,
+}
+
+fn guarded_candidates<'a>(
+    snapshot: &CompositionSnapshot,
+    ranked: &'a [Candidate],
+    revert_guard: Option<&RevertGuard>,
+    delimiter: Option<char>,
+    evaluate_at_ms: i64,
+    input_method: InputMethod,
+) -> GuardedCandidates<'a> {
+    let Some(guard) = revert_guard.filter(|guard| guard_matches_snapshot(guard, snapshot)) else {
+        return GuardedCandidates {
+            ranked: Cow::Borrowed(ranked),
+            cooldown_active: false,
+            stop_plan: None,
+        };
+    };
+    let guarded_ids = ranked
+        .iter()
+        .filter(|candidate| guard_matches_candidate(guard, snapshot, candidate, input_method))
+        .map(|candidate| candidate.id)
+        .collect::<Vec<_>>();
+    let explained_candidate = ranked
+        .iter()
+        .find(|candidate| guarded_ids.contains(&candidate.id))
+        .or_else(|| ranked.first());
+    if guard.bypass_next_boundary && delimiter.is_some() {
+        let mut plan = none_plan(InterventionReason::RevertGuardBypass);
+        if let Some(candidate) = explained_candidate {
+            plan.candidate_id = Some(candidate.id);
+            plan.score_breakdown = breakdown_for(candidate);
+        }
+        return GuardedCandidates {
+            ranked: Cow::Borrowed(ranked),
+            cooldown_active: true,
+            stop_plan: Some(plan),
+        };
+    }
+    if evaluate_at_ms >= guard.reapply_cooldown_until_ms {
+        return GuardedCandidates {
+            ranked: Cow::Borrowed(ranked),
+            cooldown_active: false,
+            stop_plan: None,
+        };
+    }
+    let effective = ranked
+        .iter()
+        .filter(|candidate| !guarded_ids.contains(&candidate.id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let stop_plan = effective.is_empty().then(|| {
+        let mut plan = none_plan(InterventionReason::RevertGuardBypass);
+        if let Some(candidate) = explained_candidate {
+            plan.candidate_id = Some(candidate.id);
+            plan.score_breakdown = breakdown_for(candidate);
+        }
+        plan
+    });
+    GuardedCandidates {
+        ranked: Cow::Owned(effective),
+        cooldown_active: true,
+        stop_plan,
+    }
+}
+
+fn precondition_plan(
+    snapshot: &CompositionSnapshot,
+    ranked: &[Candidate],
+    config: &LearningConfigV2,
+    context: InputContext,
+) -> Option<InterventionPlan> {
+    if !context.allow_transform {
+        return Some(none_plan(InterventionReason::UnsafeContext));
+    }
+    if alphabetic_grapheme_count(&snapshot.normalized) < config.minimum_correction_graphemes {
+        let mut plan = none_plan(InterventionReason::TokenTooShort);
+        if let Some(top) = ranked.first() {
+            plan.candidate_id = Some(top.id);
+            plan.score_breakdown = breakdown_for(top);
+        }
+        return Some(plan);
+    }
+    ranked
+        .is_empty()
+        .then(|| none_plan(InterventionReason::NoCandidate))
+}
+
 /// Decide None / Suggest / Replace for one ranked candidate set.
 #[must_use]
 #[allow(clippy::too_many_arguments)]
@@ -291,32 +418,34 @@ pub fn plan_intervention(
     intervention: InterventionConfig,
     context: InputContext,
     delimiter: Option<char>,
-    _revert_guard: Option<&RevertGuard>,
+    revert_guard: Option<&RevertGuard>,
     evaluate_at_ms: i64,
     auto_edit_valid: bool,
     input_method: InputMethod,
     left_token_nfc: Option<&str>,
 ) -> InterventionPlan {
-    if !context.allow_transform {
-        return none_plan(InterventionReason::UnsafeContext);
-    }
-    if alphabetic_grapheme_count(&snapshot.normalized) < config.minimum_correction_graphemes {
-        let mut plan = none_plan(InterventionReason::TokenTooShort);
-        if let Some(top) = ranked.first() {
-            plan.candidate_id = Some(top.id);
-            plan.score_breakdown = breakdown_for(top);
-        }
+    if let Some(plan) = precondition_plan(snapshot, ranked, config, context) {
         return plan;
     }
-    if ranked.is_empty() {
-        return none_plan(InterventionReason::NoCandidate);
+    let guarded = guarded_candidates(
+        snapshot,
+        ranked,
+        revert_guard,
+        delimiter,
+        evaluate_at_ms,
+        input_method,
+    );
+    if let Some(plan) = guarded.stop_plan {
+        return plan;
     }
-    let Some(top) = ranked.first() else {
+    let effective_ranked = guarded.ranked;
+    let guard_cooldown_active = guarded.cooldown_active;
+    let Some(top) = effective_ranked.first() else {
         return none_plan(InterventionReason::NoCandidate);
     };
     let assist = policy_assist_candidate(
         snapshot,
-        ranked,
+        &effective_ranked,
         delimiter,
         intervention,
         lexicon,
@@ -326,7 +455,7 @@ pub fn plan_intervention(
     let rule = rule_key(snapshot, top, input_method, left_token_nfc);
     let source_cap = top.source.max_action();
     let recent_revert_blocked = !model.auto_allowed(&rule, evaluate_at_ms);
-    let cap = if recent_revert_blocked {
+    let cap = if guard_cooldown_active || recent_revert_blocked {
         ActionCap::Suggest
     } else {
         source_cap
@@ -341,13 +470,18 @@ pub fn plan_intervention(
     );
     let breakdown = breakdown_for(top);
     // v1 order through Lát 8: learned Auto, then structural, then heuristic.
-    if state == DecisionState::Auto && auto_edit_valid {
+    if !guard_cooldown_active && state == DecisionState::Auto && auto_edit_valid {
         return learned_replace(top, breakdown);
     }
-    if auto_edit_valid && let Some((candidate, InterventionReason::SafeStructuralFix)) = assist {
+    if !guard_cooldown_active
+        && auto_edit_valid
+        && let Some((candidate, InterventionReason::SafeStructuralFix)) = assist
+    {
         return replace_without_persisting(InterventionReason::SafeStructuralFix, candidate);
     }
-    if auto_edit_valid && let Some((candidate, InterventionReason::UniqueHeuristicAssist)) = assist
+    if !guard_cooldown_active
+        && auto_edit_valid
+        && let Some((candidate, InterventionReason::UniqueHeuristicAssist)) = assist
     {
         let assist_rule = rule_key(snapshot, candidate, input_method, left_token_nfc);
         if model.auto_allowed(&assist_rule, evaluate_at_ms) {
@@ -357,12 +491,20 @@ pub fn plan_intervention(
             );
         }
     }
-    let reason = suggest_reason(recent_revert_blocked, source_cap, state);
+    let reason = if guard_cooldown_active {
+        InterventionReason::RevertGuardBypass
+    } else {
+        suggest_reason(recent_revert_blocked, source_cap, state)
+    };
     match state {
         DecisionState::Auto | DecisionState::Suggest => InterventionPlan {
             action: InterventionAction::DisplaySuggestion,
             reason,
             candidate_id: Some(top.id),
+            display_candidate_ids: effective_ranked
+                .iter()
+                .map(|candidate| candidate.id)
+                .collect(),
             score_breakdown: breakdown,
             undo_contract: UndoContract {
                 required: false,
@@ -374,6 +516,7 @@ pub fn plan_intervention(
             action: InterventionAction::None,
             reason,
             candidate_id: Some(top.id),
+            display_candidate_ids: Vec::new(),
             score_breakdown: breakdown,
             undo_contract: UndoContract {
                 required: false,

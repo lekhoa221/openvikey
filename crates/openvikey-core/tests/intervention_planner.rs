@@ -3,7 +3,8 @@
 use openvikey_core::correction::InterventionConfig;
 use openvikey_core::decision::DecisionState;
 use openvikey_core::intervention::{
-    InterventionAction, InterventionReason, alphabetic_grapheme_count, plan_intervention,
+    CorrectionIdentity, InterventionAction, InterventionReason, RevertGuard,
+    alphabetic_grapheme_count, plan_intervention,
 };
 use openvikey_core::learning_config::LearningConfigV2;
 use openvikey_core::lexicon::{Lexicon, LexiconEntry};
@@ -321,6 +322,86 @@ fn recent_revert_uses_cooldown_reason_not_source_cap() {
     );
     assert_eq!(plan.action, InterventionAction::DisplaySuggestion);
     assert_eq!(plan.reason, InterventionReason::RecentRevertCooldown);
+}
+
+#[test]
+fn planner_hides_reverted_candidate_from_replace_and_overlay_during_cooldown() {
+    let guard = RevertGuard {
+        identity: CorrectionIdentity {
+            input_method: InputMethod::Telex,
+            source: CandidateSource::Fuzzy,
+            original_nfc: "khogn".into(),
+            candidate_nfc: "không".into(),
+            source_rule_id: "fuzzy:khogn".into(),
+        },
+        raw_token: "khogn".into(),
+        focus_generation: 0,
+        composition_revision: 1,
+        reapply_cooldown_until_ms: 3_000,
+        bypass_next_boundary: true,
+    };
+    let plan = plan_intervention(
+        &khogn_snapshot(),
+        &[fuzzy_khogn()],
+        &lex(&["không"]),
+        &EmptyModel,
+        &LearningConfigV2::compatibility_v1(),
+        InterventionConfig::win32(),
+        InputContext::default(),
+        Some(' '),
+        Some(&guard),
+        1_500,
+        true,
+        InputMethod::Telex,
+        None,
+    );
+    assert_eq!(plan.action, InterventionAction::None);
+    assert_eq!(plan.reason, InterventionReason::RevertGuardBypass);
+}
+
+#[test]
+fn revert_cooldown_allows_a_different_candidate_only_as_suggestion() {
+    let guard = RevertGuard {
+        identity: CorrectionIdentity {
+            input_method: InputMethod::Telex,
+            source: CandidateSource::Fuzzy,
+            original_nfc: "khogn".into(),
+            candidate_nfc: "không".into(),
+            source_rule_id: "fuzzy:khogn".into(),
+        },
+        raw_token: "khogn".into(),
+        focus_generation: 0,
+        composition_revision: 1,
+        reapply_cooldown_until_ms: 3_000,
+        bypass_next_boundary: false,
+    };
+    let other = Candidate {
+        id: 43,
+        text: "khổng".into(),
+        source: CandidateSource::Diacritics,
+        evidence: "diacritics:unigram".into(),
+        base_score: 0.9,
+        final_score: 0.9,
+    };
+    let plan = plan_intervention(
+        &khogn_snapshot(),
+        &[fuzzy_khogn(), other],
+        &lex(&["không", "khổng"]),
+        &EmptyModel,
+        &LearningConfigV2::compatibility_v1(),
+        InterventionConfig::win32(),
+        InputContext::default(),
+        None,
+        Some(&guard),
+        1_500,
+        false,
+        InputMethod::Telex,
+        None,
+    );
+    assert_eq!(plan.action, InterventionAction::DisplaySuggestion);
+    assert_eq!(plan.reason, InterventionReason::RevertGuardBypass);
+    assert_eq!(plan.candidate_id, Some(43));
+    assert_eq!(plan.display_candidate_ids, vec![43]);
 }
 
 #[test]

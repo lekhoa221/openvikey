@@ -1070,43 +1070,48 @@ fn abbrev_boundary_assist_replaces_on_space_without_accept_mass() {
 #[test]
 fn two_abbrev_assist_undos_stop_further_space_auto() {
     let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
-    type_keys(&mut session, "ko", 0);
-    for (space_ms, undo_ms) in [(10, 11), (20, 21)] {
-        let last = session.inject(
+    for (typed_at, space_ms, undo_ms, bypass_ms) in [(0, 10, 11, 12), (20, 30, 31, 32)] {
+        type_keys(&mut session, "ko", typed_at);
+        let replaced = session.inject(
             InputKind::Boundary { delimiter: ' ' },
             InputContext::default(),
             space_ms,
         );
-        match &last.action {
-            Some(EngineAction::ReplaceRange(action)) => {
-                assert_eq!(action.replacement, "không");
-            }
-            other => panic!("expected assist replace before two undos, got {other:?}"),
-        }
+        assert!(
+            matches!(replaced.action, Some(EngineAction::ReplaceRange(_))),
+            "expected assist replace before two undos, got {:?}",
+            replaced.action
+        );
         session.inject(InputKind::Backspace, InputContext::default(), undo_ms);
         assert_eq!(session.composition_text(), "ko");
+        let bypassed = session.inject(
+            InputKind::Boundary { delimiter: ' ' },
+            InputContext::default(),
+            bypass_ms,
+        );
+        assert!(
+            !matches!(bypassed.action, Some(EngineAction::ReplaceRange(_))),
+            "first boundary after each revert must commit original"
+        );
+        // Keep the v1 long-demotion assertion on the same context bucket.
+        session.clear_document_context();
     }
+
+    type_keys(&mut session, "ko", 40);
     let third = session.inject(
         InputKind::Boundary { delimiter: ' ' },
         InputContext::default(),
-        30,
+        50,
     );
     assert!(
         !matches!(third.action, Some(EngineAction::ReplaceRange(_))),
         "abbrev/fuzzy assist must yield after two Backspace undos, got {:?}",
         third.action
     );
-    assert!(
-        session.document_text().contains("ko"),
-        "document was {}",
-        session.document_text()
-    );
-    assert!(!session.document_text().contains("không"));
 }
 
 #[test]
-fn v1_space_backspace_space_repeats_fuzzy_replace() {
-    // Lát 2 inverts this: the second Space must commit original once.
+fn space_replace_backspace_space_commits_original_once() {
     let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
     type_keys(&mut session, "khogn", 0);
     let first = session.inject(
@@ -1127,18 +1132,129 @@ fn v1_space_backspace_space_repeats_fuzzy_replace() {
         InputContext::default(),
         12,
     );
-    match &second.action {
-        Some(EngineAction::ReplaceRange(action)) => {
-            assert_eq!(action.replacement, "không");
-        }
-        other => panic!("v1 re-applies after one undo; Lát 2 inverts this: {other:?}"),
-    }
+    assert!(
+        !matches!(second.action, Some(EngineAction::ReplaceRange(_))),
+        "first boundary after revert must commit original, got {:?}",
+        second.action
+    );
+    assert!(second.candidates.is_empty());
+    assert!(session.candidate_texts().is_empty());
+    assert!(session.accept_top(13).is_none());
+    assert!(session.document_text().contains("khogn"));
+    assert!(!session.document_text().contains("không"));
 }
 
 #[test]
-fn v1_space_backspace_space_repeats_abbrev_replace() {
-    // Equivalent to the first iteration of two_abbrev_assist_undos.
-    // Lát 2 inverts this to commit original on the second Space.
+fn immediate_revert_window_expires_after_three_seconds() {
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    type_keys(&mut session, "khogn", 0);
+    let first = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        10,
+    );
+    assert!(matches!(first.action, Some(EngineAction::ReplaceRange(_))));
+
+    session.inject(InputKind::Backspace, InputContext::default(), 3_011);
+    assert!(
+        session.composition_text().is_empty(),
+        "late Backspace must not reopen the raw composition"
+    );
+    assert!(session.document_text().contains("không"));
+}
+
+#[test]
+fn bypass_still_applies_after_cooldown_if_raw_token_unchanged() {
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    type_keys(&mut session, "khogn", 0);
+    let first = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        10,
+    );
+    assert!(matches!(first.action, Some(EngineAction::ReplaceRange(_))));
+    session.inject(InputKind::Backspace, InputContext::default(), 1_000);
+    assert_eq!(session.composition_text(), "khogn");
+
+    let after_cooldown = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        10_000,
+    );
+    assert!(
+        !matches!(after_cooldown.action, Some(EngineAction::ReplaceRange(_))),
+        "one-shot boundary bypass must outlive cooldown, got {:?}",
+        after_cooldown.action
+    );
+    assert!(session.document_text().contains("khogn"));
+    assert!(!session.document_text().contains("không"));
+}
+
+#[test]
+fn changing_raw_token_clears_guard_and_allows_new_correction() {
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    type_keys(&mut session, "khogn", 0);
+    let first = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        10,
+    );
+    assert!(matches!(first.action, Some(EngineAction::ReplaceRange(_))));
+    session.inject(InputKind::Backspace, InputContext::default(), 11);
+    assert_eq!(session.composition_text(), "khogn");
+
+    session.inject(
+        InputKind::Key {
+            logical: 'x',
+            physical: None,
+        },
+        InputContext::default(),
+        12,
+    );
+    session.inject(InputKind::Backspace, InputContext::default(), 13);
+    assert_eq!(session.composition_text(), "khogn");
+    let changed = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        14,
+    );
+    assert!(
+        matches!(changed.action, Some(EngineAction::ReplaceRange(_))),
+        "editing raw token must clear one-shot guard, got {:?}",
+        changed.action
+    );
+}
+
+#[test]
+fn focus_context_change_clears_revert_guard() {
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    type_keys(&mut session, "khogn", 0);
+    let first = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        10,
+    );
+    assert!(matches!(first.action, Some(EngineAction::ReplaceRange(_))));
+    session.inject(InputKind::Backspace, InputContext::default(), 11);
+    assert_eq!(session.composition_text(), "khogn");
+
+    session.clear_document_context();
+    let after_focus_change = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        12,
+    );
+    assert!(
+        matches!(
+            after_focus_change.action,
+            Some(EngineAction::ReplaceRange(_))
+        ),
+        "a focus boundary must clear the old revert guard"
+    );
+}
+
+#[test]
+fn abbrev_revert_bypasses_the_next_boundary_once() {
     let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
     type_keys(&mut session, "ko", 0);
     let first = session.inject(
@@ -1159,12 +1275,13 @@ fn v1_space_backspace_space_repeats_abbrev_replace() {
         InputContext::default(),
         12,
     );
-    match &second.action {
-        Some(EngineAction::ReplaceRange(action)) => {
-            assert_eq!(action.replacement, "không");
-        }
-        other => panic!("v1 re-applies abbrev after one undo; Lát 2 inverts this: {other:?}"),
-    }
+    assert!(
+        !matches!(second.action, Some(EngineAction::ReplaceRange(_))),
+        "abbrev revert must bypass the next boundary, got {:?}",
+        second.action
+    );
+    assert!(session.document_text().contains("ko"));
+    assert!(!session.document_text().contains("không"));
 }
 
 fn a_acute_lexicon() -> Lexicon {
@@ -1313,34 +1430,43 @@ fn telex_fix_policy_auto_on_space_and_undo_restores_raw_keys() {
 }
 
 #[test]
-fn two_telex_fix_undos_do_not_disable_space_auto() {
+fn telex_fix_revert_bypasses_once_without_long_demotion() {
     let mut session = LabSession::new(vni_config(), chao_lexicon());
-    type_keys(&mut session, "ch2ao", 0);
-    for (space_ms, undo_ms) in [(10, 11), (20, 21)] {
-        let last = session.inject(
+    for (typed_at, space_ms, undo_ms, bypass_ms) in [(0, 10, 11, 12), (20, 30, 31, 32)] {
+        type_keys(&mut session, "ch2ao", typed_at);
+        let replaced = session.inject(
             InputKind::Boundary { delimiter: ' ' },
             InputContext::default(),
             space_ms,
         );
-        match &last.action {
-            Some(EngineAction::ReplaceRange(action)) => {
-                assert_eq!(action.replacement, "chào");
-            }
-            other => panic!("expected TelexFix replace, got {other:?}"),
-        }
+        assert!(
+            matches!(replaced.action, Some(EngineAction::ReplaceRange(_))),
+            "expected TelexFix replace, got {:?}",
+            replaced.action
+        );
         session.inject(InputKind::Backspace, InputContext::default(), undo_ms);
         assert_eq!(session.composition_text(), "ch2ao");
+        let bypassed = session.inject(
+            InputKind::Boundary { delimiter: ' ' },
+            InputContext::default(),
+            bypass_ms,
+        );
+        assert!(
+            !matches!(bypassed.action, Some(EngineAction::ReplaceRange(_))),
+            "TelexFix revert must bypass one boundary"
+        );
+        session.clear_document_context();
     }
+
+    type_keys(&mut session, "ch2ao", 40);
     let third = session.inject(
         InputKind::Boundary { delimiter: ' ' },
         InputContext::default(),
-        30,
+        50,
     );
     match &third.action {
-        Some(EngineAction::ReplaceRange(action)) => {
-            assert_eq!(action.replacement, "chào");
-        }
-        other => panic!("TelexFix must stay deterministic after undos, got {other:?}"),
+        Some(EngineAction::ReplaceRange(action)) => assert_eq!(action.replacement, "chào"),
+        other => panic!("TelexFix must stay deterministic after guarded undos, got {other:?}"),
     }
 }
 

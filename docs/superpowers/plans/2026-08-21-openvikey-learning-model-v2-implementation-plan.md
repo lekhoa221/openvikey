@@ -906,6 +906,7 @@ git commit -am "fix: block correction suggestions below two alphabetic graphemes
 
 **Files:**
 - Modify: `crates/openvikey-core/src/intervention.rs`
+- Modify: `crates/openvikey-core/src/correction.rs` (planner-owned visible candidate IDs)
 - Modify: `crates/openvikey-core/src/feedback.rs` if undo outcome needs to return identity
 - Modify: `crates/openvikey-session/src/session.rs` (`try_restore_policy_undo`, `correction_slice`, clear guard on focus/method/reset/raw change)
 - Test: `crates/openvikey-lab/tests/session_capture.rs`
@@ -915,7 +916,7 @@ git commit -am "fix: block correction suggestions below two alphabetic graphemes
 - Consumes: `LearningConfigV2::{immediate_revert_window_ms,reapply_cooldown_ms}`
 - Produces: `RevertGuard`; `InterventionReason::RevertGuardBypass`
 
-- [ ] **Step 1: Write failing tests (these invert Task 4 / `two_abbrev` first-Space-after-one-undo)**
+- [x] **Step 1: Write failing tests (these invert Task 4 / `two_abbrev` first-Space-after-one-undo)**
 
 ```rust
 #[test]
@@ -958,9 +959,9 @@ fn planner_hides_reverted_candidate_from_replace_and_overlay_during_cooldown() {
 
 Keep `two_abbrev_assist_undos_stop_further_space_auto` but update its first-Space-after-one-undo expectation: after one Backspace, the next Space must **not** replace. Two-revert long cooldown remains (already demotes Auto).
 
-- [ ] **Step 2: Run — expect FAIL** (current code re-applies)
+- [x] **Step 2: Run — expect FAIL** (current code re-applies)
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 On successful semantic revert inside `immediate_revert_window_ms`:
 
@@ -971,9 +972,9 @@ On successful semantic revert inside `immediate_revert_window_ms`:
 5. if `bypass_next_boundary` and raw unchanged, force None/RevertGuardBypass once even after cooldown
 6. clear guard after that original commit, or when raw/focus/method/mode/Reset changes
 
-Guard is session-only. Do not persist it.
+Guard is session-only. Do not persist it. The planner also returns `display_candidate_ids` so the correction slice can hide only the reverted candidate without leaking it through overlay/Accept.
 
-- [ ] **Step 4: Run**
+- [x] **Step 4: Run**
 
 ```powershell
 cargo test -p openvikey-lab --test session_capture space_replace_backspace two_abbrev_assist
@@ -981,7 +982,7 @@ cargo test -p openvikey-core --test intervention_planner
 cargo test --workspace --all-features
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git commit -am "fix: arm RevertGuard so undo plus Space cannot loop replacements"

@@ -5,7 +5,7 @@
 use crate::decision::{DecisionConfig, DecisionState};
 use crate::feedback::LearningSession;
 use crate::generate::{Generator, LeftContext, collect_candidates};
-use crate::intervention::{InterventionAction, InterventionPlan, plan_intervention};
+use crate::intervention::{InterventionAction, InterventionPlan, RevertGuard, plan_intervention};
 use crate::learning_config::LearningConfigV2;
 use crate::lexicon::Lexicon;
 use crate::model::{ModelView, RuleContextKey};
@@ -80,16 +80,14 @@ pub struct CorrectionSlice {
     pub decision: Option<DecisionState>,
     pub action: Option<EngineAction>,
     pub plan: Option<InterventionPlan>,
+    visible_candidates: Vec<Candidate>,
 }
 
 impl CorrectionSlice {
     /// Candidates the product may show or accept. Empty unless the planner chose Suggest.
     #[must_use]
     pub fn display_candidates(&self) -> &[Candidate] {
-        match self.plan.as_ref().map(|plan| plan.action) {
-            Some(InterventionAction::DisplaySuggestion) => self.candidates.as_slice(),
-            _ => &[],
-        }
+        &self.visible_candidates
     }
 }
 
@@ -130,6 +128,7 @@ pub fn run_correction_slice(
         &Lexicon::empty(),
         InterventionConfig::default(),
         None,
+        None,
     );
     if slice.decision == Some(DecisionState::Auto) {
         slice.decision = Some(DecisionState::Suggest);
@@ -156,6 +155,7 @@ fn evaluate_correction_slice(
     lexicon: &Lexicon,
     intervention: InterventionConfig,
     delimiter: Option<char>,
+    revert_guard: Option<&RevertGuard>,
 ) -> CorrectionSlice {
     let raw = collect_candidates(snapshot, left_context, context, generators);
     if raw.is_empty() {
@@ -164,6 +164,7 @@ fn evaluate_correction_slice(
             decision: None,
             action: None,
             plan: None,
+            visible_candidates: Vec::new(),
         };
     }
 
@@ -190,7 +191,7 @@ fn evaluate_correction_slice(
         intervention,
         context,
         delimiter,
-        None,
+        revert_guard,
         evaluate_at_ms,
         auto_edit_valid,
         input_method,
@@ -201,10 +202,19 @@ fn evaluate_correction_slice(
     } else {
         plan.model_transition
     };
+    let visible_candidates = if plan.action == InterventionAction::DisplaySuggestion {
+        candidates
+            .iter()
+            .filter(|candidate| plan.display_candidate_ids.contains(&candidate.id))
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    };
     let action = match plan.action {
         InterventionAction::DisplaySuggestion => Some(EngineAction::ShowSuggestions {
             revision: snapshot.revision,
-            candidates: candidates.clone(),
+            candidates: visible_candidates.clone(),
         }),
         InterventionAction::None | InterventionAction::Replace => None,
     };
@@ -214,6 +224,7 @@ fn evaluate_correction_slice(
         decision,
         action,
         plan: Some(plan),
+        visible_candidates,
     }
 }
 
@@ -234,6 +245,41 @@ pub fn run_learning_correction_slice(
     lexicon: &Lexicon,
     intervention: InterventionConfig,
 ) -> CorrectionSlice {
+    run_learning_correction_slice_with_guard(
+        snapshot,
+        left_context,
+        context,
+        generators,
+        input_method,
+        session,
+        evaluate_at_ms,
+        score_config,
+        decision_config,
+        auto_edit,
+        lexicon,
+        intervention,
+        None,
+    )
+}
+
+/// Runs correction with a session-owned short-term revert guard.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn run_learning_correction_slice_with_guard(
+    snapshot: &CompositionSnapshot,
+    left_context: &LeftContext,
+    context: InputContext,
+    generators: &[&dyn Generator],
+    input_method: InputMethod,
+    session: &mut LearningSession,
+    evaluate_at_ms: i64,
+    score_config: &ScoreConfig,
+    decision_config: &DecisionConfig,
+    auto_edit: Option<AutoEditContext>,
+    lexicon: &Lexicon,
+    intervention: InterventionConfig,
+    revert_guard: Option<&RevertGuard>,
+) -> CorrectionSlice {
     let auto_edit_valid = auto_edit.as_ref().is_some_and(|edit| {
         edit.range.revision == snapshot.revision
             && edit.range.length_grapheme == snapshot.rendered.graphemes(true).count()
@@ -253,6 +299,7 @@ pub fn run_learning_correction_slice(
         lexicon,
         intervention,
         delimiter,
+        revert_guard,
     );
     let Some(plan) = slice.plan.clone() else {
         return slice;
@@ -261,6 +308,7 @@ pub fn run_learning_correction_slice(
         let Some(chosen) = resolve_plan_candidate(&plan, &slice.candidates).cloned() else {
             slice.action = None;
             slice.decision = None;
+            slice.visible_candidates.clear();
             return slice;
         };
         let rule = candidate_rule_key(snapshot, left_context, input_method, &chosen);
@@ -284,9 +332,10 @@ pub fn run_learning_correction_slice(
             slice.decision = Some(DecisionState::Auto);
         } else {
             slice.decision = Some(DecisionState::Suggest);
+            slice.visible_candidates.clone_from(&slice.candidates);
             slice.action = Some(EngineAction::ShowSuggestions {
                 revision: snapshot.revision,
-                candidates: slice.candidates.clone(),
+                candidates: slice.visible_candidates.clone(),
             });
             if let Some(state) = plan.model_transition {
                 session.record_decision(&rule, state, context.allow_learning);
@@ -419,6 +468,7 @@ mod resolve_plan_candidate_tests {
             action: InterventionAction::Replace,
             reason: InterventionReason::LearnedCorrection,
             candidate_id: id,
+            display_candidate_ids: Vec::new(),
             score_breakdown: ScoreBreakdown::default(),
             undo_contract: UndoContract {
                 required: true,
