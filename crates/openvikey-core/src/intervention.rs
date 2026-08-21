@@ -37,7 +37,7 @@ pub enum InterventionReason {
     ContextSupportedSuggestion,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScoreBreakdown {
     pub generator_base: f64,
     pub exact_correction: f64,

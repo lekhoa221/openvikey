@@ -474,6 +474,20 @@ impl CorrectionMemory {
             .map_or(0, |bucket| bucket.events.len())
     }
 
+    /// Global-bucket events plus compaction checkpoint time for chart building.
+    ///
+    /// Settings/idle read path only; never called from the hook path.
+    pub(crate) fn chart_source(
+        &self,
+        identity: &CorrectionIdentity,
+    ) -> Option<(Vec<CorrectionEvidence>, Option<i64>)> {
+        let row = self.row(identity)?;
+        Some((
+            row.global.events.clone(),
+            row.global.summary.checkpoint_at_ms,
+        ))
+    }
+
     /// Stable SHA-256 over canonical in-memory ordering.
     #[must_use]
     pub fn stable_hash(&self) -> String {
@@ -563,7 +577,8 @@ impl CorrectionMemory {
         delta
     }
 
-    pub(crate) fn record_auto_emission(
+    /// Records one auto emission into the bounded undo window.
+    pub fn record_auto_emission(
         &mut self,
         identity: &CorrectionIdentity,
         left_token_nfc: Option<&str>,
@@ -580,7 +595,8 @@ impl CorrectionMemory {
         }
     }
 
-    pub(crate) fn record_immediate_revert(
+    /// Records the operational veto from an immediate revert without adding evidence mass.
+    pub fn record_immediate_revert(
         &mut self,
         identity: &CorrectionIdentity,
         left_token_nfc: Option<&str>,
