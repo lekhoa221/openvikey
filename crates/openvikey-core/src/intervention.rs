@@ -5,6 +5,7 @@ use crate::decision::{ActionCap, DecisionState, decide};
 use crate::learning_config::LearningConfigV2;
 use crate::lexicon::Lexicon;
 use crate::model::{ModelView, RuleContextKey};
+use crate::rank::{RankingContext, score_contributions};
 use crate::types::{Candidate, CandidateSource, CompositionSnapshot, InputContext, InputMethod};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -114,6 +115,35 @@ fn breakdown_for(candidate: &Candidate) -> ScoreBreakdown {
     ScoreBreakdown {
         generator_base: candidate.base_score,
         final_score: candidate.final_score,
+        ..ScoreBreakdown::default()
+    }
+}
+
+fn ranked_breakdown_for(
+    candidate: &Candidate,
+    model: &dyn ModelView,
+    config: &LearningConfigV2,
+    snapshot: &CompositionSnapshot,
+    input_method: InputMethod,
+    left_token_nfc: Option<&str>,
+    evaluate_at_ms: i64,
+) -> ScoreBreakdown {
+    let contributions = score_contributions(
+        candidate,
+        model,
+        evaluate_at_ms,
+        &config.score,
+        &RankingContext {
+            input_method,
+            original_nfc: snapshot.normalized.clone(),
+            left_token_nfc: left_token_nfc.map(ToOwned::to_owned),
+        },
+    );
+    ScoreBreakdown {
+        generator_base: candidate.base_score,
+        exact_correction: contributions.exact_correction,
+        unigram: contributions.unigram,
+        final_score: contributions.final_score,
         ..ScoreBreakdown::default()
     }
 }
@@ -408,7 +438,7 @@ fn precondition_plan(
 
 /// Decide None / Suggest / Replace for one ranked candidate set.
 #[must_use]
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn plan_intervention(
     snapshot: &CompositionSnapshot,
     ranked: &[Candidate],
@@ -468,7 +498,15 @@ pub fn plan_intervention(
         cap,
         &config.decision,
     );
-    let breakdown = breakdown_for(top);
+    let breakdown = ranked_breakdown_for(
+        top,
+        model,
+        config,
+        snapshot,
+        input_method,
+        left_token_nfc,
+        evaluate_at_ms,
+    );
     // v1 order through Lát 8: learned Auto, then structural, then heuristic.
     if !guard_cooldown_active && state == DecisionState::Auto && auto_edit_valid {
         return learned_replace(top, breakdown);

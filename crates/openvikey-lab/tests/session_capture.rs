@@ -480,6 +480,56 @@ fn auto_settles_after_ten_following_events() {
 }
 
 #[test]
+fn committed_user_token_updates_unigram_once() {
+    let mut session = telex_session();
+
+    session.type_text("nam ", InputContext::default(), 0);
+
+    assert_eq!(session.model().unigram_count("nam"), 1);
+    assert!(session.capture_log().records.iter().any(|record| matches!(
+        record,
+        CaptureRecord::LanguageCommitSettled { token, .. } if token == "nam"
+    )));
+}
+
+#[test]
+fn private_mode_commit_does_not_update_unigram() {
+    let mut session = telex_session();
+    let private = InputContext {
+        allow_transform: true,
+        allow_learning: false,
+    };
+
+    session.type_text("nam ", private, 0);
+
+    assert_eq!(session.model().unigram_count("nam"), 0);
+}
+
+#[test]
+fn auto_replacement_updates_unigram_only_after_settlement() {
+    let (mut session, _, replacement) = vni_auto_session();
+    type_paht1_commit(&mut session, 20);
+    assert_eq!(session.model().unigram_count(&replacement), 0);
+
+    for index in 0..10 {
+        session.inject(
+            InputKind::Key {
+                logical: 'a',
+                physical: None,
+            },
+            InputContext::default(),
+            if index == 9 { 4_000 } else { 40 + index },
+        );
+    }
+
+    assert_eq!(session.model().unigram_count(&replacement), 1);
+    assert!(session.capture_log().records.iter().any(|record| matches!(
+        record,
+        CaptureRecord::LanguageCommitSettled { token, .. } if token == &replacement
+    )));
+}
+
+#[test]
 fn caret_break_cancels_pending_auto_settlement() {
     let (mut session, rule, _) = vni_auto_session();
     type_paht1_commit(&mut session, 20);

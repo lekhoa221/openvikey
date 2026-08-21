@@ -8,7 +8,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use unicode_normalization::UnicodeNormalization;
 
 pub const SCORE_CONFIG_V1_HASH: &str =
-    "1380a346aa0fb8455773ef0228c0eabd7af46365c16f88beb1b94cca69cda522";
+    "566ca77091a5afc5cc4b89ab5137aefe3261bc081e6e5e78144b0f0d226efb8d";
+
+const fn default_unigram_weight() -> f64 {
+    0.08
+}
 
 /// Versioned score calibration. Fit only on the calibration split (M9/M10).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -17,6 +21,8 @@ pub struct ScoreConfig {
     pub hash: String,
     pub calibration_source_hash: String,
     pub personal_weight: f64,
+    #[serde(default = "default_unigram_weight")]
+    pub unigram_weight: f64,
 }
 
 /// Context required to map a candidate to its personal learning key.
@@ -35,7 +41,42 @@ impl ScoreConfig {
             hash: SCORE_CONFIG_V1_HASH.to_string(),
             calibration_source_hash: ABBREV_SEED_SHA256.to_string(),
             personal_weight: 0.2,
+            unigram_weight: default_unigram_weight(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ScoreContributions {
+    pub exact_correction: f64,
+    pub unigram: f64,
+    pub final_score: f64,
+}
+
+/// Computes independently inspectable score terms for one candidate.
+#[must_use]
+pub fn score_contributions(
+    candidate: &Candidate,
+    model: &dyn ModelView,
+    evaluate_at_ms: i64,
+    config: &ScoreConfig,
+    context: &RankingContext,
+) -> ScoreContributions {
+    let key = RuleContextKey {
+        input_method: context.input_method,
+        source: candidate.source,
+        original_nfc: context.original_nfc.clone(),
+        candidate_nfc: candidate.text.clone(),
+        left_token_nfc: context.left_token_nfc.clone(),
+        source_rule_id: primary_rule_id(&candidate.evidence).to_string(),
+    };
+    let exact_correction = config.personal_weight * (model.confidence(&key, evaluate_at_ms) - 0.5);
+    let unigram = config.unigram_weight * model.unigram_signal(&candidate.text);
+    ScoreContributions {
+        exact_correction,
+        unigram,
+        final_score: (candidate.base_score.clamp(0.0, 1.0) + exact_correction + unigram)
+            .clamp(0.0, 1.0),
     }
 }
 
@@ -74,16 +115,7 @@ pub fn rank(
     for candidate in &mut ranked {
         let base = candidate.base_score.clamp(0.0, 1.0);
         candidate.final_score = if let Some(context) = context {
-            let key = RuleContextKey {
-                input_method: context.input_method,
-                source: candidate.source,
-                original_nfc: context.original_nfc.clone(),
-                candidate_nfc: candidate.text.clone(),
-                left_token_nfc: context.left_token_nfc.clone(),
-                source_rule_id: primary_rule_id(&candidate.evidence).to_string(),
-            };
-            let personal_delta = model.confidence(&key, evaluate_at_ms) - 0.5;
-            (base + config.personal_weight * personal_delta).clamp(0.0, 1.0)
+            score_contributions(candidate, model, evaluate_at_ms, config, context).final_score
         } else {
             base
         };

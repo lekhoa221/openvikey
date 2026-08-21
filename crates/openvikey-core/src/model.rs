@@ -11,6 +11,7 @@ use crate::decision::DecisionState;
 use crate::intervention::CorrectionIdentity;
 use crate::learning_config::LearningConfigV2;
 use crate::types::{CandidateSource, FeedbackEvent, InputMethod};
+use crate::user_language::UserLanguageModel;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -60,6 +61,10 @@ pub trait ModelView {
     fn auto_allowed(&self, _key: &RuleContextKey, _evaluate_at_ms: i64) -> bool {
         true
     }
+
+    fn unigram_signal(&self, _token_nfc: &str) -> f64 {
+        0.0
+    }
 }
 
 /// Versioned operational limits retained across model saves.
@@ -105,17 +110,6 @@ pub struct ModelInspectionRow {
     pub last_shown_at_ms: Option<i64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-struct UserLanguageModelNamespace {
-    unigrams: Vec<EmptyLanguageRow>,
-    bigrams: Vec<EmptyLanguageRow>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct EmptyLanguageRow {}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MaintenanceMetadata {
@@ -129,7 +123,7 @@ pub struct AdaptiveModel {
     version: u32,
     config_hash: String,
     correction_memory: CorrectionMemory,
-    user_language_model: UserLanguageModelNamespace,
+    user_language_model: UserLanguageModel,
     maintenance_metadata: MaintenanceMetadata,
 }
 
@@ -140,7 +134,7 @@ impl AdaptiveModel {
             version: MODEL_VERSION,
             config_hash: LearningConfigV2::compatibility_v1().hash(),
             correction_memory: CorrectionMemory::with_half_life(config.half_life_ms),
-            user_language_model: UserLanguageModelNamespace::default(),
+            user_language_model: UserLanguageModel::default(),
             maintenance_metadata: MaintenanceMetadata {
                 model_config: config,
             },
@@ -230,6 +224,26 @@ impl AdaptiveModel {
         self.prepare_for(key);
         self.correction_memory
             .record_impression(&key.identity(), seq, at_ms)
+    }
+
+    /// Records one safe committed token exactly once. Disabled learning is a strict no-op.
+    pub fn record_language_commit(
+        &mut self,
+        token: &str,
+        left_token: Option<&str>,
+        at_ms: i64,
+        transaction_id: u64,
+        allow_learning: bool,
+    ) -> bool {
+        allow_learning
+            && self
+                .user_language_model
+                .commit_transaction(token, left_token, at_ms, transaction_id)
+    }
+
+    #[must_use]
+    pub fn unigram_count(&self, token: &str) -> u64 {
+        self.user_language_model.unigram(token)
     }
 
     /// Records the operational veto from an immediate revert without adding evidence mass.
@@ -514,7 +528,7 @@ impl AdaptiveModel {
             version: MODEL_VERSION,
             config_hash: LearningConfigV2::compatibility_v1().hash(),
             correction_memory: memory,
-            user_language_model: UserLanguageModelNamespace::default(),
+            user_language_model: UserLanguageModel::default(),
             maintenance_metadata: MaintenanceMetadata {
                 model_config: legacy.config,
             },
@@ -620,6 +634,10 @@ impl ModelView for AdaptiveModel {
             key.left_token_nfc.as_deref(),
             evaluate_at_ms,
         )
+    }
+
+    fn unigram_signal(&self, token_nfc: &str) -> f64 {
+        self.user_language_model.unigram_signal(token_nfc)
     }
 }
 

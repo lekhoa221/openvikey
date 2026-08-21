@@ -15,6 +15,7 @@ pub mod model;
 pub mod rank;
 pub mod store;
 pub mod types;
+pub mod user_language;
 
 /// Package version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

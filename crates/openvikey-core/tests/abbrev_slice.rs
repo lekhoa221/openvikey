@@ -368,8 +368,9 @@ fn seed_fixture_is_the_only_abbrev_table() {
     let config = ScoreConfig::abbrev_v1();
     assert_eq!(config.calibration_source_hash, actual_hash);
     assert_eq!(config.hash, SCORE_CONFIG_V1_HASH);
-    let canonical =
-        format!("version=1\nabbrev_seed_sha256={ABBREV_SEED_SHA256}\npersonal_weight=0.2\n");
+    let canonical = format!(
+        "version=1\nabbrev_seed_sha256={ABBREV_SEED_SHA256}\npersonal_weight=0.2\nunigram_weight=0.08\n"
+    );
     assert_eq!(
         hex::encode(Sha256::digest(canonical.as_bytes())),
         SCORE_CONFIG_V1_HASH

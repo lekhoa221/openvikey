@@ -1512,7 +1512,7 @@ Lát 5 done when: Backspace is rollback; Undo/reject/settlement match §7; captu
 - Consumes: NFC tokens; `LearningConfigV2.max_unigrams`
 - Produces: bounded `unigram` delta in `ScoreBreakdown`; **cannot** create Auto
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```rust
 #[test]
@@ -1551,11 +1551,11 @@ fn private_mode_does_not_write_unigrams() {
 
 Do not update on paste-many, URL/secret-like, composition-only, or unsettled Auto (spec §8.3–8.4). Spec choice: delay language writes until settlement (option 1).
 
-- [ ] **Step 2: FAIL → implement `UserLanguageModel` + rank extra `unigram` term clamped**, include in `ScoreBreakdown.unigram`. Planner still requires exact evidence for Replace.
+- [x] **Step 2: FAIL → implement `UserLanguageModel` + rank extra `unigram` term clamped**, include in `ScoreBreakdown.unigram`. Planner still requires exact evidence for Replace.
 
-- [ ] **Step 3: Run** `cargo test -p openvikey-core --test user_language --test intervention_planner`
+- [x] **Step 3: Run** `cargo test -p openvikey-core --test user_language --test intervention_planner`
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```powershell
 git commit -am "feat: learn settled unigrams and use them only to rerank suggestions"

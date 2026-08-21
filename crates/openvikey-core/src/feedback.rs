@@ -15,6 +15,23 @@ pub struct UndoOutcome {
     pub feedback: FeedbackEvent,
 }
 
+/// One automatic correction that settled together with its language-model commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettlementOutcome {
+    pub feedback: FeedbackEvent,
+    pub token_nfc: String,
+    pub left_token_nfc: Option<String>,
+    pub language_recorded: bool,
+}
+
+impl std::ops::Deref for SettlementOutcome {
+    type Target = FeedbackEvent;
+
+    fn deref(&self) -> &Self::Target {
+        &self.feedback
+    }
+}
+
 #[derive(Debug, Clone)]
 struct PendingAutoSettlement {
     key: RuleContextKey,
@@ -105,7 +122,7 @@ impl LearningSession {
         first_feedback_seq: u64,
         at_ms: i64,
         allow_learning: bool,
-    ) -> Vec<FeedbackEvent> {
+    ) -> Vec<SettlementOutcome> {
         if !allow_learning {
             return Vec::new();
         }
@@ -129,7 +146,19 @@ impl LearningSession {
                 kind: FeedbackKind::AutoSettled { edit_id },
             };
             self.model.apply_feedback(&key, &event, true);
-            settled.push(event);
+            let language_recorded = self.model.record_language_commit(
+                &key.candidate_nfc,
+                key.left_token_nfc.as_deref(),
+                at_ms,
+                event.seq,
+                true,
+            );
+            settled.push(SettlementOutcome {
+                feedback: event,
+                token_nfc: key.candidate_nfc,
+                left_token_nfc: key.left_token_nfc,
+                language_recorded,
+            });
         }
         settled
     }

@@ -477,12 +477,21 @@ impl LabSession {
                 .learning
                 .observe_input_or_edit(self.next_seq, event.at_ms, true);
             if self.capturing {
-                for feedback in &settled {
-                    if let FeedbackKind::AutoSettled { edit_id } = feedback.kind {
+                for settlement in &settled {
+                    if let FeedbackKind::AutoSettled { edit_id } = settlement.kind {
                         self.record_capture(CaptureRecord::InterventionSettled {
-                            seq: feedback.seq,
-                            at_ms: feedback.at_ms,
+                            seq: settlement.seq,
+                            at_ms: settlement.at_ms,
                             edit_id,
+                        });
+                    }
+                    if settlement.language_recorded {
+                        self.record_capture(CaptureRecord::LanguageCommitSettled {
+                            seq: settlement.seq,
+                            at_ms: settlement.at_ms,
+                            token: settlement.token_nfc.clone(),
+                            left_token: settlement.left_token_nfc.clone(),
+                            transaction_id: settlement.seq,
                         });
                     }
                 }
@@ -530,6 +539,13 @@ impl LabSession {
                 left_token_nfc: key.left_token_nfc.clone(),
             });
         }
+        self.record_settled_language_commit(
+            &key.candidate_nfc,
+            key.left_token_nfc.as_deref(),
+            at_ms,
+            seq,
+            allow_learning,
+        );
         if allow_learning {
             let (positive_total, negative_total) = self.learning.model().evidence_totals(&key);
             self.pending_learning_notice = Some(LearningNotice {
@@ -1047,10 +1063,19 @@ impl LabSession {
             delimiter,
             self.last_original_nfc.clone(),
             Some(raw_keys.to_string()),
-            left_at_commit,
+            left_at_commit.clone(),
             method,
             slice.display_candidates().to_vec(),
         ));
+        if !matches!(slice.action, Some(EngineAction::ReplaceRange(_))) {
+            self.record_settled_language_commit(
+                &token_text,
+                left_at_commit.as_deref(),
+                event.at_ms,
+                event.seq,
+                allow_learning,
+            );
+        }
         if delimiter.is_some()
             && self
                 .revert_guard
@@ -1085,10 +1110,17 @@ impl LabSession {
             delimiter,
             text.to_string(),
             None,
-            left_at_commit,
+            left_at_commit.clone(),
             method,
             Vec::new(),
         ));
+        self.record_settled_language_commit(
+            text,
+            left_at_commit.as_deref(),
+            event.at_ms,
+            event.seq,
+            allow_learning,
+        );
         if !text.is_empty() {
             self.finish_implicit(text, event.seq, event.at_ms, allow_learning, leftover);
         }
@@ -1101,6 +1133,34 @@ impl LabSession {
                 unit.full_token_nfc == *expected && unit.remaining_nfc == *expected
             }
             _ => false,
+        }
+    }
+
+    fn record_settled_language_commit(
+        &mut self,
+        token: &str,
+        left_token: Option<&str>,
+        at_ms: i64,
+        transaction_id: u64,
+        allow_learning: bool,
+    ) {
+        if !self.learning.model_mut().record_language_commit(
+            token,
+            left_token,
+            at_ms,
+            transaction_id,
+            allow_learning,
+        ) {
+            return;
+        }
+        if self.capturing {
+            self.record_capture(CaptureRecord::LanguageCommitSettled {
+                seq: transaction_id,
+                at_ms,
+                token: token.to_string(),
+                left_token: left_token.map(ToOwned::to_owned),
+                transaction_id,
+            });
         }
     }
 
