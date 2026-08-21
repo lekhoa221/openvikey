@@ -58,6 +58,7 @@ pub struct InterventionPlan {
     pub candidate_id: Option<u64>,
     pub score_breakdown: ScoreBreakdown,
     pub undo_contract: UndoContract,
+    pub model_transition: Option<DecisionState>,
 }
 
 /// Exact original→candidate identity. Context (left token) is not part of this key.
@@ -91,6 +92,7 @@ fn none_plan(reason: InterventionReason) -> InterventionPlan {
             required: false,
             uses_original_rendered: true,
         },
+        model_transition: None,
     }
 }
 
@@ -174,6 +176,7 @@ pub fn plan_intervention(
                 required: true,
                 uses_original_rendered: true,
             },
+            model_transition: Some(DecisionState::Auto),
         },
         DecisionState::Auto | DecisionState::Suggest => InterventionPlan {
             action: InterventionAction::DisplaySuggestion,
@@ -188,7 +191,18 @@ pub fn plan_intervention(
                 required: false,
                 uses_original_rendered: true,
             },
+            model_transition: Some(DecisionState::Suggest),
         },
-        DecisionState::Ignore => none_plan(InterventionReason::LowScore),
+        DecisionState::Ignore => InterventionPlan {
+            action: InterventionAction::None,
+            reason: InterventionReason::LowScore,
+            candidate_id: Some(top.id),
+            score_breakdown: breakdown,
+            undo_contract: UndoContract {
+                required: false,
+                uses_original_rendered: true,
+            },
+            model_transition: Some(DecisionState::Ignore),
+        },
     }
 }

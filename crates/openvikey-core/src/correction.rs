@@ -177,18 +177,13 @@ fn evaluate_correction_slice(
         input_method,
         left_context.prev_token_nfc.as_deref(),
     );
-    let decision = match plan.action {
-        InterventionAction::None if candidates.is_empty() => None,
-        InterventionAction::None => Some(DecisionState::Ignore),
-        InterventionAction::DisplaySuggestion => Some(DecisionState::Suggest),
-        InterventionAction::Replace => Some(DecisionState::Auto),
-    };
-    let action = match decision {
-        Some(DecisionState::Suggest) => Some(EngineAction::ShowSuggestions {
+    let decision = plan.model_transition;
+    let action = match plan.action {
+        InterventionAction::DisplaySuggestion => Some(EngineAction::ShowSuggestions {
             revision: snapshot.revision,
             candidates: candidates.clone(),
         }),
-        Some(DecisionState::Ignore | DecisionState::Auto) | None => None,
+        InterventionAction::None | InterventionAction::Replace => None,
     };
 
     CorrectionSlice {

@@ -21,16 +21,17 @@
 //! - `session_capture::restart_restores_cursor_so_new_feedback_is_not_deduped`
 
 use openvikey_core::correction::{
-    InterventionConfig, boundary_assist_candidate, unique_telex_fix_candidate,
+    InterventionConfig, boundary_assist_candidate, run_correction_slice, unique_telex_fix_candidate,
 };
-use openvikey_core::decision::DecisionState;
+use openvikey_core::decision::{DecisionConfig, DecisionState};
 use openvikey_core::generate::telex_fix::TelexFixGenerator;
 use openvikey_core::generate::{Generator, LeftContext};
 use openvikey_core::lexicon::{Lexicon, LexiconEntry};
-use openvikey_core::model::{AdaptiveModel, ModelView, RuleContextKey};
+use openvikey_core::model::{AdaptiveModel, EmptyModel, ModelView, RuleContextKey};
+use openvikey_core::rank::ScoreConfig;
 use openvikey_core::types::{
-    Candidate, CandidateSource, CompositionSnapshot, FeedbackEvent, FeedbackKind, InputMethod,
-    TonePlacement,
+    Candidate, CandidateSource, CompositionSnapshot, EngineAction, FeedbackEvent, FeedbackKind,
+    InputContext, InputMethod, TonePlacement,
 };
 
 fn snap(raw: &str, rendered: &str) -> CompositionSnapshot {
@@ -197,12 +198,51 @@ fn personal_store_rejects_new_pair_at_512() {
     );
 }
 
+struct OneLetterGenerator;
+
+impl Generator for OneLetterGenerator {
+    fn source(&self) -> CandidateSource {
+        CandidateSource::Fuzzy
+    }
+
+    fn generate(
+        &self,
+        snapshot: &CompositionSnapshot,
+        _left_context: &LeftContext,
+    ) -> Vec<Candidate> {
+        if snapshot.normalized != "đ" {
+            return Vec::new();
+        }
+        vec![Candidate {
+            id: 7,
+            text: "đã".to_string(),
+            source: CandidateSource::Fuzzy,
+            evidence: "fuzzy:dd".to_string(),
+            base_score: 0.92,
+            final_score: 0.0,
+        }]
+    }
+}
+
 #[test]
 fn v1_single_letter_telex_dd_may_still_enter_correction_pipeline() {
-    // Document: raw "dd" / rendered "đ" is one alphabetic letter after NFC.
-    // Current pipeline has no minimum_correction_graphemes guard.
-    // Lát 2 replaces this with token_too_short_dd_is_engine_only.
+    // Lát 2 inverts this: TokenTooShort, no ShowSuggestions.
     let snapshot = CompositionSnapshot::new(1, "dd".into(), "đ".into());
     assert_eq!(snapshot.normalized, "đ");
-    assert_eq!(snapshot.normalized.chars().count(), 1);
+    let slice = run_correction_slice(
+        &snapshot,
+        &LeftContext::default(),
+        InputContext::default(),
+        &[&OneLetterGenerator],
+        InputMethod::Telex,
+        &EmptyModel,
+        0,
+        &ScoreConfig::default(),
+        &DecisionConfig::default(),
+    );
+    assert_eq!(slice.decision, Some(DecisionState::Suggest));
+    assert!(matches!(
+        slice.action,
+        Some(EngineAction::ShowSuggestions { .. })
+    ));
 }

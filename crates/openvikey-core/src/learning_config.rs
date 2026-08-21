@@ -52,6 +52,7 @@ impl LearningConfigV2 {
     #[must_use]
     pub fn product_v2() -> Self {
         Self {
+            version: 2,
             abbrev_cold_start_auto: false,
             fuzzy_heuristic_assist: false,
             minimum_correction_graphemes: 2,
