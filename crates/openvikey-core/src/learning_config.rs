@@ -31,7 +31,7 @@ impl LearningConfigV2 {
     pub fn compatibility_v1() -> Self {
         Self {
             version: 1,
-            minimum_correction_graphemes: 0,
+            minimum_correction_graphemes: 2,
             immediate_revert_window_ms: 3_000,
             reapply_cooldown_ms: 3_000,
             abbrev_cold_start_auto: true,

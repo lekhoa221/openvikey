@@ -7,6 +7,7 @@ use crate::lexicon::Lexicon;
 use crate::model::{ModelView, RuleContextKey};
 use crate::types::{Candidate, CandidateSource, CompositionSnapshot, InputContext, InputMethod};
 use serde::{Deserialize, Serialize};
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Planner output action. Callers must not upgrade Suggest to Replace afterwards.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +81,15 @@ pub struct RevertGuard {
     pub composition_revision: u64,
     pub reapply_cooldown_until_ms: i64,
     pub bypass_next_boundary: bool,
+}
+
+/// Count NFC grapheme clusters that contain at least one alphabetic character.
+#[must_use]
+pub fn alphabetic_grapheme_count(normalized: &str) -> usize {
+    normalized
+        .graphemes(true)
+        .filter(|grapheme| grapheme.chars().any(char::is_alphabetic))
+        .count()
 }
 
 fn none_plan(reason: InterventionReason) -> InterventionPlan {
@@ -259,6 +269,14 @@ pub fn plan_intervention(
 ) -> InterventionPlan {
     if !context.allow_transform {
         return none_plan(InterventionReason::UnsafeContext);
+    }
+    if alphabetic_grapheme_count(&snapshot.normalized) < config.minimum_correction_graphemes {
+        let mut plan = none_plan(InterventionReason::TokenTooShort);
+        if let Some(top) = ranked.first() {
+            plan.candidate_id = Some(top.id);
+            plan.score_breakdown = breakdown_for(top);
+        }
+        return plan;
     }
     if ranked.is_empty() {
         return none_plan(InterventionReason::NoCandidate);

@@ -225,8 +225,7 @@ impl Generator for OneLetterGenerator {
 }
 
 #[test]
-fn v1_single_letter_telex_dd_may_still_enter_correction_pipeline() {
-    // Lát 2 inverts this: TokenTooShort, no ShowSuggestions.
+fn token_too_short_dd_is_engine_only() {
     let snapshot = CompositionSnapshot::new(1, "dd".into(), "đ".into());
     assert_eq!(snapshot.normalized, "đ");
     let slice = run_correction_slice(
@@ -240,9 +239,13 @@ fn v1_single_letter_telex_dd_may_still_enter_correction_pipeline() {
         &ScoreConfig::default(),
         &DecisionConfig::default(),
     );
-    assert_eq!(slice.decision, Some(DecisionState::Suggest));
-    assert!(matches!(
+    assert_ne!(slice.decision, Some(DecisionState::Suggest));
+    assert!(!matches!(
         slice.action,
         Some(EngineAction::ShowSuggestions { .. })
     ));
+    assert_eq!(
+        slice.plan.as_ref().map(|plan| plan.reason),
+        Some(openvikey_core::intervention::InterventionReason::TokenTooShort)
+    );
 }
