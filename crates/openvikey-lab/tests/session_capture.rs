@@ -1069,6 +1069,31 @@ fn capture_trim_keeps_the_newest_records() {
     assert_eq!(seqs, vec![3, 4, 5]);
 }
 
+#[test]
+fn capture_trim_drops_a_whole_oldest_seq_transaction() {
+    let identity = CorrectionIdentity {
+        input_method: InputMethod::Telex,
+        source: CandidateSource::Abbreviation,
+        original_nfc: "ko".into(),
+        candidate_nfc: "không".into(),
+        source_rule_id: "seed:ko".into(),
+    };
+    let mut records = vec![
+        CaptureRecord::AcceptTop { seq: 1, at_ms: 1 },
+        CaptureRecord::CorrectionConfirmed {
+            seq: 1,
+            at_ms: 1,
+            identity,
+            left_token_nfc: None,
+        },
+        CaptureRecord::AcceptTop { seq: 2, at_ms: 2 },
+    ];
+
+    openvikey_lab::capture::trim_capture_to(&mut records, 2);
+
+    assert_eq!(records, vec![CaptureRecord::AcceptTop { seq: 2, at_ms: 2 }]);
+}
+
 fn type_keys(session: &mut LabSession, text: &str, start_ms: i64) {
     session.type_text(text, InputContext::default(), start_ms);
 }

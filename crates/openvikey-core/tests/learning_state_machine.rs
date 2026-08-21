@@ -499,6 +499,20 @@ fn shown_suggestion_increments_impression_not_negative_mass() {
 }
 
 #[test]
+fn impressions_are_scoped_to_the_exact_correction_identity() {
+    let mut model = AdaptiveModel::default();
+    let kho = key("kho", "không");
+    let khog = key("khog", "không");
+
+    model.record_impression(&kho, 1, 100, true);
+    model.record_impression(&khog, 2, 101, true);
+
+    let rows = model.inspection_rows();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| row.shown_count == 1));
+}
+
+#[test]
 fn settled_signals_are_recorded_exactly_once() {
     let mut model = AdaptiveModel::default();
     let rule = key("ko", "không");
@@ -739,6 +753,43 @@ fn settlement_alone_cannot_cross_the_weak_positive_cap_or_promote() {
             <= LearningConfigV2::compatibility_v1().weak_positive_cap + 1e-12
     );
     assert_eq!(model.state(&rule, 0), DecisionState::Suggest);
+}
+
+#[test]
+fn settlement_cap_is_a_lifetime_budget_across_decay_and_reload() {
+    let mut model = AdaptiveModel::default();
+    let rule = key("ko", "không");
+    let cap = LearningConfigV2::compatibility_v1().weak_positive_cap;
+    let settlement_count = 24;
+    assert!((cap - 7.2).abs() < f64::EPSILON);
+
+    for edit_id in 1..=settlement_count {
+        model.apply_feedback(
+            &rule,
+            &feedback(edit_id, 0, FeedbackKind::AutoSettled { edit_id }),
+            true,
+        );
+    }
+
+    let evaluate_at_ms = 1_000 * DAY_MS;
+    let decayed_mass = model.positive_mass(&rule, evaluate_at_ms);
+    assert!(decayed_mass < 1e-6);
+
+    let payload = model.to_json_payload().unwrap();
+    let mut reloaded = AdaptiveModel::from_json_payload(&payload).unwrap();
+    reloaded.apply_feedback(
+        &rule,
+        &feedback(
+            settlement_count + 1,
+            evaluate_at_ms,
+            FeedbackKind::AutoSettled {
+                edit_id: settlement_count + 1,
+            },
+        ),
+        true,
+    );
+
+    assert!((reloaded.positive_mass(&rule, evaluate_at_ms) - decayed_mass).abs() < 1e-12);
 }
 
 #[test]

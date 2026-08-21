@@ -427,7 +427,7 @@ Một intervention chỉ settlement khi:
 - focus/caret identity vẫn đủ để tin rằng text còn tồn tại;
 - learning vẫn được phép.
 
-Mỗi edit settlement đúng một lần. Tổng positive mass từ settlement cho một correction không vượt `weak_positive_cap`, mặc định giữ mức 7.2 hiện tại. Vì ngưỡng promote hiện là 18, settlement một mình không đủ tạo learned Auto.
+Mỗi edit settlement đúng một lần. `weak_positive_cap`, mặc định 7.2, là **lifetime settlement budget** cho exact correction identity: positive evidence event đã cấp vẫn decay bình thường khi query, nhưng accumulator `weak_positive_total` không decay và quota đã dùng không được cấp lại sau này. Accept/ImplicitCorrection không tiêu quota này và vẫn là đường evidence chính. Vì ngưỡng promote hiện là 18, settlement một mình không đủ tạo learned Auto.
 
 ### 7.5 Impression
 
@@ -443,6 +443,8 @@ Khi được chọn:
 ```text
 selected_count
 ```
+
+Một impression là một lần exact correction identity thực sự nằm trong `display_candidates()` tại một `seq` mới. Identity gồm input method, source, `original_nfc`, `candidate_nfc` và source rule; vì vậy các prefix đang thay đổi như `kho` → `khog` → `khogn` không cộng dồn vào cùng row. `last_impression_seq` chỉ dedup cùng identity tại cùng hoặc seq cũ hơn. Các counter này là inspection/calibration data; Settings → Learning chỉ hiển thị chúng khi UI contract nói rõ đơn vị “lần hiển thị”, không gọi đó là số suggestion session.
 
 Trong v2, tỷ lệ selected/shown chưa tác động trực tiếp đến Beta confidence. Nó phục vụ:
 
@@ -737,10 +739,10 @@ Migration không thay encrypted envelope của core/lab; chỉ thay payload bên
 - remove recent edit/settlement/idempotency metadata liên quan;
 - remove explicit suppression nếu command yêu cầu reset hoàn toàn;
 - remove Personal probation/promoted row tương ứng;
-- rewrite/compact capture journal để dữ liệu đó không thể tái tạo lại;
+- rewrite/compact semantic capture records để explicit correction identity/mapping không còn trong payload và final replay không thể khôi phục row;
 - save coherent model/capture pair.
 
-Test bắt buộc serialize model và capture rồi chứng minh các chuỗi original/candidate/left-context đã chọn không còn trong payload. Nếu token vẫn xuất hiện độc lập trong user language model do người dùng dùng nó như từ bình thường, UI phải phân biệt “quên phép sửa” với “xoá từ khỏi lịch sử dùng từ”.
+Test bắt buộc serialize model và capture rồi chứng minh các chuỗi original/candidate/left-context đã chọn không còn trong semantic payload và replay kết thúc không có row đã quên. Raw `Input`/`AcceptTop` phục vụ replay có thể vẫn còn: “quên phép sửa” không tuyên bố xoá lịch sử phím gõ, và `DataForgotten` phải chặn row sống lại. Nếu token vẫn xuất hiện độc lập trong raw input hoặc user language model, UI phải phân biệt “quên phép sửa”, “xoá từ khỏi lịch sử dùng từ” và “xoá toàn bộ dữ liệu học”.
 
 ### 11.4 Các lệnh xoá rõ nghĩa
 
@@ -800,9 +802,13 @@ DataForgotten { stable identity }
 
 Payload thực tế phải tối thiểu hoá text và tránh duplicate raw stream không cần thiết. Record IDs/version cho phép idempotent replay.
 
+`CorrectionConfirmed` là ngoại lệ text có chủ ý: record lưu explicit `original_nfc` → `candidate_nfc`, source rule và optional left token để selective Forget xác định chính xác semantic records. Đây là personal data có độ nhạy cao hơn raw key riêng lẻ và phải nằm trong threat model của store.
+
 ### 12.2 Compaction checkpoint
 
 Model snapshot là trạng thái chính. Capture là journal bounded sau snapshot, không phải lịch sử gõ vĩnh viễn.
+
+Retention cap tính theo record, không theo keystroke hoặc byte. `CandidateSetEvaluated` có các mảng song song nên làm ngắn capture horizon và kích thước record thay đổi theo số candidate. Khi cutoff 20.000 record rơi giữa các record có cùng `seq`, implementation phải bỏ cả nhóm `seq` cũ; không được giữ semantic record mồ côi mà mất replay command cùng transaction. Guardrail này không thay thế composition/checkpoint boundary khi tạo snapshot mới.
 
 Khi compaction hoặc Forget:
 
@@ -865,6 +871,10 @@ Không lưu:
 - secrets/password;
 - telemetry/network identifiers;
 - app/document identity trong model v2 đầu tiên.
+
+Capture là personal data store, không phải production diagnostics. `CorrectionConfirmed` chứa plaintext semantic mapping và optional left token bên trong JSON payload. Core/lab encrypted store bảo vệ payload này at rest; Windows preview cố ý lưu `.ovkdev.json` plaintext theo ADR 0008, nên threat model phải giả định người đọc được local file có thể đọc correction mapping và raw input đã capture.
+
+Selective Forget chỉ xoá explicit correction identity/mapping và bảo đảm final replay không phục hồi row. Nó không phải secure erase cho raw replay commands hoặc mọi dấu vết token; yêu cầu đó thuộc “xoá toàn bộ dữ liệu học” và storage-level deletion policy riêng.
 
 ### 13.4 Không log dữ liệu gõ
 

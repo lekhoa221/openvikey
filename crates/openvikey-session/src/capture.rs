@@ -1,4 +1,7 @@
-//! Encrypted-payload capture log and deterministic reducer replay.
+//! Versioned capture payload and deterministic reducer replay.
+//!
+//! The lab encrypts this payload at rest. The Windows development adapter stores
+//! the same JSON payload as inspectable plaintext under ADR 0008.
 
 use crate::session::{LabSession, SessionCursors};
 use openvikey_core::engine::EngineConfig;
@@ -234,8 +237,12 @@ pub fn trim_capture_to(records: &mut Vec<CaptureRecord>, max: usize) {
         return;
     }
     if records.len() > max {
-        let excess = records.len() - max;
-        records.drain(..excess);
+        let mut drain_to = records.len() - max;
+        let cutoff_seq = record_seq(&records[drain_to - 1]);
+        while drain_to < records.len() && record_seq(&records[drain_to]) == cutoff_seq {
+            drain_to += 1;
+        }
+        records.drain(..drain_to);
     }
 }
 
@@ -265,10 +272,13 @@ pub fn correction_identity_hash(identity: &CorrectionIdentity) -> String {
     hex::encode(hash.finalize())
 }
 
-/// Removes only records that can reconstruct one forgotten identity.
+/// Removes semantic records that directly encode one forgotten identity.
 ///
 /// A v1 journal has no identity metadata, so it still falls back to clearing the
 /// whole bounded journal. This is the intentional fail-closed v1 deviation.
+/// Replay commands remain because forgetting one correction is not the same as
+/// deleting raw typing history; the session checkpoint appends `DataForgotten`
+/// after compaction so replay cannot resurrect the correction row.
 pub fn compact_capture_after_forget(
     records: &mut Vec<CaptureRecord>,
     forgotten: &CorrectionIdentity,

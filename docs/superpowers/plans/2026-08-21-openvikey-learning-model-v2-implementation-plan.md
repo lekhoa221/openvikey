@@ -39,7 +39,7 @@
 4. TelexFix structural Auto does not need 18 evidence, but it goes through the planner and takes revert cooldown.
 5. v2 language model is unigram + one left bigram. No trigram.
 6. Ignored suggestions increment impression only. No runtime `-0.2`.
-7. Forget physically scrubs correction memory and reconstructable capture/journal.
+7. Forget physically scrubs explicit correction identity/mapping and prevents replay resurrection; forgetting one correction does not claim to erase raw typing history.
 8. Shared parameters change only via versioned config + calibration, never per-user self-tuning.
 9. Correction suggestion/intervention starts at two alphabetic Unicode graphemes in `snapshot.normalized`.
 10. Semantic revert uses a 3_000 ms window, 3_000 ms reapply cooldown, and a one-shot boundary bypass for the unchanged raw token.
@@ -225,11 +225,11 @@ Guard order (spec §9.2) is mandatory inside `plan_intervention`. No caller may 
 - Consumes: spec §5, §9, §18, §20
 - Produces: accepted spec + ADR listing which seams may change
 
-- [ ] **Step 1: Update spec status**
+- [x] **Step 1: Update spec status**
 
 Change the header from `v0.1 — bản nháp` to `v1 — accepted (2026-08-21)`. Append a short note under §20: owner accepted all eleven defaults; implementation follows this plan.
 
-- [ ] **Step 2: Write ADR 0011**
+- [x] **Step 2: Write ADR 0011**
 
 Must state:
 
@@ -241,9 +241,9 @@ Must state:
 - `FeedbackKind::SuggestionSettled` remains deserializable; runtime must stop emitting it (Lát 5). Do not add `InputContext` fields unless a later ADR says so.
 - Generators stay model-free. Adapters stay decision-free.
 
-- [ ] **Step 3: Copy this plan into `docs/superpowers/plans/`**
+- [x] **Step 3: Copy this plan into `docs/superpowers/plans/`**
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```powershell
 git add docs/superpowers/specs/2026-08-20-openvikey-learning-model-v2-design.md docs/decisions/0011-learning-model-v2-seams.md docs/superpowers/plans/2026-08-21-openvikey-learning-model-v2-implementation-plan.md
@@ -263,7 +263,7 @@ git commit -m "docs: accept learning model v2 spec and open ADR 0011 seams"
 - Consumes: `LabSession`, `boundary_assist_candidate`, current `InterventionConfig::{win32,electron}`
 - Produces: frozen tests for Lát 1 to keep green
 
-- [ ] **Step 1: Write failing tests only where coverage is missing**
+- [x] **Step 1: Write failing tests only where coverage is missing**
 
 Add to `learning_v2_characterization.rs`:
 
@@ -349,7 +349,7 @@ Confirm these existing tests remain and are named in the commit message:
 - `diacritics_does_not_boundary_assist_on_space`
 - `two_abbrev_assist_undos_stop_further_space_auto` (current loop-after-one-undo behavior)
 
-- [ ] **Step 2: Run characterization**
+- [x] **Step 2: Run characterization**
 
 ```powershell
 cargo test -p openvikey-core --test telex_fix --test learning_v2_characterization
@@ -358,7 +358,7 @@ cargo test -p openvikey-lab --test session_capture abbrev_boundary_assist fuzzy_
 
 Expected: new tests pass after they are written against current APIs (these are freeze tests, not new behavior). If a test fails, fix the test to match current code — do not change production behavior in Lát 0.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```powershell
 git add crates/openvikey-core/tests/learning_v2_characterization.rs crates/openvikey-lab/tests/session_capture.rs
@@ -378,7 +378,7 @@ git commit -m "test: freeze current Auto policy matrix for learning v2"
 - Consumes: `AdaptiveModel::apply_feedback`, `LearningSession`, `run_learning_correction_slice`
 - Produces: named freeze tests for Accept/Reject/Undo/AutoSettled/SuggestionSettled, composition rewind, restart
 
-- [ ] **Step 1: Add missing freeze tests**
+- [x] **Step 1: Add missing freeze tests**
 
 ```rust
 #[test]
@@ -418,7 +418,7 @@ Must be covered before Lát 1 (existing or new):
 - model/capture restart round-trip
 - English / `allow_transform=false` / `allow_learning=false` zero mutation
 
-- [ ] **Step 2: Run**
+- [x] **Step 2: Run**
 
 ```powershell
 cargo test -p openvikey-core --test learning_state_machine --test learning_v2_characterization
@@ -427,7 +427,7 @@ cargo test -p openvikey-lab --test session_capture
 
 Expected: PASS. Lát 0 does not change production code except if a test helper is added.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```powershell
 git commit -am "test: freeze learned Auto, feedback, rewind, and no-learning paths"
@@ -445,7 +445,7 @@ git commit -am "test: freeze learned Auto, feedback, rewind, and no-learning pat
 - Consumes: `AdaptiveModel::forget_rule`, `to_json_payload`, `state`
 - Produces: tests that Lát 3/4 must flip
 
-- [ ] **Step 1: Write tests that document current (undesired) behavior**
+- [x] **Step 1: Write tests that document current (undesired) behavior**
 
 ```rust
 #[test]
@@ -474,13 +474,13 @@ fn personal_store_rejects_new_pair_at_512() {
 
 Mark each with `#[cfg_attr]` comments: `superseded by Lát 3/4 tests named X`.
 
-- [ ] **Step 2: Run and confirm they pass against current code**
+- [x] **Step 2: Run and confirm they pass against current code**
 
 ```powershell
 cargo test -p openvikey-core --test learning_v2_characterization
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```powershell
 git commit -am "test: freeze v1 forget, personal cap, and context max-merge"
@@ -498,7 +498,7 @@ git commit -am "test: freeze v1 forget, personal cap, and context max-merge"
 - Consumes: current session Space/Backspace path
 - Produces: two tests Lát 2 will invert
 
-- [ ] **Step 1: Write the current-behavior tests**
+- [x] **Step 1: Write the current-behavior tests**
 
 ```rust
 #[test]
@@ -521,14 +521,14 @@ fn v1_space_backspace_space_repeats_abbrev_replace() {
 
 Add the session-level loop test in `session_capture.rs` named `v1_space_backspace_space_repeats_fuzzy_replace` for `khogn` if not already implied by `two_abbrev_assist_undos_stop_further_space_auto`.
 
-- [ ] **Step 2: Run**
+- [x] **Step 2: Run**
 
 ```powershell
 cargo test -p openvikey-lab --test session_capture v1_space_backspace_space two_abbrev_assist
 cargo test -p openvikey-core --test learning_v2_characterization v1_single_letter
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```powershell
 git commit -am "test: freeze v1 one-grapheme pipeline and undo replacement loop"
@@ -550,7 +550,7 @@ Lát 0 is done when Tasks 1–4 are green and no production behavior has changed
 - Consumes: `DecisionConfig`, `ScoreConfig`, `InterventionConfig`
 - Produces: `LearningConfigV2::compatibility_v1()`, `plan_intervention` stub compiling
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 use openvikey_core::intervention::{
@@ -592,7 +592,7 @@ fn allow_transform_false_is_none_unsafe_even_with_candidates() {
 }
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 ```powershell
 cargo test -p openvikey-core --test intervention_planner empty_candidates allow_transform
@@ -600,7 +600,7 @@ cargo test -p openvikey-core --test intervention_planner empty_candidates allow_
 
 Expected: compile fail (`plan_intervention` not found) or FAIL.
 
-- [ ] **Step 3: Minimal implementation**
+- [x] **Step 3: Minimal implementation**
 
 Export modules from `lib.rs`. Implement `plan_intervention` with only guards 1 and 3 from spec §9.2 (unsafe / no candidate). Remaining cases may return `None/LowScore` for now.
 
@@ -618,14 +618,14 @@ Export modules from `lib.rs`. Implement `plan_intervention` with only guards 1 a
 - `weak_positive_cap = 7.2`
 - storage limits as spec §8.6 / §11.5
 
-- [ ] **Step 4: Run to verify pass**
+- [x] **Step 4: Run to verify pass**
 
 ```powershell
 cargo test -p openvikey-core --test intervention_planner
 cargo test -p openvikey-core --lib
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add crates/openvikey-core/src/learning_config.rs crates/openvikey-core/src/intervention.rs crates/openvikey-core/src/lib.rs crates/openvikey-core/tests/intervention_planner.rs
@@ -646,7 +646,7 @@ git commit -m "feat: add LearningConfigV2 and intervention planner skeleton"
 - Consumes: `ModelView::{state,confidence,positive_mass,auto_allowed}`, `decide`
 - Produces: `InterventionReason::LearnedCorrection` + `Replace` when current `decide` would return Auto and `auto_edit_valid`
 
-- [ ] **Step 1: Write failing test**
+- [x] **Step 1: Write failing test**
 
 ```rust
 #[test]
@@ -668,9 +668,9 @@ fn learned_auto_without_valid_edit_degrades_to_suggestion() {
 }
 ```
 
-- [ ] **Step 2: Run — expect FAIL** (skeleton returns None/LowScore)
+- [x] **Step 2: Run — expect FAIL** (skeleton returns None/LowScore)
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Inside planner, after safety/candidate guards, compute `decide(...)` on top candidate exactly as `evaluate_correction_slice` does today. If `DecisionState::Auto` and `auto_edit_valid` → Replace/LearnedCorrection. If Auto but invalid edit → DisplaySuggestion. If Suggest → DisplaySuggestion/LowMargin or Learned path still Suggest. Source cap still uses `CandidateSource::max_action`.
 
@@ -685,13 +685,13 @@ Change `evaluate_correction_slice` to:
 
 Do **not** remove `boundary_assist_candidate` yet (Task 7). If planner does not Replace, existing session code may still assist — keep that until Task 7/8.
 
-- [ ] **Step 4: Run**
+- [x] **Step 4: Run**
 
 ```powershell
 cargo test -p openvikey-core --test intervention_planner --test learning_state_machine
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git commit -am "feat: route learned Auto through the unified intervention planner"
@@ -711,7 +711,7 @@ git commit -am "feat: route learned Auto through the unified intervention planne
 - Consumes: current `unique_telex_fix_candidate`, `unique_top_assist_candidate`, `InterventionConfig`
 - Produces: `SafeStructuralFix` / `UniqueHeuristicAssist` reasons; public `boundary_assist_candidate` still exists for old tests but must call the planner (or share the same helper)
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```rust
 #[test]
@@ -740,22 +740,22 @@ fn diacritics_unique_is_display_suggestion_source_suggest_only() {
 
 Keep TelexFix/abbrev/fuzzy unit tests in `telex_fix.rs` green by delegating `boundary_assist_candidate` to planner output (`action == Replace`).
 
-- [ ] **Step 2: Run — expect FAIL** on reason codes
+- [x] **Step 2: Run — expect FAIL** on reason codes
 
-- [ ] **Step 3: Implement guard steps 8 and 10 of spec §9.2 inside planner**, using the existing helper logic. Compatibility flags:
+- [x] **Step 3: Implement guard steps 8 and 10 of spec §9.2 inside planner**, using the existing helper logic. Compatibility flags:
 
 - `abbrev_cold_start_auto` gates Abbreviation heuristic Replace
 - `fuzzy_heuristic_assist` gates Fuzzy heuristic Replace
 - TelexFix structural Replace stays on `InterventionConfig.telex_fix_policy_auto` + delimiter policy (unchanged)
 - **v1 order through Lát 8:** Learned Auto, then Structural, then heuristic. Spec §9.2 Structural-before-Learned waits until Lát 9 policy flip.
 
-- [ ] **Step 4: Run**
+- [x] **Step 4: Run**
 
 ```powershell
 cargo test -p openvikey-core --test intervention_planner --test telex_fix --test learning_state_machine
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git commit -am "feat: move boundary assist into the intervention planner"
@@ -774,7 +774,7 @@ git commit -am "feat: move boundary assist into the intervention planner"
 - Consumes: `InterventionPlan` from `run_learning_correction_slice` (extend `CorrectionSlice` with `plan: Option<InterventionPlan>`)
 - Produces: one decision path; `slice.decision == Auto` iff plan.action == Replace
 
-- [ ] **Step 1: Write failing test**
+- [x] **Step 1: Write failing test**
 
 ```rust
 #[test]
@@ -796,9 +796,9 @@ pub struct CorrectionSlice {
 }
 ```
 
-- [ ] **Step 2: Run — expect FAIL** while session still calls `boundary_assist_candidate` after the slice
+- [x] **Step 2: Run — expect FAIL** while session still calls `boundary_assist_candidate` after the slice
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Delete the post-slice `boundary_assist_candidate` block in `LabSession::correction_slice`. Session applies Replace only when `slice.plan.action == Replace` (or `slice.action` already set by `run_learning_correction_slice`). Notices:
 
@@ -807,7 +807,7 @@ Delete the post-slice `boundary_assist_candidate` block in `LabSession::correcti
 
 All Task 1 characterization Auto tests must still pass.
 
-- [ ] **Step 4: Run**
+- [x] **Step 4: Run**
 
 ```powershell
 cargo test -p openvikey-lab --test session_capture
@@ -815,7 +815,7 @@ cargo test -p openvikey-core --test intervention_planner --test telex_fix --test
 cargo test --workspace --all-features
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git commit -am "refactor: make session honor planner output as the only Auto path"
@@ -838,7 +838,7 @@ Lát 1 done when: every Gợi ý/Tự sửa has a stable reason; workspace green
 - Consumes: `snapshot.normalized`
 - Produces: `InterventionReason::TokenTooShort`; engine one-letter composition unchanged
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```rust
 #[test]
@@ -871,9 +871,9 @@ fn engine_still_composes_dd_to_d_stroke() {
 
 Invert/remove `v1_single_letter_telex_dd_may_still_enter_correction_pipeline`.
 
-- [ ] **Step 2: Run — expect FAIL** (`minimum_correction_graphemes` still 0)
+- [x] **Step 2: Run — expect FAIL** (`minimum_correction_graphemes` still 0)
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```rust
 pub fn alphabetic_grapheme_count(normalized: &str) -> usize {
@@ -887,14 +887,14 @@ pub fn alphabetic_grapheme_count(normalized: &str) -> usize {
 
 Count **rendered NFC graphemes with a letter**, never raw key length. Settings must not grow a slider for this.
 
-- [ ] **Step 4: Run**
+- [x] **Step 4: Run**
 
 ```powershell
 cargo test -p openvikey-core --test intervention_planner --test golden_engine --test learning_v2_characterization
 cargo test -p openvikey-lab --test session_capture
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git commit -am "fix: block correction suggestions below two alphabetic graphemes"
@@ -992,7 +992,7 @@ Lát 2 done when: 1-grapheme tokens never suggest/replace; undo loop tests pass;
 
 ---
 
-### Task 11: Lát 3 — physical forget scrubs payload and reconstructable journal
+### Task 11: Lát 3 — physical forget scrubs semantic identity and blocks resurrection
 
 **Files:**
 - Modify: `crates/openvikey-core/src/model.rs` (`forget_rule`, `forget_inspection_row`, `forget_personal_pair`)
@@ -1002,7 +1002,7 @@ Lát 2 done when: 1-grapheme tokens never suggest/replace; undo loop tests pass;
 
 **Interfaces:**
 - Consumes: `CorrectionIdentity` (may still use `RuleContextKey` in v1 payload)
-- Produces: forget APIs that remove rows; capture compact so forgotten strings cannot be rebuilt
+- Produces: forget APIs that remove rows; capture compaction removes explicit identity strings and a durable tombstone prevents final replay resurrection
 
 - [x] **Step 1: Write failing test**
 
@@ -1026,7 +1026,7 @@ fn forget_all_learning_data_resets_to_cold_start_hash() {
 }
 ```
 
-Add a session/lab test: after forget, trimmed capture replay cannot resurrect the rule. If capture still has raw `Input` events that would re-learn, compaction must drop or anonymize reconstructable correction records for that identity (spec §11.3 / §12.2). Minimum for Lát 3 on v1 capture: drop `AcceptTop`/`RejectTop`/`UndoLast` tied to forgotten seqs and rewrite log + model as one pair. Do not add full v2 capture records yet (Lát 5).
+Add a session/lab test: after forget, trimmed capture replay cannot resurrect the rule. Compaction removes semantic correction records for that identity; raw replay commands may remain because forgetting one correction is distinct from deleting typing history, so a durable forget marker must make the final replay state authoritative (spec §11.3 / §12.2). Minimum for Lát 3 on v1 capture is fail-closed whole-journal clearing because v1 lacks identity metadata. Do not add full v2 capture records yet (Lát 5).
 
 - [x] **Step 2: Run — expect FAIL** (v1 forget only clears evidence)
 
@@ -1419,7 +1419,7 @@ Stop emitting `SuggestionSettled` from session. Keep enum for old JSON.
 
 - [x] **Step 2: Run — expect FAIL**
 
-- [x] **Step 3: Implement cap in settlement application; impression fields; migration maps old `SuggestionSettled` mass to 0 and `shown_count`. The cap is durable even when idempotency ID sets are trimmed below 24 entries.
+- [x] **Step 3: Implement cap in settlement application; impression fields; migration maps old `SuggestionSettled` mass to 0 and `shown_count`. The cap is a non-decaying lifetime settlement budget and remains durable across evidence decay, reload, and idempotency-ID trimming below 24 entries.
 
 - [x] **Step 4: Run** learning_state_machine (update any test that expected -0.2 from live `SuggestionSettled`)
 
@@ -1464,6 +1464,8 @@ pub enum CaptureRecord {
 
 Minimize text: prefer ids/hashes already in the model. Do not log extra surrounding text.
 
+Privacy contract: `CorrectionConfirmed` necessarily stores plaintext original/candidate/source-rule and optional left token inside the capture JSON payload. Lab encrypts that payload at rest; Windows preview persists it as plaintext `.ovkdev.json` under ADR 0008. Selective Forget removes this explicit mapping and prevents replay resurrection, but does not claim raw replay-command erasure.
+
 - [x] **Step 1: Tests**
 
 ```rust
@@ -1486,6 +1488,8 @@ Reducer must ignore unknown future kinds? No: unknown is error. v1 kinds remain.
 - [x] **Step 3: Run** lab capture + persistence tests
 
 - [x] **Step 4: Commit**
+
+Post-task closure: `MAX_CAPTURE_RECORDS` is a record-count cap, so candidate arrays shorten the retained input horizon. Retention trimming must discard the complete oldest `seq` group when the cutoff intersects a multi-record transaction; tests must reject orphan `CorrectionConfirmed`/intervention metadata.
 
 ```powershell
 git commit -am "feat: version capture logs for intervention replay and forget"

@@ -33,7 +33,7 @@ ADR 0002 freezes `types.rs` meanings and the Telex/VNI engine. ADR 0003 locked v
 
 - Lát 1 can land a planner without changing payload version.
 - Lát 4 owns the schema migration.
-- Tests, not comments, prove forget scrubs reconstructable strings.
+- Tests prove explicit correction identity strings are absent after Forget and replay cannot resurrect the row. Forget one correction remains distinct from deleting raw typing history.
 - A follow-up ADR is required before adding `FeedbackKind` variants or `InputContext` capability bits.
 
 ## Out of scope
