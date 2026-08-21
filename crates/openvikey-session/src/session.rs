@@ -316,7 +316,7 @@ impl LabSession {
         let peak_candidates = self
             .last_slice
             .as_ref()
-            .map(|slice| slice.candidates.clone());
+            .map(|slice| slice.display_candidates().to_vec());
         if matches!(event.kind, InputKind::Backspace)
             && !before.is_empty()
             && allow_learning
@@ -389,7 +389,7 @@ impl LabSession {
             event_seq: event.seq,
             snapshot,
             engine_actions,
-            candidates: slice.candidates.clone(),
+            candidates: slice.display_candidates().to_vec(),
             decision: slice.decision,
             action: slice.action.clone(),
         };
@@ -435,7 +435,7 @@ impl LabSession {
         allow_learning: bool,
     ) -> Option<AcceptVisual> {
         let slice = self.last_slice.clone()?;
-        let top = slice.candidates.first().cloned()?;
+        let top = slice.display_candidates().first().cloned()?;
         let was_composing = !self.engine.snapshot().is_empty();
         let seq = self.take_seq();
         if self.capturing && allow_learning {
@@ -478,7 +478,7 @@ impl LabSession {
                 Some(raw_keys),
                 self.last_left_token.clone(),
                 self.last_method,
-                slice.candidates,
+                slice.display_candidates().to_vec(),
             ));
         } else {
             self.document.replace_last_token(top.text);
@@ -499,7 +499,7 @@ impl LabSession {
         let Some(slice) = self.last_slice.clone() else {
             return;
         };
-        let Some(top) = slice.candidates.first().cloned() else {
+        let Some(top) = slice.display_candidates().first().cloned() else {
             return;
         };
         let seq = self.take_seq();
@@ -698,7 +698,7 @@ impl LabSession {
     pub fn top_suggestion(&self) -> Option<String> {
         self.last_slice
             .as_ref()
-            .and_then(|slice| slice.candidates.first())
+            .and_then(|slice| slice.display_candidates().first())
             .map(|candidate| candidate.text.clone())
     }
 
@@ -719,7 +719,7 @@ impl LabSession {
             .as_ref()
             .map(|slice| {
                 slice
-                    .candidates
+                    .display_candidates()
                     .iter()
                     .map(|candidate| candidate.text.clone())
                     .collect()
@@ -904,7 +904,7 @@ impl LabSession {
             Some(raw_keys.to_string()),
             left_at_commit,
             method,
-            slice.candidates.clone(),
+            slice.display_candidates().to_vec(),
         ));
         self.finish_implicit(
             &token_text,

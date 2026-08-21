@@ -747,6 +747,7 @@ Keep TelexFix/abbrev/fuzzy unit tests in `telex_fix.rs` green by delegating `bou
 - `abbrev_cold_start_auto` gates Abbreviation heuristic Replace
 - `fuzzy_heuristic_assist` gates Fuzzy heuristic Replace
 - TelexFix structural Replace stays on `InterventionConfig.telex_fix_policy_auto` + delimiter policy (unchanged)
+- **v1 order through Lát 8:** Learned Auto, then Structural, then heuristic. Spec §9.2 Structural-before-Learned waits until Lát 9 policy flip.
 
 - [ ] **Step 4: Run**
 

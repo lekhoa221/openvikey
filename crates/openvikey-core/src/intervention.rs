@@ -216,6 +216,36 @@ pub(crate) fn policy_assist_candidate<'a>(
         .map(|candidate| (candidate, InterventionReason::UniqueHeuristicAssist))
 }
 
+fn learned_replace(candidate: &Candidate, breakdown: ScoreBreakdown) -> InterventionPlan {
+    InterventionPlan {
+        action: InterventionAction::Replace,
+        reason: InterventionReason::LearnedCorrection,
+        candidate_id: Some(candidate.id),
+        score_breakdown: breakdown,
+        undo_contract: UndoContract {
+            required: true,
+            uses_original_rendered: true,
+        },
+        model_transition: Some(DecisionState::Auto),
+    }
+}
+
+fn suggest_reason(
+    recent_revert_blocked: bool,
+    source_cap: ActionCap,
+    state: DecisionState,
+) -> InterventionReason {
+    if recent_revert_blocked {
+        InterventionReason::RecentRevertCooldown
+    } else if source_cap == ActionCap::Suggest {
+        InterventionReason::SourceSuggestOnly
+    } else if state == DecisionState::Auto {
+        InterventionReason::LearnedCorrection
+    } else {
+        InterventionReason::LowScore
+    }
+}
+
 fn replace_without_persisting(
     reason: InterventionReason,
     candidate: &Candidate,
@@ -293,14 +323,13 @@ pub fn plan_intervention(
         context.allow_transform,
         config,
     );
-    if auto_edit_valid && let Some((candidate, InterventionReason::SafeStructuralFix)) = assist {
-        return replace_without_persisting(InterventionReason::SafeStructuralFix, candidate);
-    }
     let rule = rule_key(snapshot, top, input_method, left_token_nfc);
-    let cap = if model.auto_allowed(&rule, evaluate_at_ms) {
-        top.source.max_action()
-    } else {
+    let source_cap = top.source.max_action();
+    let recent_revert_blocked = !model.auto_allowed(&rule, evaluate_at_ms);
+    let cap = if recent_revert_blocked {
         ActionCap::Suggest
+    } else {
+        source_cap
     };
     let state = decide(
         model.state(&rule, evaluate_at_ms),
@@ -311,18 +340,12 @@ pub fn plan_intervention(
         &config.decision,
     );
     let breakdown = breakdown_for(top);
+    // v1 order through Lát 8: learned Auto, then structural, then heuristic.
     if state == DecisionState::Auto && auto_edit_valid {
-        return InterventionPlan {
-            action: InterventionAction::Replace,
-            reason: InterventionReason::LearnedCorrection,
-            candidate_id: Some(top.id),
-            score_breakdown: breakdown,
-            undo_contract: UndoContract {
-                required: true,
-                uses_original_rendered: true,
-            },
-            model_transition: Some(DecisionState::Auto),
-        };
+        return learned_replace(top, breakdown);
+    }
+    if auto_edit_valid && let Some((candidate, InterventionReason::SafeStructuralFix)) = assist {
+        return replace_without_persisting(InterventionReason::SafeStructuralFix, candidate);
     }
     if auto_edit_valid && let Some((candidate, InterventionReason::UniqueHeuristicAssist)) = assist
     {
@@ -334,17 +357,11 @@ pub fn plan_intervention(
             );
         }
     }
-    let suggest_reason = if cap == ActionCap::Suggest {
-        InterventionReason::SourceSuggestOnly
-    } else if state == DecisionState::Auto {
-        InterventionReason::LearnedCorrection
-    } else {
-        InterventionReason::LowScore
-    };
+    let reason = suggest_reason(recent_revert_blocked, source_cap, state);
     match state {
         DecisionState::Auto | DecisionState::Suggest => InterventionPlan {
             action: InterventionAction::DisplaySuggestion,
-            reason: suggest_reason,
+            reason,
             candidate_id: Some(top.id),
             score_breakdown: breakdown,
             undo_contract: UndoContract {
@@ -355,7 +372,7 @@ pub fn plan_intervention(
         },
         DecisionState::Ignore => InterventionPlan {
             action: InterventionAction::None,
-            reason: suggest_reason,
+            reason,
             candidate_id: Some(top.id),
             score_breakdown: breakdown,
             undo_contract: UndoContract {

@@ -278,3 +278,99 @@ fn two_graphemes_are_eligible() {
     let plan = plan_on(&snapshot, &[abbrev_candidate("không")], &lex(&["không"]));
     assert_ne!(plan.reason, InterventionReason::TokenTooShort);
 }
+
+#[test]
+fn recent_revert_uses_cooldown_reason_not_source_cap() {
+    let mut model = model_with_accepts(18);
+    let key = khogn_rule();
+    for edit_id in 1..=10 {
+        model.record_auto_emission(&key, edit_id, 0, true);
+    }
+    model.apply_feedback(
+        &key,
+        &FeedbackEvent {
+            seq: 19,
+            at_ms: 0,
+            kind: FeedbackKind::Undo { edit_id: 9 },
+        },
+        true,
+    );
+    model.apply_feedback(
+        &key,
+        &FeedbackEvent {
+            seq: 20,
+            at_ms: 0,
+            kind: FeedbackKind::Undo { edit_id: 10 },
+        },
+        true,
+    );
+    let plan = plan_intervention(
+        &khogn_snapshot(),
+        &[fuzzy_khogn()],
+        &lex(&["không"]),
+        &model,
+        &LearningConfigV2::compatibility_v1(),
+        InterventionConfig::win32(),
+        InputContext::default(),
+        Some(' '),
+        None,
+        0,
+        true,
+        InputMethod::Telex,
+        None,
+    );
+    assert_eq!(plan.action, InterventionAction::DisplaySuggestion);
+    assert_eq!(plan.reason, InterventionReason::RecentRevertCooldown);
+}
+
+#[test]
+fn learned_auto_top_wins_over_unique_telex_fix_below() {
+    let snapshot = CompositionSnapshot::new(1, "chfao".into(), "chfao".into());
+    let fuzzy = Candidate {
+        id: 11,
+        text: "cháu".into(),
+        source: CandidateSource::Fuzzy,
+        evidence: "fuzzy:chfao".into(),
+        base_score: 0.95,
+        final_score: 0.95,
+    };
+    let telex = telex_fix_candidate("chào");
+    let mut model = AdaptiveModel::default();
+    let key = RuleContextKey {
+        input_method: InputMethod::Telex,
+        source: CandidateSource::Fuzzy,
+        original_nfc: "chfao".into(),
+        candidate_nfc: "cháu".into(),
+        left_token_nfc: None,
+        source_rule_id: "fuzzy:chfao".into(),
+    };
+    for seq in 1..=18 {
+        model.apply_feedback(
+            &key,
+            &FeedbackEvent {
+                seq,
+                at_ms: 0,
+                kind: FeedbackKind::Accept { candidate_id: 11 },
+            },
+            true,
+        );
+    }
+    let plan = plan_intervention(
+        &snapshot,
+        &[fuzzy, telex],
+        &lex(&["cháu", "chào"]),
+        &model,
+        &LearningConfigV2::compatibility_v1(),
+        InterventionConfig::win32(),
+        InputContext::default(),
+        Some(' '),
+        None,
+        0,
+        true,
+        InputMethod::Telex,
+        None,
+    );
+    assert_eq!(plan.action, InterventionAction::Replace);
+    assert_eq!(plan.reason, InterventionReason::LearnedCorrection);
+    assert_eq!(plan.candidate_id, Some(11));
+}

@@ -82,6 +82,17 @@ pub struct CorrectionSlice {
     pub plan: Option<InterventionPlan>,
 }
 
+impl CorrectionSlice {
+    /// Candidates the product may show or accept. Empty unless the planner chose Suggest.
+    #[must_use]
+    pub fn display_candidates(&self) -> &[Candidate] {
+        match self.plan.as_ref().map(|plan| plan.action) {
+            Some(InterventionAction::DisplaySuggestion) => self.candidates.as_slice(),
+            _ => &[],
+        }
+    }
+}
+
 /// Caller-owned identity and semantic range for an auto replacement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AutoEditContext {
@@ -246,17 +257,13 @@ pub fn run_learning_correction_slice(
     let Some(plan) = slice.plan.clone() else {
         return slice;
     };
-    let Some(chosen) = plan
-        .candidate_id
-        .and_then(|id| slice.candidates.iter().find(|candidate| candidate.id == id))
-        .or_else(|| slice.candidates.first())
-        .cloned()
-    else {
-        return slice;
-    };
-    let rule = candidate_rule_key(snapshot, left_context, input_method, &chosen);
-
     if plan.action == InterventionAction::Replace {
+        let Some(chosen) = resolve_plan_candidate(&plan, &slice.candidates).cloned() else {
+            slice.action = None;
+            slice.decision = None;
+            return slice;
+        };
+        let rule = candidate_rule_key(snapshot, left_context, input_method, &chosen);
         let valid_auto_edit = auto_edit.filter(|edit| {
             edit.range.revision == snapshot.revision
                 && edit.range.length_grapheme == snapshot.rendered.graphemes(true).count()
@@ -288,9 +295,21 @@ pub fn run_learning_correction_slice(
             }
         }
     } else if let Some(state) = plan.model_transition {
+        let Some(chosen) = resolve_plan_candidate(&plan, &slice.candidates) else {
+            return slice;
+        };
+        let rule = candidate_rule_key(snapshot, left_context, input_method, chosen);
         session.record_decision(&rule, state, context.allow_learning);
     }
     slice
+}
+
+fn resolve_plan_candidate<'a>(
+    plan: &InterventionPlan,
+    candidates: &'a [Candidate],
+) -> Option<&'a Candidate> {
+    let id = plan.candidate_id?;
+    candidates.iter().find(|candidate| candidate.id == id)
 }
 
 /// Stable learning key for a ranked candidate.
@@ -386,4 +405,53 @@ pub fn boundary_assist_candidate<'a>(
         &LearningConfigV2::compatibility_v1(),
     )
     .map(|(candidate, _)| candidate)
+}
+
+#[cfg(test)]
+mod resolve_plan_candidate_tests {
+    use super::{InterventionAction, InterventionPlan, resolve_plan_candidate};
+    use crate::decision::DecisionState;
+    use crate::intervention::{InterventionReason, ScoreBreakdown, UndoContract};
+    use crate::types::{Candidate, CandidateSource};
+
+    fn plan(id: Option<u64>) -> InterventionPlan {
+        InterventionPlan {
+            action: InterventionAction::Replace,
+            reason: InterventionReason::LearnedCorrection,
+            candidate_id: id,
+            score_breakdown: ScoreBreakdown::default(),
+            undo_contract: UndoContract {
+                required: true,
+                uses_original_rendered: true,
+            },
+            model_transition: Some(DecisionState::Auto),
+        }
+    }
+
+    fn candidate(id: u64) -> Candidate {
+        Candidate {
+            id,
+            text: "không".into(),
+            source: CandidateSource::Fuzzy,
+            evidence: "fuzzy:khogn".into(),
+            base_score: 0.9,
+            final_score: 0.9,
+        }
+    }
+
+    #[test]
+    fn missing_id_does_not_fall_back_to_top() {
+        let ranked = vec![candidate(1)];
+        assert!(resolve_plan_candidate(&plan(Some(99)), &ranked).is_none());
+        assert!(resolve_plan_candidate(&plan(None), &ranked).is_none());
+    }
+
+    #[test]
+    fn matching_id_returns_that_candidate() {
+        let ranked = vec![candidate(1), candidate(7)];
+        assert_eq!(
+            resolve_plan_candidate(&plan(Some(7)), &ranked).map(|item| item.id),
+            Some(7)
+        );
+    }
 }

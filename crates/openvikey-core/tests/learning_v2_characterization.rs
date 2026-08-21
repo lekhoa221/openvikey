@@ -248,4 +248,5 @@ fn token_too_short_dd_is_engine_only() {
         slice.plan.as_ref().map(|plan| plan.reason),
         Some(openvikey_core::intervention::InterventionReason::TokenTooShort)
     );
+    assert!(slice.display_candidates().is_empty());
 }

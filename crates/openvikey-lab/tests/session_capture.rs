@@ -1167,6 +1167,29 @@ fn v1_space_backspace_space_repeats_abbrev_replace() {
     }
 }
 
+fn a_acute_lexicon() -> Lexicon {
+    Lexicon::from_entries(
+        [LexiconEntry {
+            token_nfc: "á".to_string(),
+            frequency: 10,
+        }],
+        [],
+        Some("session-a-acute"),
+    )
+}
+
+#[test]
+fn one_letter_a_has_no_visible_candidates_or_accept() {
+    let mut session = LabSession::new(EngineConfig::default(), a_acute_lexicon());
+    type_keys(&mut session, "a", 0);
+    assert!(
+        session.candidate_texts().is_empty(),
+        "TokenTooShort must hide overlay candidates, got {:?}",
+        session.candidate_texts()
+    );
+    assert!(session.accept_top(1).is_none());
+}
+
 #[test]
 fn session_does_not_replace_when_planner_returned_suggest() {
     let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
