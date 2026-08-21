@@ -66,7 +66,7 @@ pub struct InterventionPlan {
 }
 
 /// Exact original→candidate identity. Context (left token) is not part of this key.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct CorrectionIdentity {
     pub input_method: InputMethod,
     pub source: CandidateSource,

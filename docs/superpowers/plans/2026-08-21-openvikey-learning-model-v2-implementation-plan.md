@@ -1104,7 +1104,7 @@ git commit -am "feat: bound adaptive and personal stores with deterministic evic
 - Consumes: `CorrectionIdentity`, `LearningConfigV2.context_shrinkage_k`
 - Produces: `CorrectionMemory::{blended_confidence, blended_mass, query_state}` that does **not** take `max(Auto)` across left tokens
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```rust
 #[test]
@@ -1142,13 +1142,13 @@ confidence = context_weight * context_confidence + (1 - context_weight) * global
 
 `context_support` = decayed positive+negative mass in that left-token bucket.
 
-- [ ] **Step 2: Run — expect FAIL**
+- [x] **Step 2: Run — expect FAIL**
 
-- [ ] **Step 3: Implement `CorrectionMemory` in-memory only** (payload integration is Task 15). Keep applying evidence twice: once global (`left=None` bucket) and once for the actual left token.
+- [x] **Step 3: Implement `CorrectionMemory` in-memory only** (payload integration is Task 15). Keep applying evidence twice: once global (`left=None` bucket) and once for the actual left token.
 
-- [ ] **Step 4: Run** `cargo test -p openvikey-core --test correction_memory_v2`
+- [x] **Step 4: Run** `cargo test -p openvikey-core --test correction_memory_v2`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git commit -am "feat: add correction memory with support-aware context blending"
@@ -1473,7 +1473,11 @@ fn v2_replay_same_snapshot_and_journal_same_model_hash() { /* */ }
 fn v1_capture_still_loads_or_errors_clearly() { /* pick one and test it */ }
 #[test]
 fn forget_record_prevents_row_resurrection_after_restart() { /* */ }
+#[test]
+fn forgetting_one_identity_selectively_compacts_only_its_v2_records() { /* preserve unrelated journal history */ }
 ```
+
+Capture v1 intentionally clears the whole journal on forget because its records lack correction identity metadata. Capture v2 must replace that fail-closed fallback with selective compaction by identity.
 
 - [ ] **Step 2: FAIL → implement versioned serde (`#[serde(tag="kind")]` already) + reducer**
 
