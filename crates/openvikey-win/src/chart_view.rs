@@ -17,15 +17,44 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::Controls::DRAWITEMSTRUCT;
 use windows::core::w;
 
-/// Overview counters by effective band (spec §15.4B).
-///
-/// Counts reflect planner/guard-effective states, never raw stored states.
+use openvikey_core::model::ModelInspectionRow;
+use openvikey_core::types::CandidateSource;
+
+/// Distribution by generator source (spec §15.4B).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SourceDistribution {
+    pub telex_fix: usize,
+    pub fuzzy: usize,
+    pub abbreviation: usize,
+    pub diacritics: usize,
+    pub personal: usize,
+}
+
+/// Overview counters by effective band and source distribution (spec §15.4B).
+///
+/// Counts reflect guarded persisted states; an active rule may use its latest
+/// authentic planner assessment in the detailed chart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevertedRuleSummary {
+    pub original_nfc: String,
+    pub candidate_nfc: String,
+    pub undo_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LearningOverview {
+    pub unavailable: usize,
     pub observe: usize,
     pub suggest: usize,
     pub auto: usize,
     pub cooldown: usize,
+    pub sources: SourceDistribution,
+    pub confidence_buckets: [usize; 5],
+    pub retained_interventions: usize,
+    pub undone_interventions: usize,
+    pub model_rows: usize,
+    pub pruned_rows: u64,
+    pub top_reverted: Vec<RevertedRuleSummary>,
 }
 
 impl LearningOverview {
@@ -38,8 +67,65 @@ impl LearningOverview {
         overview
     }
 
+    #[must_use]
+    pub fn from_bands_and_rows(
+        bands: &[ChartStateBand],
+        rows: &[ModelInspectionRow],
+        confidences: &[f64],
+        pruned_rows: u64,
+    ) -> Self {
+        let mut overview = Self::default();
+        for band in bands {
+            overview.record(*band);
+        }
+        for row in rows {
+            match row.source {
+                CandidateSource::TelexFix => overview.sources.telex_fix += 1,
+                CandidateSource::Fuzzy => overview.sources.fuzzy += 1,
+                CandidateSource::Abbreviation => overview.sources.abbreviation += 1,
+                CandidateSource::Diacritics => overview.sources.diacritics += 1,
+                CandidateSource::Personal => overview.sources.personal += 1,
+            }
+            overview.undone_interventions = overview
+                .undone_interventions
+                .saturating_add(row.recent_undo_count);
+            overview.retained_interventions = overview
+                .retained_interventions
+                .saturating_add(row.recent_auto_count.saturating_sub(row.recent_undo_count));
+            if row.recent_undo_count > 0 {
+                overview.top_reverted.push(RevertedRuleSummary {
+                    original_nfc: row.original_nfc.clone(),
+                    candidate_nfc: row.candidate_nfc.clone(),
+                    undo_count: row.recent_undo_count,
+                });
+            }
+        }
+        for confidence in confidences {
+            let bucket = match confidence.clamp(0.0, 1.0) {
+                value if value < 0.2 => 0,
+                value if value < 0.4 => 1,
+                value if value < 0.6 => 2,
+                value if value < 0.8 => 3,
+                _ => 4,
+            };
+            overview.confidence_buckets[bucket] += 1;
+        }
+        overview.top_reverted.sort_by(|left, right| {
+            right
+                .undo_count
+                .cmp(&left.undo_count)
+                .then_with(|| left.original_nfc.cmp(&right.original_nfc))
+                .then_with(|| left.candidate_nfc.cmp(&right.candidate_nfc))
+        });
+        overview.top_reverted.truncate(3);
+        overview.model_rows = rows.len();
+        overview.pruned_rows = pruned_rows;
+        overview
+    }
+
     pub fn record(&mut self, band: ChartStateBand) {
         match band {
+            ChartStateBand::Unavailable => self.unavailable += 1,
             ChartStateBand::Observe => self.observe += 1,
             ChartStateBand::Suggest => self.suggest += 1,
             ChartStateBand::Auto => self.auto += 1,
@@ -49,15 +135,47 @@ impl LearningOverview {
 
     #[must_use]
     pub fn total(&self) -> usize {
-        self.observe + self.suggest + self.auto + self.cooldown
+        self.unavailable + self.observe + self.suggest + self.auto + self.cooldown
     }
 
     /// One-line Vietnamese summary for the Learning page.
     #[must_use]
     pub fn vietnamese_line(&self) -> String {
+        let top_reverted = if self.top_reverted.is_empty() {
+            "không có".to_owned()
+        } else {
+            self.top_reverted
+                .iter()
+                .map(|rule| {
+                    format!(
+                        "{}→{} ({})",
+                        rule.original_nfc, rule.candidate_nfc, rule.undo_count
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         format!(
-            "Tổng quan: Đang quan sát {} · Gợi ý {} · Có thể tự sửa {} · Tạm dừng tự sửa {}",
-            self.observe, self.suggest, self.auto, self.cooldown
+            "Trạng thái: Quan sát {} · Gợi ý {} · Tự sửa {} · Cooldown {}\r\nNguồn: TelexFix {} · Fuzzy {} · Viết tắt {} · Dấu {} · Cá nhân {}\r\nConfidence 0–20/40/60/80/100%: {}/{}/{}/{}/{} · Cửa sổ gần đây giữ/undo: {}/{}\r\nModel: {} row · đã prune {} · Revert nhiều: {}",
+            self.observe,
+            self.suggest,
+            self.auto,
+            self.cooldown,
+            self.sources.telex_fix,
+            self.sources.fuzzy,
+            self.sources.abbreviation,
+            self.sources.diacritics,
+            self.sources.personal,
+            self.confidence_buckets[0],
+            self.confidence_buckets[1],
+            self.confidence_buckets[2],
+            self.confidence_buckets[3],
+            self.confidence_buckets[4],
+            self.retained_interventions,
+            self.undone_interventions,
+            self.model_rows,
+            self.pruned_rows,
+            top_reverted,
         )
     }
 }
@@ -127,10 +245,11 @@ pub fn text_alternative(snapshot: &ChartSnapshot) -> String {
     for point in &snapshot.points {
         let marker = point.marker.map_or(" ", ChartMarker::symbol);
         lines.push(format!(
-            "t={} {} tin cậy {:.0}% · {}",
+            "t={} {} toàn cục {:.0}% · kết hợp {:.0}% · {}",
             point.at_ms,
             marker,
             point.confidence * 100.0,
+            point.blended_confidence * 100.0,
             point.state_band.vietnamese_label()
         ));
     }
@@ -138,28 +257,38 @@ pub fn text_alternative(snapshot: &ChartSnapshot) -> String {
         lines.push("Chưa có sự kiện nào được ghi nhận.".to_owned());
     }
     lines.push(String::new());
-    lines.push("Phân rã điểm hiện tại:".to_owned());
-    let breakdown = &snapshot.breakdown;
-    lines.push(format!(
-        "Điểm nền generator             {}",
-        score_bar(breakdown.generator_base)
+    lines.push(snapshot.assessment_at_ms.map_or_else(
+        || "Phân rã điểm: chưa có đánh giá planner cho rule đang chọn.".to_owned(),
+        |at_ms| format!("Phân rã điểm tại lần đánh giá t={at_ms} ms:"),
     ));
-    lines.push(format!(
-        "Ảnh hưởng correction cá nhân   {}",
-        signed_bar(breakdown.exact_correction)
-    ));
-    lines.push(format!(
-        "Ảnh hưởng từ đứng trước        {}",
-        signed_bar(breakdown.bigram)
-    ));
-    lines.push(format!(
-        "Phạt do recent revert          {}",
-        signed_bar(-breakdown.recent_revert_penalty)
-    ));
-    lines.push(format!(
-        "Khoảng cách top1-top2          {:.2}",
-        breakdown.top1_top2_margin
-    ));
+    if let Some(breakdown) = &snapshot.breakdown {
+        lines.push(format!(
+            "Điểm nền generator             {}",
+            score_bar(breakdown.generator_base)
+        ));
+        lines.push(format!(
+            "Ảnh hưởng correction cá nhân   {}",
+            signed_bar(breakdown.exact_correction)
+        ));
+        lines.push(format!(
+            "Ảnh hưởng unigram              {}",
+            signed_bar(breakdown.unigram)
+        ));
+        lines.push(format!(
+            "Ảnh hưởng từ đứng trước        {}",
+            signed_bar(breakdown.bigram)
+        ));
+        lines.push(format!(
+            "Phạt do recent revert          {}",
+            signed_bar(-breakdown.recent_revert_penalty)
+        ));
+        lines.push(format!(
+            "Khoảng cách top1-top2          {:.2}",
+            breakdown.top1_top2_margin
+        ));
+    } else {
+        lines.push("Chọn rule vừa được đánh giá để xem score breakdown.".to_owned());
+    }
     lines.push(format!(
         "Kết luận                       {}",
         snapshot.conclusion
@@ -171,6 +300,7 @@ pub fn text_alternative(snapshot: &ChartSnapshot) -> String {
 #[must_use]
 pub const fn band_color(band: ChartStateBand) -> COLORREF {
     match band {
+        ChartStateBand::Unavailable => COLORREF(0x00F7_F7F7),
         // COLORREF layout is 0x00BBGGRR.
         ChartStateBand::Observe => COLORREF(0x00EF_EFEA),
         ChartStateBand::Suggest => COLORREF(0x00CC_F2FF),
@@ -281,6 +411,11 @@ fn draw_confidence_polyline(dc: HDC, rect: &RECT, snapshot: &ChartSnapshot) {
     }
     let width = (rect.right - rect.left).max(1);
     let height = (rect.bottom - rect.top).max(1);
+    let has_context_blend = points
+        .iter()
+        .any(|point| (point.blended_confidence - point.confidence).abs() > 1e-6);
+
+    // 1. Draw global confidence polyline (solid purple)
     unsafe {
         let pen = CreatePen(PS_SOLID, 2, COLORREF(0x0060_3070));
         let old_pen = SelectObject(dc, pen.into());
@@ -295,6 +430,26 @@ fn draw_confidence_polyline(dc: HDC, rect: &RECT, snapshot: &ChartSnapshot) {
         }
         let _ = SelectObject(dc, old_pen);
         let _ = DeleteObject(pen.into());
+    }
+
+    // 2. Draw context-blended polyline (secondary teal line) if distinct from global (spec §15.4A)
+    if has_context_blend {
+        unsafe {
+            let pen = CreatePen(PS_SOLID, 1, COLORREF(0x00A0_6020));
+            let old_pen = SelectObject(dc, pen.into());
+            for (index, point) in points.iter().enumerate() {
+                let x = rect.left + (width * index as i32) / (points.len() - 1) as i32;
+                let y = rect.bottom
+                    - (f64::from(height) * point.blended_confidence.clamp(0.0, 1.0)) as i32;
+                if index == 0 {
+                    let _ = MoveToEx(dc, x, y, None);
+                } else {
+                    let _ = LineTo(dc, x, y);
+                }
+            }
+            let _ = SelectObject(dc, old_pen);
+            let _ = DeleteObject(pen.into());
+        }
     }
 }
 

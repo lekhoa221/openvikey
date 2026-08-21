@@ -124,6 +124,28 @@ impl EvidenceBucket {
         )
     }
 
+    fn mass_through(&self, evaluate_at_ms: i64, half_life_ms: i64, through_seq: u64) -> (f64, f64) {
+        let summary_factor = self.summary.checkpoint_at_ms.map_or(0.0, |checkpoint| {
+            chart_checkpoint_factor(checkpoint, evaluate_at_ms, half_life_ms)
+        });
+        self.events
+            .iter()
+            .filter(|event| (event.at_ms, event.seq) <= (evaluate_at_ms, through_seq))
+            .fold(
+                (
+                    self.summary.positive_at_checkpoint * summary_factor,
+                    self.summary.negative_at_checkpoint * summary_factor,
+                ),
+                |mass, event| {
+                    let factor = decay_factor(event.at_ms, evaluate_at_ms, half_life_ms);
+                    (
+                        mass.0 + event.positive * factor,
+                        mass.1 + event.negative * factor,
+                    )
+                },
+            )
+    }
+
     fn raw_mass(&self) -> (f64, f64) {
         self.events.iter().fold(
             (
@@ -311,6 +333,8 @@ pub(crate) struct CorrectionInspection {
     pub shown_count: u64,
     pub selected_count: u64,
     pub last_shown_at_ms: Option<i64>,
+    pub recent_auto_count: usize,
+    pub recent_undo_count: usize,
 }
 
 pub(crate) struct ImportedOperationalMetadata<'a> {
@@ -328,6 +352,8 @@ pub struct CorrectionMemory {
     #[serde(default = "default_half_life_ms")]
     half_life_ms: i64,
     rows: Vec<CorrectionRow>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pruned_rows: u64,
 }
 
 impl Default for CorrectionMemory {
@@ -341,6 +367,7 @@ impl CorrectionMemory {
         Self {
             half_life_ms: half_life_ms.max(1),
             rows: Vec::new(),
+            pruned_rows: 0,
         }
     }
 
@@ -488,6 +515,38 @@ impl CorrectionMemory {
         ))
     }
 
+    /// Causal confidence at one retained event, excluding later sequences.
+    #[must_use]
+    pub(crate) fn chart_confidence_through(
+        &self,
+        identity: &CorrectionIdentity,
+        left_token_nfc: Option<&str>,
+        evaluate_at_ms: i64,
+        through_seq: u64,
+        shrinkage_k: f64,
+    ) -> (f64, f64) {
+        let Some(row) = self.row(identity) else {
+            return (0.5, 0.5);
+        };
+        let global_mass = row
+            .global
+            .mass_through(evaluate_at_ms, self.half_life_ms, through_seq);
+        let global_confidence = confidence(global_mass);
+        let Some(context) = left_token_nfc.and_then(|left| row.context(left)) else {
+            return (global_confidence, global_confidence);
+        };
+        let context_mass = context.mass_through(evaluate_at_ms, self.half_life_ms, through_seq);
+        let support = context_mass.0 + context_mass.1;
+        if support <= 0.0 {
+            return (global_confidence, global_confidence);
+        }
+        let weight = context_weight(support, shrinkage_k);
+        (
+            global_confidence,
+            weight * confidence(context_mass) + (1.0 - weight) * global_confidence,
+        )
+    }
+
     /// Stable SHA-256 over canonical in-memory ordering.
     #[must_use]
     pub fn stable_hash(&self) -> String {
@@ -524,6 +583,7 @@ impl CorrectionMemory {
                 let victim = weakest_row_index(&self.rows)
                     .expect("a non-empty capped correction store has a victim");
                 self.rows.remove(victim);
+                self.pruned_rows = self.pruned_rows.saturating_add(1);
             }
         }
         if let Some(left) = left_token_nfc {
@@ -578,7 +638,7 @@ impl CorrectionMemory {
     }
 
     /// Records one auto emission into the bounded undo window.
-    pub fn record_auto_emission(
+    pub(crate) fn record_auto_emission(
         &mut self,
         identity: &CorrectionIdentity,
         left_token_nfc: Option<&str>,
@@ -596,7 +656,7 @@ impl CorrectionMemory {
     }
 
     /// Records the operational veto from an immediate revert without adding evidence mass.
-    pub fn record_immediate_revert(
+    pub(crate) fn record_immediate_revert(
         &mut self,
         identity: &CorrectionIdentity,
         left_token_nfc: Option<&str>,
@@ -659,6 +719,11 @@ impl CorrectionMemory {
             }
         }
         rows
+    }
+
+    #[must_use]
+    pub const fn pruned_row_count(&self) -> u64 {
+        self.pruned_rows
     }
 
     pub(crate) fn max_recorded_edit_id(&self) -> u64 {
@@ -968,6 +1033,7 @@ impl CorrectionMemory {
             let victim = weakest_row_index(&self.rows)
                 .expect("an over-cap correction store has an eviction candidate");
             self.rows.remove(victim);
+            self.pruned_rows = self.pruned_rows.saturating_add(1);
         }
         while self.context_count() > max_context_rows.max(1) {
             self.remove_weakest_context();
@@ -1126,6 +1192,7 @@ impl CorrectionMemory {
             .map(|(row_index, context_index, _, _)| (row_index, context_index))
             .expect("a non-empty context store has an eviction candidate");
         self.rows[victim.0].contexts.remove(victim.1);
+        self.pruned_rows = self.pruned_rows.saturating_add(1);
     }
 
     fn make_room_for_personal(&mut self, max_personal_pairs: usize) -> bool {
@@ -1155,6 +1222,7 @@ impl CorrectionMemory {
             return false;
         };
         self.rows.remove(victim);
+        self.pruned_rows = self.pruned_rows.saturating_add(1);
         true
     }
 }
@@ -1245,7 +1313,18 @@ fn push_inspection(
         shown_count: row.shown_count,
         selected_count: row.selected_count,
         last_shown_at_ms: row.last_shown_at_ms,
+        recent_auto_count: bucket.recent_auto.len(),
+        recent_undo_count: bucket
+            .recent_auto
+            .iter()
+            .filter(|emission| emission.undone)
+            .count(),
     });
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 fn weakest_row_index(rows: &[CorrectionRow]) -> Option<usize> {
@@ -1390,4 +1469,11 @@ fn finite_non_negative(value: f64) -> f64 {
 fn decay_factor(event_at_ms: i64, evaluate_at_ms: i64, half_life_ms: i64) -> f64 {
     let age_ms = evaluate_at_ms.saturating_sub(event_at_ms).max(0);
     2.0_f64.powf(-(age_ms as f64) / half_life_ms.max(1) as f64)
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn chart_checkpoint_factor(checkpoint_at_ms: i64, evaluate_at_ms: i64, half_life_ms: i64) -> f64 {
+    let elapsed_ms = evaluate_at_ms.saturating_sub(checkpoint_at_ms);
+    let exponent = -(elapsed_ms as f64 / half_life_ms.max(1) as f64);
+    2.0_f64.powf(exponent.clamp(-1_023.0, 1_023.0))
 }

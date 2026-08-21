@@ -50,8 +50,7 @@ pub fn raw_from_ll(vk: u16, flags: u32, extra_info: usize) -> RawKey {
     }
 }
 
-#[cfg(windows)]
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0))

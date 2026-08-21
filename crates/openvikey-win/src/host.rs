@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use arc_swap::ArcSwap;
-use openvikey_core::chart::{ChartSnapshot, effective_band};
+use openvikey_core::chart::{ChartSnapshot, guarded_state_band};
 use openvikey_core::correction::InterventionConfig;
 use openvikey_core::engine::EngineConfig;
 use openvikey_core::learning_config::LearningConfigV2;
@@ -495,7 +495,13 @@ pub struct ControlSnapshot {
 #[must_use]
 pub fn rule_chart_runtime(row: &ModelInspectionRow) -> Option<ChartSnapshot> {
     let rt = RUNTIME.get()?;
-    let guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
+    let (memory, assessment) = {
+        let guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
+        (
+            guard.session.model().correction_memory().clone(),
+            guard.session.chart_assessment(row),
+        )
+    };
     let identity = openvikey_core::intervention::CorrectionIdentity {
         input_method: row.input_method,
         source: row.source,
@@ -504,21 +510,26 @@ pub fn rule_chart_runtime(row: &ModelInspectionRow) -> Option<ChartSnapshot> {
         source_rule_id: row.source_rule_id.clone(),
     };
     let config = LearningConfigV2::compatibility_v1();
-    ChartSnapshot::from_memory(
-        guard.session.model().correction_memory(),
+    let at_ms = crate::hook::now_ms();
+    ChartSnapshot::from_memory_with_context(
+        &memory,
         &identity,
         &config,
-        row.last_evidence_at_ms.unwrap_or(0),
+        at_ms,
+        row.left_token_nfc.as_deref(),
+        assessment.as_ref(),
     )
 }
 
 fn learning_overview_from_rows(
-    model: &AdaptiveModel,
+    memory: &openvikey_core::correction_memory::CorrectionMemory,
     rows: &[ModelInspectionRow],
+    evaluate_at_ms: i64,
+    pruned_rows: u64,
 ) -> crate::chart_view::LearningOverview {
     let config = LearningConfigV2::compatibility_v1();
-    let memory = model.correction_memory();
     let mut bands = Vec::with_capacity(rows.len());
+    let mut confidences = Vec::with_capacity(rows.len());
     for row in rows {
         let identity = openvikey_core::intervention::CorrectionIdentity {
             input_method: row.input_method,
@@ -527,14 +538,25 @@ fn learning_overview_from_rows(
             candidate_nfc: row.candidate_nfc.clone(),
             source_rule_id: row.source_rule_id.clone(),
         };
-        bands.push(effective_band(
+        bands.push(guarded_state_band(
             memory,
             &identity,
-            &config,
-            row.last_evidence_at_ms.unwrap_or(0),
+            evaluate_at_ms,
+            row.left_token_nfc.as_deref(),
+        ));
+        confidences.push(memory.blended_confidence(
+            &identity,
+            row.left_token_nfc.as_deref(),
+            evaluate_at_ms,
+            config.context_shrinkage_k,
         ));
     }
-    crate::chart_view::LearningOverview::from_bands(&bands)
+    crate::chart_view::LearningOverview::from_bands_and_rows(
+        &bands,
+        rows,
+        &confidences,
+        pruned_rows,
+    )
 }
 
 fn most_recent_row(rows: &[ModelInspectionRow]) -> Option<ModelInspectionRow> {
@@ -551,9 +573,40 @@ fn most_recent_row(rows: &[ModelInspectionRow]) -> Option<ModelInspectionRow> {
 #[must_use]
 pub fn control_snapshot() -> Option<ControlSnapshot> {
     let rt = RUNTIME.get()?;
-    let guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
-    let learned_rows = guard.session.model().inspection_rows();
-    let learning_overview = learning_overview_from_rows(guard.session.model(), &learned_rows);
+    let (
+        mode,
+        engine_config,
+        show_suggestions,
+        allow_terminal,
+        foreground_exe,
+        last_external_exe,
+        learning_allowed,
+        memory,
+        pruned_rows,
+        learned_rows,
+        chart_assessment,
+    ) = {
+        let guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
+        let learned_rows = guard.session.model().inspection_rows();
+        let chart_assessment =
+            most_recent_row(&learned_rows).and_then(|row| guard.session.chart_assessment(&row));
+        let pruned_rows = guard.session.model().pruned_row_count();
+        (
+            guard.mode,
+            guard.session.engine_config(),
+            guard.show_suggestions,
+            guard.allow_terminal,
+            guard.foreground_exe.clone(),
+            guard.last_external_exe.clone(),
+            guard.allow_learning_for_foreground(),
+            guard.session.model().correction_memory().clone(),
+            pruned_rows,
+            learned_rows,
+            chart_assessment,
+        )
+    };
+    let at_ms = crate::hook::now_ms();
+    let learning_overview = learning_overview_from_rows(&memory, &learned_rows, at_ms, pruned_rows);
     let chart = most_recent_row(&learned_rows).and_then(|row| {
         let identity = openvikey_core::intervention::CorrectionIdentity {
             input_method: row.input_method,
@@ -563,21 +616,23 @@ pub fn control_snapshot() -> Option<ControlSnapshot> {
             source_rule_id: row.source_rule_id.clone(),
         };
         let config = LearningConfigV2::compatibility_v1();
-        ChartSnapshot::from_memory(
-            guard.session.model().correction_memory(),
+        ChartSnapshot::from_memory_with_context(
+            &memory,
             &identity,
             &config,
-            row.last_evidence_at_ms.unwrap_or(0),
+            at_ms,
+            row.left_token_nfc.as_deref(),
+            chart_assessment.as_ref(),
         )
     });
     Some(ControlSnapshot {
-        mode: guard.mode,
-        engine_config: guard.session.engine_config(),
-        show_suggestions: guard.show_suggestions,
-        allow_terminal: guard.allow_terminal,
-        foreground_exe: guard.foreground_exe.clone(),
-        last_external_exe: guard.last_external_exe.clone(),
-        learning_allowed: guard.allow_learning_for_foreground(),
+        mode,
+        engine_config,
+        show_suggestions,
+        allow_terminal,
+        foreground_exe,
+        last_external_exe,
+        learning_allowed,
         learned_rows,
         learning_overview,
         chart,

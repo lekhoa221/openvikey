@@ -1678,7 +1678,7 @@ pub struct ChartSnapshot {
 }
 ```
 
-- [ ] **Step 1: Tests**
+- [x] **Step 1: Tests**
 
 ```rust
 #[test]
@@ -1700,9 +1700,9 @@ fn physical_forget_makes_chart_none() { /* */ }
 fn snapshot_contains_no_left_context_strings_by_default() { /* privacy */ }
 ```
 
-- [ ] **Step 2: Implement from summary + ≤64 recent events. No capture-log read. No hook-path build: this is a Settings/idle API.
+- [x] **Step 2: Implement from summary + ≤64 recent events. No capture-log read. No hook-path build: this is a Settings/idle API.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```powershell
 git commit -am "feat: build local ChartSnapshot from correction memory"
@@ -1723,7 +1723,7 @@ git commit -am "feat: build local ChartSnapshot from correction memory"
 - Consumes: `ChartSnapshot`
 - Produces: native chart + accessible text table; no web runtime
 
-- [ ] **Step 1: Tests**
+- [x] **Step 1: Tests**
 
 ```rust
 #[test]
@@ -1744,13 +1744,13 @@ fn chart_build_is_not_invoked_from_inject_path() {
 
 UI copy (spec §15.1 / §15.4): Vietnamese state names, markers `+` `−` `↩`, breakdown bars. “Chi tiết kỹ thuật” can show mass/half-life/hash. No default surrounding context.
 
-- [ ] **Step 2: Implement GDI owner-draw (existing `control.rs` patterns). Text alternative is a read-only static or list for accessibility/tests.
+- [x] **Step 2: Implement GDI owner-draw (existing `control.rs` patterns). Text alternative is a read-only static or list for accessibility/tests.
 
-- [ ] **Step 3: Run** `cargo test -p openvikey-win --test learning_chart --test ui_rules`
+- [x] **Step 3: Run** `cargo test -p openvikey-win --test learning_chart --test ui_rules`
 
 Cannot fully click-paint in this environment; tests cover snapshot + text alt + “not on hook path”. Note that live GDI paint needs a manual Settings look after merge.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```powershell
 git commit -am "feat: show local learning charts on the Settings Learning page"

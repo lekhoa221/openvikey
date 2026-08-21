@@ -45,3 +45,25 @@ fn rebase_drops_an_oversized_external_token() {
     let observations = session.type_text("ban", InputContext::default(), 10);
     assert_ne!(observations.last().unwrap().candidates[0].text, "bạn");
 }
+
+#[test]
+fn chart_assessment_reuses_the_last_planner_result_for_the_same_rule() {
+    let mut session = contextual_session();
+    session.rebase_left_context(Some("chào".to_owned()));
+    let observations = session.type_text("ban", InputContext::default(), 10);
+    let top = observations
+        .last()
+        .and_then(|observation| observation.candidates.first())
+        .expect("ranked candidate");
+    let row = session
+        .model()
+        .inspection_rows()
+        .into_iter()
+        .find(|row| row.original_nfc == "ban" && row.candidate_nfc == top.text)
+        .expect("recorded decision row");
+
+    let assessment = session.chart_assessment(&row).expect("planner assessment");
+
+    assert!((assessment.breakdown.generator_base - top.base_score).abs() < f64::EPSILON);
+    assert!((assessment.breakdown.final_score - top.final_score).abs() < f64::EPSILON);
+}

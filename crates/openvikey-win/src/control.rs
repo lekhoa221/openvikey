@@ -30,15 +30,16 @@ use windows::Win32::UI::WindowsAndMessaging::{
     BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, BS_DEFPUSHBUTTON, BS_GROUPBOX,
     BS_OWNERDRAW, BS_PUSHBUTTON, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CBN_SELCHANGE,
     CBS_DROPDOWNLIST, CS_HREDRAW, CS_VREDRAW, CreateIcon, CreateWindowExW, DefWindowProcW,
-    DestroyIcon, EN_CHANGE, ES_AUTOHSCROLL, GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW,
-    HCURSOR, HICON, HMENU, IsWindow, LB_ADDSTRING, LB_GETCURSEL, LB_RESETCONTENT, LBN_SELCHANGE,
-    LBS_NOINTEGRALHEIGHT, LBS_NOTIFY, MB_ICONERROR, MB_OK, MessageBoxW, RegisterClassW,
-    SM_CXSCREEN, SM_CYSCREEN, SW_HIDE, SW_RESTORE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetForegroundWindow, SetWindowPos,
-    SetWindowTextW, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
-    WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_NOTIFY,
-    WM_SETFONT, WM_SETREDRAW, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
-    WS_GROUP, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    DestroyIcon, EN_CHANGE, ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY,
+    GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW, HCURSOR, HICON, HMENU, IsWindow,
+    LB_ADDSTRING, LB_GETCURSEL, LB_RESETCONTENT, LBN_SELCHANGE, LBS_NOINTEGRALHEIGHT, LBS_NOTIFY,
+    MB_ICONERROR, MB_OK, MessageBoxW, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_HIDE,
+    SW_RESTORE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SendMessageW, SetForegroundWindow, SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_DESTROY,
+    WM_DPICHANGED, WM_DRAWITEM, WM_NOTIFY, WM_SETFONT, WM_SETREDRAW, WNDCLASSW, WS_BORDER,
+    WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_GROUP, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU,
+    WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 use windows::core::{HSTRING, PCWSTR, PWSTR, Result, w};
 
@@ -1179,9 +1180,9 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
         scale_dpi(204, dpi),
         scale_dpi(392, dpi),
         scale_dpi(526, dpi),
-        scale_dpi(16, dpi),
+        scale_dpi(74, dpi),
     )?;
-    add_layout(lbl_chart_overview, 204, 392, 526, 16);
+    add_layout(lbl_chart_overview, 204, 392, 526, 74);
     page_1.push(lbl_chart_overview);
 
     let chart_canvas = unsafe {
@@ -1191,27 +1192,38 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
             w!(""),
             WS_CHILD | WS_VISIBLE | WINDOW_STYLE(SS_OWNERDRAW.0),
             scale_dpi(204, dpi),
-            scale_dpi(410, dpi),
+            scale_dpi(468, dpi),
             scale_dpi(526, dpi),
-            scale_dpi(52, dpi),
+            scale_dpi(36, dpi),
             Some(hwnd),
             Some(HMENU(IDC_CHART_CANVAS as *mut core::ffi::c_void)),
             Some(HINSTANCE::default()),
             None,
         )?
     };
-    add_layout(chart_canvas, 204, 410, 526, 52);
+    add_layout(chart_canvas, 204, 468, 526, 36);
     page_1.push(chart_canvas);
 
-    let lbl_chart_breakdown = create_label(
-        hwnd,
-        "",
-        scale_dpi(216, dpi),
-        scale_dpi(464, dpi),
-        scale_dpi(504, dpi),
-        scale_dpi(20, dpi),
-    )?;
-    add_layout(lbl_chart_breakdown, 216, 464, 504, 20);
+    let lbl_chart_breakdown = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("EDIT"),
+            w!(""),
+            ws(
+                WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_BORDER,
+                (ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL) as u32,
+            ),
+            scale_dpi(204, dpi),
+            scale_dpi(506, dpi),
+            scale_dpi(526, dpi),
+            scale_dpi(54, dpi),
+            Some(hwnd),
+            None,
+            Some(HINSTANCE::default()),
+            None,
+        )?
+    };
+    add_layout(lbl_chart_breakdown, 204, 506, 526, 54);
     page_1.push(lbl_chart_breakdown);
 
     let mut make_control = |class: PCWSTR,
@@ -1859,22 +1871,7 @@ fn select_page(hwnd: HWND, page_index: usize) {
         let _ = SetFocus(Some(controls.sidebar));
     }
     if controls.active_page == Some(target) {
-        let redraw_controls: Vec<HWND> = controls.page_controls[target]
-            .iter()
-            .chain(&controls.persistent_controls)
-            .copied()
-            .collect();
         drop(guard);
-        unsafe {
-            for ctrl in redraw_controls {
-                let _ = RedrawWindow(
-                    Some(ctrl),
-                    None,
-                    None,
-                    RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW,
-                );
-            }
-        }
         return;
     }
 
@@ -1916,11 +1913,6 @@ fn select_page(hwnd: HWND, page_index: usize) {
         }
     }
     controls.active_page = Some(target);
-    let redraw_controls: Vec<HWND> = controls.page_controls[target]
-        .iter()
-        .chain(&controls.persistent_controls)
-        .copied()
-        .collect();
     drop(guard);
 
     unsafe {
@@ -1929,16 +1921,8 @@ fn select_page(hwnd: HWND, page_index: usize) {
             Some(hwnd),
             None,
             None,
-            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW,
+            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN,
         );
-        for ctrl in redraw_controls {
-            let _ = RedrawWindow(
-                Some(ctrl),
-                None,
-                None,
-                RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW,
-            );
-        }
     }
 }
 
@@ -2178,7 +2162,9 @@ fn populate_rules_inner(controls: &mut UiControls) {
     rows.reverse();
     controls.all_rows = rows;
     if let Some(snapshot) = snapshot.as_ref() {
-        controls.learning_overview = snapshot.learning_overview;
+        controls
+            .learning_overview
+            .clone_from(&snapshot.learning_overview);
         set_text(
             controls.lbl_chart_overview,
             &snapshot.learning_overview.vietnamese_line(),

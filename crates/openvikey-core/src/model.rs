@@ -112,6 +112,8 @@ pub struct ModelInspectionRow {
     pub shown_count: u64,
     pub selected_count: u64,
     pub last_shown_at_ms: Option<i64>,
+    pub recent_auto_count: usize,
+    pub recent_undo_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -380,8 +382,16 @@ impl AdaptiveModel {
                 shown_count: row.shown_count,
                 selected_count: row.selected_count,
                 last_shown_at_ms: row.last_shown_at_ms,
+                recent_auto_count: row.recent_auto_count,
+                recent_undo_count: row.recent_undo_count,
             })
             .collect()
+    }
+
+    /// Number of correction/context rows evicted by bounded-store policy.
+    #[must_use]
+    pub const fn pruned_row_count(&self) -> u64 {
+        self.correction_memory.pruned_row_count()
     }
 
     /// Records an unmatched rewind pair. Returns true when newly promoted.

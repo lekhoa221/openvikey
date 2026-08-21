@@ -8,7 +8,9 @@
 
 use crate::correction_memory::CorrectionMemory;
 use crate::decision::{ActionCap, DecisionState};
-use crate::intervention::{CorrectionIdentity, ScoreBreakdown};
+use crate::intervention::{
+    CorrectionIdentity, InterventionAction, InterventionPlan, InterventionReason, ScoreBreakdown,
+};
 use crate::learning_config::LearningConfigV2;
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +27,7 @@ const ACCEPT_POSITIVE_MASS: f64 = 1.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChartStateBand {
+    Unavailable,
     Observe,
     Suggest,
     Auto,
@@ -36,6 +39,7 @@ impl ChartStateBand {
     #[must_use]
     pub fn vietnamese_label(self) -> &'static str {
         match self {
+            Self::Unavailable => "Chưa có đánh giá",
             Self::Observe => "Đang quan sát",
             Self::Suggest => "Gợi ý",
             Self::Auto => "Có thể tự sửa",
@@ -66,19 +70,18 @@ impl ChartMarker {
     }
 }
 
-/// One plotted event: confidence lines plus the effective band at that moment.
+/// One plotted event with causal confidence lines.
 ///
 /// `confidence` is the global-bucket line; `blended_confidence` is the
-/// context-blended line. Both coincide for the context-free identity used here.
-/// `stored_state` is the persisted hysteresis state (constant per snapshot);
-/// `state_band` is re-evaluated at each point's timestamp so cooldown regions
-/// appear where guards were active.
+/// context-blended line. Historical state provenance is unavailable in the v2
+/// store, so state fields remain `None`/`Unavailable` rather than projecting
+/// the current state backward.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChartPoint {
     pub at_ms: i64,
     pub confidence: f64,
     pub blended_confidence: f64,
-    pub stored_state: DecisionState,
+    pub stored_state: Option<DecisionState>,
     pub state_band: ChartStateBand,
     pub marker: Option<ChartMarker>,
 }
@@ -89,9 +92,44 @@ pub struct ChartSnapshot {
     pub identity: CorrectionIdentity,
     pub points: Vec<ChartPoint>,
     pub compaction_marker_at_ms: Option<i64>,
-    pub breakdown: ScoreBreakdown,
+    pub breakdown: Option<ScoreBreakdown>,
+    pub assessment_at_ms: Option<i64>,
+    pub current_state_band: ChartStateBand,
     pub conclusion: String,
     pub config_hash: String,
+}
+
+/// Authentic current assessment captured from the intervention planner.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChartAssessment {
+    pub breakdown: ScoreBreakdown,
+    pub state_band: ChartStateBand,
+    pub evaluated_at_ms: i64,
+}
+
+impl ChartAssessment {
+    #[must_use]
+    pub fn from_plan(plan: &InterventionPlan, evaluated_at_ms: i64) -> Self {
+        let state_band = if matches!(
+            plan.reason,
+            InterventionReason::RecentRevertCooldown
+                | InterventionReason::RevertGuardBypass
+                | InterventionReason::ExplicitlySuppressed
+        ) {
+            ChartStateBand::Cooldown
+        } else {
+            match plan.action {
+                InterventionAction::Replace => ChartStateBand::Auto,
+                InterventionAction::DisplaySuggestion => ChartStateBand::Suggest,
+                InterventionAction::None => ChartStateBand::Observe,
+            }
+        };
+        Self {
+            breakdown: plan.score_breakdown.clone(),
+            state_band,
+            evaluated_at_ms,
+        }
+    }
 }
 
 impl ChartSnapshot {
@@ -105,44 +143,57 @@ impl ChartSnapshot {
         config: &LearningConfigV2,
         evaluate_at_ms: i64,
     ) -> Option<Self> {
+        Self::from_memory_with_context(memory, identity, config, evaluate_at_ms, None, None)
+    }
+
+    /// Builds a snapshot with private context and an optional authentic planner assessment.
+    /// The left token influences calculations but is never serialized into the snapshot.
+    #[must_use]
+    pub fn from_memory_with_context(
+        memory: &CorrectionMemory,
+        identity: &CorrectionIdentity,
+        config: &LearningConfigV2,
+        evaluate_at_ms: i64,
+        left_token_nfc: Option<&str>,
+        assessment: Option<&ChartAssessment>,
+    ) -> Option<Self> {
         if !memory.contains(identity) {
             return None;
         }
         let (events, checkpoint_at_ms) = memory
             .chart_source(identity)
             .unwrap_or_else(|| (Vec::new(), None));
-        let stored_state = memory.query_state(identity, None);
         let shrinkage_k = config.context_shrinkage_k;
         let mut points = Vec::new();
         for event in events.iter().rev().take(MAX_CHART_EVENTS).rev() {
-            let confidence = memory.blended_confidence(identity, None, event.at_ms, shrinkage_k);
+            let (confidence, blended_confidence) = memory.chart_confidence_through(
+                identity,
+                left_token_nfc,
+                event.at_ms,
+                event.seq,
+                shrinkage_k,
+            );
             points.push(ChartPoint {
                 at_ms: event.at_ms,
                 confidence,
-                blended_confidence: confidence,
-                stored_state,
-                state_band: effective_band(memory, identity, config, event.at_ms),
+                blended_confidence,
+                stored_state: None,
+                state_band: ChartStateBand::Unavailable,
                 marker: marker_for(event.positive, event.negative),
             });
         }
-        let breakdown_confidence =
-            memory.blended_confidence(identity, None, evaluate_at_ms, shrinkage_k);
+        let current_state_band = assessment.map_or_else(
+            || guarded_state_band(memory, identity, evaluate_at_ms, left_token_nfc),
+            |assessment| assessment.state_band,
+        );
         Some(Self {
             identity: identity.clone(),
             points,
             compaction_marker_at_ms: checkpoint_at_ms,
-            breakdown: ScoreBreakdown {
-                generator_base: 0.0,
-                exact_correction: config.score.personal_weight * (breakdown_confidence - 0.5),
-                unigram: 0.0,
-                bigram: 0.0,
-                recent_revert_penalty: 0.0,
-                top1_top2_margin: 1.0,
-                final_score: breakdown_confidence,
-            },
-            conclusion: effective_band(memory, identity, config, evaluate_at_ms)
-                .vietnamese_label()
-                .to_string(),
+            breakdown: assessment.map(|assessment| assessment.breakdown.clone()),
+            assessment_at_ms: assessment.map(|assessment| assessment.evaluated_at_ms),
+            current_state_band,
+            conclusion: current_state_band.vietnamese_label().to_string(),
             config_hash: config.hash(),
         })
     }
@@ -150,57 +201,30 @@ impl ChartSnapshot {
     /// Effective band of the rule at the evaluation time.
     #[must_use]
     pub fn state_band(&self) -> ChartStateBand {
-        match self.conclusion.as_str() {
-            "Gợi ý" => ChartStateBand::Suggest,
-            "Có thể tự sửa" => ChartStateBand::Auto,
-            "Tạm dừng tự sửa" => ChartStateBand::Cooldown,
-            _ => ChartStateBand::Observe,
-        }
+        self.current_state_band
     }
 }
 
-/// Effective band after source policy, revert veto, and decayed confidence.
+/// Conservative display of persisted state after guards available from memory alone.
 ///
-/// Mirrors the planner's hysteresis exit check: a stored Auto survives only
-/// while confidence stays at or above `auto_off_confidence`; otherwise the rule
-/// presents as Suggest (spec §15.2). An active revert demotion veto presents as
-/// Cooldown regardless of the stored state.
+/// This deliberately does not apply decision thresholds or claim to replace a
+/// planner assessment. An active revert veto presents as Cooldown and source
+/// policy caps a persisted Auto state to Suggest.
 #[must_use]
-pub fn effective_band(
+pub fn guarded_state_band(
     memory: &CorrectionMemory,
     identity: &CorrectionIdentity,
-    config: &LearningConfigV2,
     evaluate_at_ms: i64,
+    left_token_nfc: Option<&str>,
 ) -> ChartStateBand {
-    let stored_state = memory.query_state(identity, None);
+    let stored_state = memory.query_state(identity, left_token_nfc);
+    if auto_capable(identity) && !memory.auto_allowed(identity, left_token_nfc, evaluate_at_ms) {
+        return ChartStateBand::Cooldown;
+    }
     match stored_state {
         DecisionState::Ignore => ChartStateBand::Observe,
-        DecisionState::Suggest => {
-            if auto_capable(identity) && !memory.auto_allowed(identity, None, evaluate_at_ms) {
-                ChartStateBand::Cooldown
-            } else {
-                ChartStateBand::Suggest
-            }
-        }
-        DecisionState::Auto => {
-            if !auto_capable(identity) {
-                return ChartStateBand::Suggest;
-            }
-            if !memory.auto_allowed(identity, None, evaluate_at_ms) {
-                return ChartStateBand::Cooldown;
-            }
-            let confidence = memory.blended_confidence(
-                identity,
-                None,
-                evaluate_at_ms,
-                config.context_shrinkage_k,
-            );
-            if confidence < config.decision.auto_off_confidence {
-                ChartStateBand::Suggest
-            } else {
-                ChartStateBand::Auto
-            }
-        }
+        DecisionState::Auto if auto_capable(identity) => ChartStateBand::Auto,
+        DecisionState::Suggest | DecisionState::Auto => ChartStateBand::Suggest,
     }
 }
 

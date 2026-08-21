@@ -31,23 +31,30 @@ fn key(
     }
 }
 
-fn accept(seq: u64) -> FeedbackEvent {
+fn current_time_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0))
+}
+
+fn accept_at(seq: u64, at_ms: i64) -> FeedbackEvent {
     FeedbackEvent {
         seq,
-        at_ms: i64::try_from(seq).unwrap_or(i64::MAX),
+        at_ms,
         kind: FeedbackKind::Accept { candidate_id: seq },
     }
 }
 
-fn reject(seq: u64) -> FeedbackEvent {
+fn reject_at(seq: u64, at_ms: i64) -> FeedbackEvent {
     FeedbackEvent {
         seq,
-        at_ms: i64::try_from(seq).unwrap_or(i64::MAX),
+        at_ms,
         kind: FeedbackKind::ExplicitReject { candidate_id: seq },
     }
 }
 
 fn seed_learning(host: &Arc<Mutex<TypingHost>>) {
+    let now = current_time_ms();
     let mut guard = host.lock().unwrap();
     let model = guard.session.model_mut();
 
@@ -60,14 +67,22 @@ fn seed_learning(host: &Arc<Mutex<TypingHost>>) {
         None,
     );
     for seq in 1..=18u64 {
-        model.apply_feedback(&auto_rule, &accept(seq), true);
+        model.apply_feedback(
+            &auto_rule,
+            &accept_at(seq, now - 1000 + i64::try_from(seq).unwrap()),
+            true,
+        );
     }
     model.record_decision(&auto_rule, DecisionState::Auto, true);
 
     // Stored Suggest -> effective Suggest.
     let suggest_rule = key("chao", "chào", CandidateSource::Fuzzy, "fuzzy:chao", None);
     for seq in 19..=21u64 {
-        model.apply_feedback(&suggest_rule, &accept(seq), true);
+        model.apply_feedback(
+            &suggest_rule,
+            &accept_at(seq, now - 1000 + i64::try_from(seq).unwrap()),
+            true,
+        );
     }
     model.record_decision(&suggest_rule, DecisionState::Suggest, true);
 
@@ -79,16 +94,20 @@ fn seed_learning(host: &Arc<Mutex<TypingHost>>) {
         "diacritics:unigram",
         None,
     );
-    model.apply_feedback(&observe_rule, &reject(22), true);
+    model.apply_feedback(&observe_rule, &reject_at(22, now - 1000 + 22), true);
 
     // Two recent reverts arm the demotion veto -> effective Cooldown even
     // though the raw stored state is plain Suggest.
     let cooldown_rule = key("nham", "nhầm", CandidateSource::Fuzzy, "fuzzy:nham", None);
     for seq in 23..=26u64 {
-        model.apply_feedback(&cooldown_rule, &accept(seq), true);
+        model.apply_feedback(
+            &cooldown_rule,
+            &accept_at(seq, now - 500 + i64::try_from(seq).unwrap()),
+            true,
+        );
     }
-    model.record_auto_emission(&cooldown_rule, 1, 10, true);
-    model.record_auto_emission(&cooldown_rule, 2, 11, true);
+    model.record_auto_emission(&cooldown_rule, 1, now - 400, true);
+    model.record_auto_emission(&cooldown_rule, 2, now - 300, true);
     model.record_immediate_revert(&cooldown_rule, 1, 100, true);
     model.record_immediate_revert(&cooldown_rule, 2, 101, true);
 
@@ -101,7 +120,7 @@ fn seed_learning(host: &Arc<Mutex<TypingHost>>) {
         "fuzzy-ko",
         Some("một"),
     );
-    model.apply_feedback(&contextual, &accept(5), true);
+    model.apply_feedback(&contextual, &accept_at(5, now - 2000), true);
 }
 
 fn shared_runtime() -> &'static Arc<Mutex<TypingHost>> {
@@ -115,15 +134,24 @@ fn shared_runtime() -> &'static Arc<Mutex<TypingHost>> {
 }
 
 #[test]
-fn overview_counts_match_effective_chart_states_not_raw_stored_states() {
+fn overview_counts_match_guarded_persisted_states_not_raw_stored_states() {
     shared_runtime();
     let snapshot = control_snapshot().unwrap();
-    let overview = snapshot.learning_overview;
+    let overview = &snapshot.learning_overview;
     assert_eq!(overview.observe, 1);
     assert_eq!(overview.suggest, 2);
     assert_eq!(overview.auto, 1);
     assert_eq!(overview.cooldown, 1);
     assert_eq!(overview.total(), snapshot.learned_rows.len());
+    assert_eq!(overview.model_rows, snapshot.learned_rows.len());
+    assert_eq!(
+        overview.confidence_buckets.iter().sum::<usize>(),
+        snapshot.learned_rows.len()
+    );
+    assert_eq!(overview.retained_interventions, 0);
+    assert_eq!(overview.undone_interventions, 2);
+    assert_eq!(overview.top_reverted[0].original_nfc, "nham");
+    assert_eq!(overview.pruned_rows, 0);
 
     // Raw stored states would count three plain Suggest rows and no Cooldown
     // row; the effective bands must differ from that naive tally.
@@ -136,10 +164,12 @@ fn overview_counts_match_effective_chart_states_not_raw_stored_states() {
     assert_ne!(raw_suggest_rows, overview.suggest);
 
     let line = overview.vietnamese_line();
-    assert!(line.contains("Đang quan sát 1"));
+    assert!(line.contains("Quan sát 1"));
     assert!(line.contains("Gợi ý 2"));
-    assert!(line.contains("Có thể tự sửa 1"));
-    assert!(line.contains("Tạm dừng tự sửa 1"));
+    assert!(line.contains("Tự sửa 1"));
+    assert!(line.contains("Cooldown 1"));
+    assert!(line.contains("Nguồn:"));
+    assert!(line.contains("Model: 5 row"));
 }
 
 #[test]
@@ -163,10 +193,7 @@ fn selecting_a_rule_exposes_chart_snapshot_and_text_alternative() {
     let text = text_alternative(&chart);
     assert!(text.contains("Biểu đồ học tập: khogn → không · Telex"));
     assert!(text.contains("Có thể tự sửa"));
-    assert!(text.contains("Phân rã điểm hiện tại:"));
-    assert!(text.contains("Điểm nền generator"));
-    assert!(text.contains("Ảnh hưởng correction cá nhân"));
-    assert!(text.contains("Khoảng cách top1-top2"));
+    assert!(text.contains("Phân rã điểm: chưa có đánh giá planner"));
     assert!(text.contains("Kết luận"));
 }
 

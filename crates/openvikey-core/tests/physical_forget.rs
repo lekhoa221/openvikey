@@ -163,6 +163,7 @@ fn exceeding_max_rules_evicts_oldest_ignore_before_strong_rows() {
     assert_eq!(model.evidence_totals(&suggest), (1.0, 0.0));
     assert_eq!(model.evidence_totals(&newcomer), (1.0, 0.0));
     assert_eq!(model.inspection_rows().len(), 3);
+    assert_eq!(model.pruned_row_count(), 1);
 }
 
 #[test]

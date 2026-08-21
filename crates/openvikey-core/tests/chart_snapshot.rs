@@ -1,9 +1,11 @@
 //! Golden ChartSnapshot JSON and guard semantics — Lát 8.
 
-use openvikey_core::chart::{ChartMarker, ChartSnapshot, ChartStateBand, MAX_CHART_EVENTS};
+use openvikey_core::chart::{
+    ChartAssessment, ChartMarker, ChartSnapshot, ChartStateBand, MAX_CHART_EVENTS,
+};
 use openvikey_core::correction_memory::{CorrectionEvidence, CorrectionMemory};
 use openvikey_core::decision::DecisionState;
-use openvikey_core::intervention::CorrectionIdentity;
+use openvikey_core::intervention::{CorrectionIdentity, ScoreBreakdown};
 use openvikey_core::learning_config::LearningConfigV2;
 use openvikey_core::types::{CandidateSource, InputMethod};
 
@@ -65,9 +67,8 @@ fn golden_json_shape_is_stable_for_one_accept() {
     let json = serde_json::to_string(&snapshot).unwrap();
     // One accept of mass 1.0: confidence = (1+1)/(2+1) = 2/3.
     let confidence = 2.0_f64 / 3.0;
-    let exact = 0.2_f64 * (confidence - 0.5);
     let expected = format!(
-        "{{\"identity\":{{\"input_method\":\"Telex\",\"source\":\"Fuzzy\",\"original_nfc\":\"khogn\",\"candidate_nfc\":\"không\",\"source_rule_id\":\"fuzzy:khogn\"}},\"points\":[{{\"at_ms\":5000,\"confidence\":{confidence},\"blended_confidence\":{confidence},\"stored_state\":\"Ignore\",\"state_band\":\"observe\",\"marker\":\"accept\"}}],\"compaction_marker_at_ms\":null,\"breakdown\":{{\"generator_base\":0.0,\"exact_correction\":{exact},\"unigram\":0.0,\"bigram\":0.0,\"recent_revert_penalty\":0.0,\"top1_top2_margin\":1.0,\"final_score\":{confidence}}},\"conclusion\":\"Đang quan sát\",\"config_hash\":\"{}\"}}",
+        "{{\"identity\":{{\"input_method\":\"Telex\",\"source\":\"Fuzzy\",\"original_nfc\":\"khogn\",\"candidate_nfc\":\"không\",\"source_rule_id\":\"fuzzy:khogn\"}},\"points\":[{{\"at_ms\":5000,\"confidence\":{confidence},\"blended_confidence\":{confidence},\"stored_state\":null,\"state_band\":\"unavailable\",\"marker\":\"accept\"}}],\"compaction_marker_at_ms\":null,\"breakdown\":null,\"assessment_at_ms\":null,\"current_state_band\":\"observe\",\"conclusion\":\"Đang quan sát\",\"config_hash\":\"{}\"}}",
         config.hash()
     );
     assert_eq!(json, expected);
@@ -79,16 +80,18 @@ fn confidence_line_matches_model_query_at_each_recent_event() {
     let config = LearningConfigV2::compatibility_v1();
     let snapshot = ChartSnapshot::from_memory(&memory, &identity, &config, 0).unwrap();
     assert_eq!(snapshot.points.len(), 18);
-    for point in &snapshot.points {
-        let queried = memory.blended_confidence(&identity, None, point.at_ms, 2.0);
-        assert!((point.confidence - queried).abs() < 1e-12);
-        assert!((point.blended_confidence - queried).abs() < 1e-12);
+    for (index, point) in snapshot.points.iter().enumerate() {
+        let support = f64::from(u32::try_from(index + 1).unwrap());
+        let expected = (support + 1.0) / (support + 2.0);
+        assert!((point.confidence - expected).abs() < 1e-12);
+        assert!((point.blended_confidence - expected).abs() < 1e-12);
         assert_eq!(point.marker, Some(ChartMarker::Accept));
+        assert_eq!(point.state_band, ChartStateBand::Unavailable);
     }
 }
 
 #[test]
-fn migrated_stored_auto_is_presented_as_effective_suggest_when_guards_fail() {
+fn stored_auto_is_not_reassessed_without_an_authentic_planner_result() {
     let (memory, identity) = learned_auto_memory();
     let config = LearningConfigV2::compatibility_v1();
 
@@ -96,29 +99,45 @@ fn migrated_stored_auto_is_presented_as_effective_suggest_when_guards_fail() {
     assert_eq!(fresh.conclusion, "Có thể tự sửa");
     assert_eq!(fresh.state_band(), ChartStateBand::Auto);
 
-    // Three half-lives later the decayed confidence drops below
-    // auto_off_confidence, so the stored Auto presents as Suggest.
+    // A chart-only projection must not become a second decision engine. Without
+    // a current planner result it keeps the guarded persisted state.
     let decayed =
         ChartSnapshot::from_memory(&memory, &identity, &config, 3 * HALF_LIFE_MS).unwrap();
-    assert_eq!(decayed.points[0].stored_state, DecisionState::Auto);
-    assert_eq!(decayed.conclusion, "Gợi ý");
-    assert_eq!(decayed.state_band(), ChartStateBand::Suggest);
+    assert_eq!(decayed.points[0].stored_state, None);
+    assert_eq!(decayed.conclusion, "Có thể tự sửa");
+    assert_eq!(decayed.state_band(), ChartStateBand::Auto);
 }
 
 #[test]
 fn revert_veto_presents_cooldown_band() {
     let identity = khogn_identity();
-    let mut memory = CorrectionMemory::default();
+    let key = openvikey_core::model::RuleContextKey {
+        input_method: identity.input_method,
+        source: identity.source,
+        original_nfc: identity.original_nfc.clone(),
+        candidate_nfc: identity.candidate_nfc.clone(),
+        left_token_nfc: None,
+        source_rule_id: identity.source_rule_id.clone(),
+    };
+    let mut model = openvikey_core::model::AdaptiveModel::default();
     for seq in 1..=4 {
-        accept(&mut memory, &identity, seq, 0);
+        model.apply_feedback(
+            &key,
+            &openvikey_core::types::FeedbackEvent {
+                seq,
+                at_ms: 0,
+                kind: openvikey_core::types::FeedbackKind::Accept { candidate_id: 1 },
+            },
+            true,
+        );
     }
-    memory.record_state(&identity, None, DecisionState::Suggest);
-    memory.record_auto_emission(&identity, None, 1, 10, 10);
-    memory.record_auto_emission(&identity, None, 2, 11, 10);
-    memory.record_immediate_revert(&identity, None, 1, 100);
-    memory.record_immediate_revert(&identity, None, 2, 101);
+    model.record_auto_emission(&key, 1, 10, true);
+    model.record_auto_emission(&key, 2, 11, true);
+    model.record_immediate_revert(&key, 1, 100, true);
+    model.record_immediate_revert(&key, 2, 101, true);
     let config = LearningConfigV2::compatibility_v1();
-    let snapshot = ChartSnapshot::from_memory(&memory, &identity, &config, 200).unwrap();
+    let snapshot =
+        ChartSnapshot::from_memory(model.correction_memory(), &identity, &config, 200).unwrap();
     assert_eq!(snapshot.state_band(), ChartStateBand::Cooldown);
     assert_eq!(snapshot.conclusion, "Tạm dừng tự sửa");
 }
@@ -138,7 +157,8 @@ fn compaction_inserts_checkpoint_marker_without_changing_final_confidence() {
     let evaluate_at_ms = 100_000;
     let config = LearningConfigV2::compatibility_v1();
     let before = ChartSnapshot::from_memory(&memory, &identity, &config, evaluate_at_ms).unwrap();
-    let confidence_before = before.breakdown.final_score;
+    let historical_confidence_before = before.points.last().unwrap().confidence;
+    let confidence_before = memory.blended_confidence(&identity, None, evaluate_at_ms, 2.0);
 
     memory.compact_at(evaluate_at_ms, MAX_CHART_EVENTS);
 
@@ -146,7 +166,9 @@ fn compaction_inserts_checkpoint_marker_without_changing_final_confidence() {
     assert_eq!(after.compaction_marker_at_ms, Some(evaluate_at_ms));
     assert_eq!(after.points.len(), MAX_CHART_EVENTS);
     assert_eq!(after.points[0].at_ms, 7);
-    assert!((after.breakdown.final_score - confidence_before).abs() < 1e-9);
+    let confidence_after = memory.blended_confidence(&identity, None, evaluate_at_ms, 2.0);
+    assert!((confidence_after - confidence_before).abs() < 1e-9);
+    assert!((after.points.last().unwrap().confidence - historical_confidence_before).abs() < 1e-9);
 }
 
 #[test]
@@ -210,4 +232,103 @@ fn markers_map_deltas_to_accept_reject_revert_and_weak_settle() {
     for (point, (_, _, _, _, expected)) in snapshot.points.iter().zip(rows.iter()) {
         assert_eq!(point.marker, Some(*expected));
     }
+}
+
+#[test]
+fn timeline_is_strictly_causal_across_future_events() {
+    let identity = khogn_identity();
+    let mut memory = CorrectionMemory::default();
+    let config = LearningConfigV2::compatibility_v1();
+
+    // Event 3 at t=100. Later timestamps deliberately use lower sequences to
+    // prove the chart cutoff follows the full event ordering, not seq alone.
+    accept(&mut memory, &identity, 3, 100);
+    let snapshot_1 = ChartSnapshot::from_memory(&memory, &identity, &config, 100).unwrap();
+    let conf_at_100_before = snapshot_1.points[0].confidence;
+
+    // Event 1 at t=200, Event 2 at t=300.
+    accept(&mut memory, &identity, 1, 200);
+    accept(&mut memory, &identity, 2, 300);
+
+    let snapshot_3 = ChartSnapshot::from_memory(&memory, &identity, &config, 300).unwrap();
+    let conf_at_100_after = snapshot_3.points[0].confidence;
+
+    // Confidence at historical point t=100 must be unchanged by events at t=200 and t=300.
+    assert!((conf_at_100_before - conf_at_100_after).abs() < f64::EPSILON);
+}
+
+#[test]
+fn authentic_assessment_is_preserved_verbatim() {
+    let identity = khogn_identity();
+    let mut memory = CorrectionMemory::default();
+    accept(&mut memory, &identity, 1, 100);
+    let config = LearningConfigV2::compatibility_v1();
+    let breakdown = ScoreBreakdown {
+        generator_base: 0.71,
+        exact_correction: 0.04,
+        unigram: 0.02,
+        bigram: 0.03,
+        recent_revert_penalty: 0.11,
+        top1_top2_margin: 0.07,
+        final_score: 0.69,
+    };
+    let assessment = ChartAssessment {
+        breakdown: breakdown.clone(),
+        state_band: ChartStateBand::Suggest,
+        evaluated_at_ms: 95,
+    };
+
+    let snapshot = ChartSnapshot::from_memory_with_context(
+        &memory,
+        &identity,
+        &config,
+        100,
+        None,
+        Some(&assessment),
+    )
+    .unwrap();
+
+    assert_eq!(snapshot.breakdown, Some(breakdown));
+    assert_eq!(snapshot.assessment_at_ms, Some(95));
+    assert_eq!(snapshot.state_band(), ChartStateBand::Suggest);
+}
+
+#[test]
+fn private_context_changes_blended_line_without_entering_snapshot() {
+    let identity = khogn_identity();
+    let mut memory = CorrectionMemory::default();
+    memory.apply(
+        &identity,
+        Some("Việt"),
+        CorrectionEvidence {
+            seq: 1,
+            at_ms: 100,
+            positive: 1.0,
+            negative: 0.0,
+        },
+    );
+    memory.apply(
+        &identity,
+        Some("Anh"),
+        CorrectionEvidence {
+            seq: 2,
+            at_ms: 200,
+            positive: 0.0,
+            negative: 1.0,
+        },
+    );
+    let config = LearningConfigV2::compatibility_v1();
+
+    let snapshot = ChartSnapshot::from_memory_with_context(
+        &memory,
+        &identity,
+        &config,
+        200,
+        Some("Việt"),
+        None,
+    )
+    .unwrap();
+
+    assert!(snapshot.points[1].blended_confidence > snapshot.points[1].confidence);
+    assert!(!serde_json::to_string(&snapshot).unwrap().contains("Việt"));
 }

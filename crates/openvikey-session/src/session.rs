@@ -5,6 +5,7 @@ use crate::capture::{
     compact_capture_after_forget, correction_identity_hash, sha256_hex, trim_capture_to,
 };
 use crate::document::{CommittedUnit, DocumentBuffer};
+use openvikey_core::chart::ChartAssessment;
 use openvikey_core::correction::{
     AutoEditContext, CorrectionSlice, InterventionConfig, candidate_rule_key,
     run_learning_correction_slice_with_guard,
@@ -726,6 +727,43 @@ impl LabSession {
 
     pub fn model_mut(&mut self) -> &mut AdaptiveModel {
         self.learning.model_mut()
+    }
+
+    /// Returns the last authentic planner assessment when it belongs to this row.
+    #[must_use]
+    pub fn chart_assessment(&self, row: &ModelInspectionRow) -> Option<ChartAssessment> {
+        if row.left_token_nfc != self.last_left_token {
+            return None;
+        }
+        let slice = self.last_slice.as_ref()?;
+        let plan = slice.plan.as_ref()?;
+        let candidate_id = plan.candidate_id?;
+        let candidate = slice
+            .candidates
+            .iter()
+            .find(|candidate| candidate.id == candidate_id)?;
+        let snapshot = CompositionSnapshot::new(
+            0,
+            self.last_original_nfc.clone(),
+            self.last_original_nfc.clone(),
+        );
+        let key = candidate_rule_key(
+            &snapshot,
+            &LeftContext {
+                prev_token_nfc: self.last_left_token.clone(),
+            },
+            self.last_method,
+            candidate,
+        );
+        if key.input_method != row.input_method
+            || key.source != row.source
+            || key.original_nfc != row.original_nfc
+            || key.candidate_nfc != row.candidate_nfc
+            || key.source_rule_id != row.source_rule_id
+        {
+            return None;
+        }
+        Some(ChartAssessment::from_plan(plan, self.last_at_ms))
     }
 
     pub fn model_payload(&self) -> Result<Vec<u8>, ModelError> {
