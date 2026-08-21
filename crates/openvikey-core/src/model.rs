@@ -8,6 +8,7 @@ use crate::correction_memory::{
     CorrectionEvidence, CorrectionMemory, ImportedOperationalMetadata, PersonalTransaction,
 };
 use crate::decision::DecisionState;
+use crate::generalized_error::{ErrorOperationClass, GeneralizedErrorModel};
 use crate::intervention::CorrectionIdentity;
 use crate::learning_config::LearningConfigV2;
 use crate::types::{CandidateSource, FeedbackEvent, InputMethod};
@@ -130,6 +131,8 @@ pub struct AdaptiveModel {
     config_hash: String,
     correction_memory: CorrectionMemory,
     user_language_model: UserLanguageModel,
+    #[serde(default)]
+    generalized_error_model: GeneralizedErrorModel,
     maintenance_metadata: MaintenanceMetadata,
 }
 
@@ -141,6 +144,7 @@ impl AdaptiveModel {
             config_hash: LearningConfigV2::compatibility_v1().hash(),
             correction_memory: CorrectionMemory::with_half_life(config.half_life_ms),
             user_language_model: UserLanguageModel::default(),
+            generalized_error_model: GeneralizedErrorModel::default(),
             maintenance_metadata: MaintenanceMetadata {
                 model_config: config,
             },
@@ -258,6 +262,27 @@ impl AdaptiveModel {
     #[must_use]
     pub fn unigram_count(&self, token: &str) -> u64 {
         self.user_language_model.unigram(token)
+    }
+
+    /// Records one trusted correction in the observe-only generalized model.
+    pub fn observe_error_pattern(
+        &mut self,
+        original: &str,
+        replacement: &str,
+        input_method: InputMethod,
+        allow_learning: bool,
+    ) -> Option<ErrorOperationClass> {
+        if !allow_learning {
+            return None;
+        }
+        self.generalized_error_model
+            .observe(original, replacement, input_method)
+    }
+
+    /// Read-only generalized statistics for local/offline inspection.
+    #[must_use]
+    pub const fn generalized_error_model(&self) -> &GeneralizedErrorModel {
+        &self.generalized_error_model
     }
 
     /// Read-only correction-memory view for Settings/idle chart building.
@@ -576,6 +601,7 @@ impl AdaptiveModel {
             config_hash: LearningConfigV2::compatibility_v1().hash(),
             correction_memory: memory,
             user_language_model: UserLanguageModel::default(),
+            generalized_error_model: GeneralizedErrorModel::default(),
             maintenance_metadata: MaintenanceMetadata {
                 model_config: legacy.config,
             },

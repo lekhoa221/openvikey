@@ -8,6 +8,7 @@ pub mod correction_memory;
 pub mod decision;
 pub mod engine;
 pub mod feedback;
+pub mod generalized_error;
 pub mod generate;
 pub mod intervention;
 pub mod learning_config;

@@ -23,7 +23,7 @@ fn replay_is_byte_identical_and_has_a_frozen_model_hash() {
     assert_eq!(first.script_sha256.len(), 64);
     assert_eq!(
         first.model_sha256,
-        "23d5aadfd113ed47928702618e54085656aef2c9724bf4e88e6a7819e715f4c9"
+        "3c41f3e70c40945e06b31193179c9ce13e24a0d348b99bb2944866dfd75761f8"
     );
 }
 

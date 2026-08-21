@@ -40,6 +40,7 @@ fn v1_fixture_migrates_deterministically() {
     );
     assert!(payload.get("correction_memory").is_some());
     assert!(payload.get("user_language_model").is_some());
+    assert!(payload.get("generalized_error_model").is_some());
     assert!(payload.get("maintenance_metadata").is_some());
     assert!(payload.get("entries").is_none());
     assert!(payload.get("personal").is_none());

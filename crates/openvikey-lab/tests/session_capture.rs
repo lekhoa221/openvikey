@@ -4,6 +4,7 @@
 
 use openvikey_core::correction::InterventionConfig;
 use openvikey_core::engine::EngineConfig;
+use openvikey_core::generalized_error::ErrorOperationClass;
 use openvikey_core::intervention::{CorrectionIdentity, InterventionReason};
 use openvikey_core::learning_config::LearningConfigV2;
 use openvikey_core::lexicon::{Lexicon, LexiconEntry};
@@ -171,6 +172,192 @@ fn implicit_retype_skipped_when_y_is_not_a_snapshot_candidate() {
         20,
     );
     assert_eq!(session.model().positive_mass(&ko_rule(), 20), 0.0);
+}
+
+#[test]
+fn transposition_pattern_is_recorded_from_explicit_accept() {
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    type_keys(&mut session, "khogn", 0);
+
+    assert!(session.accept_top(10).is_some());
+    assert_eq!(
+        session
+            .model()
+            .generalized_error_model()
+            .count(ErrorOperationClass::Transpose),
+        1
+    );
+}
+
+#[test]
+fn generalized_error_observation_replays_deterministically() {
+    let mut live = LabSession::new(EngineConfig::default(), khong_lexicon());
+    type_keys(&mut live, "khogn", 0);
+    assert!(live.accept_top(10).is_some());
+
+    let replayed = replay(
+        EngineConfig::default(),
+        khong_lexicon(),
+        &live.capture_log(),
+    )
+    .unwrap();
+    assert_eq!(
+        replayed
+            .model()
+            .generalized_error_model()
+            .count(ErrorOperationClass::Transpose),
+        1
+    );
+    assert_eq!(
+        replayed.model_payload().unwrap(),
+        live.model_payload().unwrap()
+    );
+}
+
+#[test]
+fn transposition_pattern_is_recorded_from_confirmed_contiguous_retype() {
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    type_keys(&mut session, "khogn", 0);
+    space_at(&mut session, 10);
+    backspace_n(&mut session, 6, 11);
+    type_keys(&mut session, "khoong", 20);
+    space_at(&mut session, 30);
+
+    assert_eq!(
+        session
+            .model()
+            .generalized_error_model()
+            .count(ErrorOperationClass::Transpose),
+        1
+    );
+}
+
+#[test]
+fn transposition_pattern_is_recorded_from_confirmed_composition_rewind() {
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    type_keys(&mut session, "khogn", 0);
+    backspace_n(&mut session, 5, 5);
+    type_keys(&mut session, "khoong", 10);
+    space_at(&mut session, 20);
+
+    assert_eq!(
+        session
+            .model()
+            .generalized_error_model()
+            .count(ErrorOperationClass::Transpose),
+        1
+    );
+}
+
+#[test]
+fn recognized_pattern_is_recorded_from_unmatched_personal_retype() {
+    let mut session = telex_session();
+    type_keys(&mut session, "ab", 0);
+    backspace_n(&mut session, 2, 2);
+    type_keys(&mut session, "ba", 4);
+    space_at(&mut session, 10);
+
+    assert_eq!(
+        session
+            .model()
+            .generalized_error_model()
+            .count(ErrorOperationClass::Transpose),
+        1
+    );
+}
+
+#[test]
+fn pasted_replacement_does_not_train_generalized_error_model() {
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    type_keys(&mut session, "khogn", 0);
+    space_at(&mut session, 10);
+    backspace_n(&mut session, 6, 11);
+    session.inject(
+        InputKind::InsertText {
+            text: "không".into(),
+        },
+        InputContext::default(),
+        20,
+    );
+
+    assert_eq!(
+        session
+            .model()
+            .generalized_error_model()
+            .total_observations(),
+        0
+    );
+}
+
+#[test]
+fn ignored_suggestion_does_not_train_generalized_error_model() {
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    type_keys(&mut session, "khogn", 0);
+    let observation = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        10,
+    );
+
+    assert!(matches!(
+        observation.action,
+        Some(EngineAction::ShowSuggestions { .. })
+    ));
+    assert_eq!(
+        session
+            .model()
+            .generalized_error_model()
+            .total_observations(),
+        0
+    );
+}
+
+#[test]
+fn immediate_backspace_does_not_train_generalized_error_model() {
+    let mut session = compatibility_session(EngineConfig::default(), khong_lexicon());
+    type_keys(&mut session, "khogn", 0);
+    let observation = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        10,
+    );
+    assert!(matches!(
+        observation.action,
+        Some(EngineAction::ReplaceRange(_))
+    ));
+
+    session.inject(InputKind::Backspace, InputContext::default(), 11);
+    assert_eq!(
+        session
+            .model()
+            .generalized_error_model()
+            .total_observations(),
+        0
+    );
+}
+
+#[test]
+fn weak_auto_settlement_does_not_train_generalized_error_model() {
+    let mut session = compatibility_session(EngineConfig::default(), khong_lexicon());
+    type_keys(&mut session, "khogn", 0);
+    let observation = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        10,
+    );
+    assert!(matches!(
+        observation.action,
+        Some(EngineAction::ReplaceRange(_))
+    ));
+
+    type_keys(&mut session, "aaaaaaaaaa", 20);
+    assert_eq!(
+        session
+            .model()
+            .generalized_error_model()
+            .total_observations(),
+        0
+    );
 }
 
 #[test]

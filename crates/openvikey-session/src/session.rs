@@ -559,6 +559,7 @@ impl LabSession {
             self.learning
                 .model_mut()
                 .apply_feedback(&key, &feedback, allow_learning);
+        self.observe_generalized_rule(&key, positive_delta, allow_learning);
         if self.capturing && allow_learning {
             self.record_capture(CaptureRecord::CorrectionConfirmed {
                 seq,
@@ -1163,6 +1164,7 @@ impl LabSession {
             event.at_ms,
             allow_learning,
             leftover,
+            !matches!(event.kind, InputKind::InsertText { .. }),
         );
         self.sync_left_context();
     }
@@ -1194,7 +1196,14 @@ impl LabSession {
             allow_learning,
         );
         if !text.is_empty() {
-            self.finish_implicit(text, event.seq, event.at_ms, allow_learning, leftover);
+            self.finish_implicit(
+                text,
+                event.seq,
+                event.at_ms,
+                allow_learning,
+                leftover,
+                !matches!(event.kind, InputKind::InsertText { .. }),
+            );
         }
         self.sync_left_context();
     }
@@ -1284,6 +1293,7 @@ impl LabSession {
         at_ms: i64,
         allow_learning: bool,
         leftover: bool,
+        observe_generalized: bool,
     ) {
         if leftover {
             self.miner.invalidate_due_to_caret_break();
@@ -1291,7 +1301,13 @@ impl LabSession {
             self.rewind.invalidate();
             return;
         }
-        self.finish_committed_implicit(replacement, seq, at_ms, allow_learning);
+        self.finish_committed_implicit(
+            replacement,
+            seq,
+            at_ms,
+            allow_learning,
+            observe_generalized,
+        );
         self.finish_rewind_implicit(replacement, seq, at_ms, allow_learning);
     }
 
@@ -1301,6 +1317,7 @@ impl LabSession {
         seq: u64,
         at_ms: i64,
         allow_learning: bool,
+        observe_generalized: bool,
     ) {
         let Some(feedback) = self.miner.finish_replacement(replacement, seq, at_ms) else {
             return;
@@ -1335,6 +1352,9 @@ impl LabSession {
             .learning
             .model_mut()
             .apply_feedback(&key, &feedback, true);
+        if observe_generalized {
+            self.observe_generalized_rule(&key, positive_delta, true);
+        }
         let (positive_total, negative_total) = self.learning.model().evidence_totals(&key);
         if self.capturing {
             self.record_capture(CaptureRecord::CorrectionConfirmed {
@@ -1371,6 +1391,7 @@ impl LabSession {
                         .learning
                         .model_mut()
                         .apply_feedback(&key, &feedback, true);
+                    self.observe_generalized_rule(&key, positive_delta, true);
                     let (positive_total, negative_total) =
                         self.learning.model().evidence_totals(&key);
                     if self.capturing {
@@ -1417,6 +1438,12 @@ impl LabSession {
                         &replacement_nfc,
                     );
                     if count > previous_count {
+                        self.learning.model_mut().observe_error_pattern(
+                            &original_nfc,
+                            &replacement_nfc,
+                            input_method,
+                            true,
+                        );
                         if self.capturing {
                             self.record_capture(CaptureRecord::CorrectionConfirmed {
                                 seq,
@@ -1452,6 +1479,22 @@ impl LabSession {
                     }
                 }
             }
+        }
+    }
+
+    fn observe_generalized_rule(
+        &mut self,
+        key: &RuleContextKey,
+        positive_delta: f64,
+        allow_learning: bool,
+    ) {
+        if positive_delta > 0.0 {
+            self.learning.model_mut().observe_error_pattern(
+                &key.original_nfc,
+                &key.candidate_nfc,
+                key.input_method,
+                allow_learning,
+            );
         }
     }
 

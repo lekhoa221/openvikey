@@ -9,7 +9,7 @@ pub mod diacritics;
 pub mod fuzzy;
 pub mod personal;
 pub mod telex_fix;
-mod vietnamese;
+pub(crate) mod vietnamese;
 
 use crate::types::{Candidate, CandidateSource, CompositionSnapshot, InputContext};
 

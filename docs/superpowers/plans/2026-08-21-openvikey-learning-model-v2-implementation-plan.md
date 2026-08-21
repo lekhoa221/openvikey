@@ -1829,7 +1829,7 @@ Lát 9 done when: Abbreviation/Fuzzy cold Auto match locked policy; TelexFix sti
 - Consumes: spec §14
 - Produces: `GeneralizedErrorModel` stats that **do not** enter `plan_intervention` or `rank`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```rust
 #[test]
@@ -1852,9 +1852,9 @@ fn ignored_suggestion_does_not_train_error_model() { /* */ }
 fn immediate_backspace_does_not_train_error_model() { /* */ }
 ```
 
-- [ ] **Step 2: Implement counters keyed by operation class (transpose, adjacent, extra key, early tone). Cap influence at 0. Shadow/offline inspect via lab dump. **No Auto, no Suggest from this model in v2.**
+- [x] **Step 2: Implement counters keyed by operation class (transpose, adjacent, extra key, early tone). Cap influence at 0. Shadow/offline inspect via lab dump. **No Auto, no Suggest from this model in v2.**
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```powershell
 git commit -am "feat: record generalized typing-error patterns in observe-only mode"
