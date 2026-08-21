@@ -134,6 +134,19 @@ impl LearningSession {
         settled
     }
 
+    /// Rolls back one edit and records only its operational veto, without evidence mass.
+    pub fn revert(
+        &mut self,
+        expected_revision: u64,
+        seq: u64,
+        allow_learning: bool,
+    ) -> Option<ReplaceRangeAction> {
+        let (inverse, key) = self.take_edit(expected_revision)?;
+        self.model
+            .record_immediate_revert(&key, inverse.edit_id, seq, allow_learning);
+        Some(inverse)
+    }
+
     /// Produces the exact inverse edit and, when allowed, negative evidence.
     pub fn undo(
         &mut self,
@@ -142,12 +155,7 @@ impl LearningSession {
         at_ms: i64,
         allow_learning: bool,
     ) -> Option<UndoOutcome> {
-        let inverse = self.undo.pop_undo(expected_revision)?;
-        let key = self.edit_rules.remove(&inverse.edit_id)?;
-        self.edit_order
-            .retain(|edit_id| *edit_id != inverse.edit_id);
-        self.pending_auto_settlements
-            .retain(|pending| pending.edit_id != inverse.edit_id);
+        let (inverse, key) = self.take_edit(expected_revision)?;
         let feedback = FeedbackEvent {
             seq,
             at_ms,
@@ -157,6 +165,19 @@ impl LearningSession {
         };
         self.model.apply_feedback(&key, &feedback, allow_learning);
         Some(UndoOutcome { inverse, feedback })
+    }
+
+    fn take_edit(
+        &mut self,
+        expected_revision: u64,
+    ) -> Option<(ReplaceRangeAction, RuleContextKey)> {
+        let inverse = self.undo.pop_undo(expected_revision)?;
+        let key = self.edit_rules.remove(&inverse.edit_id)?;
+        self.edit_order
+            .retain(|edit_id| *edit_id != inverse.edit_id);
+        self.pending_auto_settlements
+            .retain(|pending| pending.edit_id != inverse.edit_id);
+        Some((inverse, key))
     }
 
     pub fn invalidate_due_to_caret_break(&mut self) {

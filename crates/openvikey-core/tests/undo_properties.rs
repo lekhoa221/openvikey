@@ -60,6 +60,24 @@ fn auto_edit_undo_returns_exact_inverse_and_negative_evidence() {
 }
 
 #[test]
+fn immediate_revert_returns_inverse_without_negative_evidence() {
+    let mut session = LearningSession::new(AdaptiveModel::default(), 8);
+    session.record_auto_edit(rule(), edit(), 100, true);
+
+    let inverse = session
+        .revert(10, 1, true)
+        .expect("matching revision is immediately revertible");
+
+    assert_eq!(inverse.edit_id, 42);
+    assert_eq!(inverse.replacement, "ntn");
+    assert_eq!(session.model().evidence_totals(&rule()).1, 0.0);
+    assert!(session.undo(10, 2, 110, true).is_none());
+    for seq in 3..=12 {
+        assert!(session.observe_input_or_edit(seq, 4_000, true).is_empty());
+    }
+}
+
+#[test]
 fn auto_settles_once_after_ten_subsequent_input_or_edit_events() {
     let mut session = LearningSession::new(AdaptiveModel::default(), 8);
     session.record_auto_edit(rule(), edit(), 100, true);

@@ -212,6 +212,25 @@ impl AdaptiveModel {
         );
     }
 
+    /// Records the operational veto from an immediate revert without adding evidence mass.
+    pub fn record_immediate_revert(
+        &mut self,
+        key: &RuleContextKey,
+        edit_id: u64,
+        seq: u64,
+        allow_learning: bool,
+    ) {
+        if !allow_learning {
+            return;
+        }
+        self.correction_memory.record_immediate_revert(
+            &key.identity(),
+            key.left_token_nfc.as_deref(),
+            edit_id,
+            seq,
+        );
+    }
+
     #[must_use]
     pub fn negative_mass(&self, key: &RuleContextKey, evaluate_at_ms: i64) -> f64 {
         self.mass(key, evaluate_at_ms).1

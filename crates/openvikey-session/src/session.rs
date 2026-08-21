@@ -170,8 +170,17 @@ fn last_learned_matches_row(last: &LastLearned, row: &ModelInspectionRow) -> boo
 struct PendingPolicyUndo {
     raw_token: String,
     identity: CorrectionIdentity,
+    rule_key: RuleContextKey,
+    edit_id: u64,
     applied_at_ms: i64,
     learn_undo: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingConfirmedReject {
+    raw_token: String,
+    rule_key: RuleContextKey,
+    edit_id: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -207,6 +216,7 @@ pub struct LabSession {
     rewind: CompositionRewindMiner,
     intervention: InterventionConfig,
     pending_policy_undo: Option<PendingPolicyUndo>,
+    pending_confirmed_reject: Option<PendingConfirmedReject>,
     revert_guard: Option<RevertGuard>,
     focus_generation: u64,
     pending_reopen: bool,
@@ -258,6 +268,7 @@ impl LabSession {
             rewind: CompositionRewindMiner::default(),
             intervention: InterventionConfig::win32(),
             pending_policy_undo: None,
+            pending_confirmed_reject: None,
             revert_guard: None,
             focus_generation: 0,
             pending_reopen: false,
@@ -344,6 +355,7 @@ impl LabSession {
             )
         {
             self.revert_guard = None;
+            self.pending_confirmed_reject = None;
         }
         if self.pending_reopen {
             if matches!(event.kind, InputKind::Key { .. }) && allow_transform {
@@ -647,6 +659,7 @@ impl LabSession {
         self.engine.set_config(config);
         self.pending_reopen = false;
         self.revert_guard = None;
+        self.pending_confirmed_reject = None;
         self.last_slice = None;
         self.last_original_nfc.clear();
         self.last_left_token = None;
@@ -905,6 +918,8 @@ impl LabSession {
                 self.pending_policy_undo = Some(PendingPolicyUndo {
                     raw_token: snapshot.raw_keys.clone(),
                     identity: correction_identity(snapshot, &fix, method),
+                    rule_key: rule.clone(),
+                    edit_id: action.edit_id,
                     applied_at_ms: event.at_ms,
                     learn_undo: !structural,
                 });
@@ -963,6 +978,7 @@ impl LabSession {
                 .as_ref()
                 .is_some_and(|guard| guard.bypass_next_boundary && guard.raw_token == raw_keys)
         {
+            self.confirm_reverted_original(raw_keys, event.at_ms, allow_learning);
             self.revert_guard = None;
         }
         self.finish_implicit(
@@ -1013,6 +1029,27 @@ impl LabSession {
         self.last_auto_revision = None;
         self.last_auto_token = None;
         self.pending_policy_undo = None;
+    }
+
+    fn confirm_reverted_original(&mut self, raw_token: &str, at_ms: i64, allow_learning: bool) {
+        let Some(pending) = self.pending_confirmed_reject.take() else {
+            return;
+        };
+        if pending.raw_token != raw_token || !allow_learning {
+            return;
+        }
+        let feedback = FeedbackEvent {
+            seq: self.take_seq(),
+            at_ms,
+            // The existing Undo signal carries the calibrated strong veto weight.
+            // Text was already rolled back, so this call confirms learning only.
+            kind: FeedbackKind::Undo {
+                edit_id: pending.edit_id,
+            },
+        };
+        self.learning
+            .model_mut()
+            .apply_feedback(&pending.rule_key, &feedback, true);
     }
 
     fn leftover_committed_prefix(&self) -> bool {
@@ -1188,7 +1225,7 @@ impl LabSession {
         let learn_undo = allow_learning && pending.learn_undo;
         if self
             .learning
-            .undo(revision, self.next_seq, at_ms, learn_undo)
+            .revert(revision, self.next_seq, learn_undo)
             .is_none()
         {
             return false;
@@ -1197,6 +1234,11 @@ impl LabSession {
         self.document.pop_last();
         self.engine.restore_raw_keys(&pending.raw_token);
         self.clear_auto_anchor();
+        self.pending_confirmed_reject = learn_undo.then_some(PendingConfirmedReject {
+            raw_token: pending.raw_token.clone(),
+            rule_key: pending.rule_key,
+            edit_id: pending.edit_id,
+        });
         let restored = self.engine.snapshot();
         self.revert_guard = Some(RevertGuard {
             identity: pending.identity,
@@ -1282,11 +1324,13 @@ impl LabSession {
         self.mining_snapshot = None;
         self.clear_auto_anchor();
         self.revert_guard = None;
+        self.pending_confirmed_reject = None;
     }
 
     fn invalidate_caret(&mut self) {
         self.pending_reopen = false;
         self.revert_guard = None;
+        self.pending_confirmed_reject = None;
         self.focus_generation = self.focus_generation.saturating_add(1);
         self.miner.invalidate_due_to_caret_break();
         self.rewind.invalidate();
@@ -1360,6 +1404,7 @@ impl LabSession {
             rewind: self.rewind.clone(),
             intervention: self.intervention,
             pending_policy_undo: self.pending_policy_undo.clone(),
+            pending_confirmed_reject: self.pending_confirmed_reject.clone(),
             revert_guard: self.revert_guard.clone(),
             focus_generation: self.focus_generation,
             pending_reopen: self.pending_reopen,
@@ -1403,6 +1448,7 @@ impl LabSession {
         self.rewind = checkpoint.rewind;
         self.intervention = checkpoint.intervention;
         self.pending_policy_undo = checkpoint.pending_policy_undo;
+        self.pending_confirmed_reject = checkpoint.pending_confirmed_reject;
         self.revert_guard = checkpoint.revert_guard;
         self.focus_generation = checkpoint.focus_generation;
         self.pending_reopen = checkpoint.pending_reopen;
@@ -1432,6 +1478,7 @@ pub struct SessionInjectCheckpoint {
     rewind: CompositionRewindMiner,
     intervention: InterventionConfig,
     pending_policy_undo: Option<PendingPolicyUndo>,
+    pending_confirmed_reject: Option<PendingConfirmedReject>,
     revert_guard: Option<RevertGuard>,
     focus_generation: u64,
     pending_reopen: bool,

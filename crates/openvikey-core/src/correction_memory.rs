@@ -537,6 +537,31 @@ impl CorrectionMemory {
         }
     }
 
+    pub(crate) fn record_immediate_revert(
+        &mut self,
+        identity: &CorrectionIdentity,
+        left_token_nfc: Option<&str>,
+        edit_id: u64,
+        seq: u64,
+    ) {
+        let Some(row) = self
+            .rows
+            .binary_search_by(|row| row.identity.cmp(identity))
+            .ok()
+            .map(|index| &mut self.rows[index])
+        else {
+            return;
+        };
+        row.global.mark_undo(edit_id, seq);
+        if let Some(context) = left_token_nfc.and_then(|left| {
+            row.contexts
+                .iter_mut()
+                .find(|context| context.left_token_nfc == left)
+        }) {
+            context.evidence.mark_undo(edit_id, seq);
+        }
+    }
+
     pub(crate) fn raw_totals(
         &self,
         identity: &CorrectionIdentity,

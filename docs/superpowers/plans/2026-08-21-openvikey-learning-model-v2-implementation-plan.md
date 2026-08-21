@@ -1334,7 +1334,7 @@ Lát 4 done when: v1 fixtures migrate; blend replaces max-merge; Personal is Sug
 - Consumes: spec §7.1–7.3 weights
 - Produces: Backspace-in-window = rollback + guard, **no** `-1.5`; explicit Undo hotkey = `-1.5`; recommit original after rollback = `-1.5` once
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```rust
 #[test]
@@ -1363,18 +1363,18 @@ fn one_edit_cannot_feedback_twice() {
 }
 ```
 
-- [ ] **Step 2: Run — expect FAIL** (`try_restore_policy_undo` currently calls `learning.undo` which applies `FeedbackKind::Undo` -1.5)
+- [x] **Step 2: Run — expect FAIL** (`try_restore_policy_undo` called `learning.undo` and applied `FeedbackKind::Undo` -1.5)
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 - Immediate revert: rollback settlement + language pending (none yet) **without** `FeedbackKind::Undo`
 - `undo_last` (hotkey): inverse text + `FeedbackKind::Undo` -1.5 + cooldown/demotion
-- Guard-bypass original commit: `FeedbackKind::ExplicitReject` -1.5 once (confirmed rejection)
+- Guard-bypass original commit: strong veto `-1.5` once (confirmed rejection). `ExplicitReject` keeps its frozen `-1.0` meaning; the implementation reuses the existing calibrated `Undo` signal for model evidence after text rollback, and Task 19 records the semantic action as `CorrectionConfirmed`.
 - Do not add new `FeedbackKind` variants unless ADR 0011 already allows it; prefer existing kinds
 
-- [ ] **Step 4: Run** session_capture + learning_state_machine + revert tests
+- [x] **Step 4: Run** session_capture + learning_state_machine + revert tests
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git commit -am "feat: separate immediate revert from explicit undo and confirmed reject"

@@ -397,8 +397,9 @@ fn auto_commit_is_undoable_with_stored_snapshot_revision() {
         session.document_text()
     );
     let mass_after_auto = session.model().positive_mass(&rule, 30);
-    let _ = session.undo_last(31);
-    assert!(session.model().negative_mass(&rule, 31) >= 1.5);
+    assert!(session.undo_last(31).is_some());
+    assert!(session.undo_last(32).is_none());
+    assert_eq!(session.model().evidence_totals(&rule).1, 1.5);
     assert!(session.model().positive_mass(&rule, 31) <= mass_after_auto);
 }
 
@@ -1013,6 +1014,17 @@ fn khong_lexicon() -> Lexicon {
     )
 }
 
+fn khogn_rule() -> RuleContextKey {
+    RuleContextKey {
+        input_method: InputMethod::Telex,
+        source: CandidateSource::Fuzzy,
+        original_nfc: "khogn".into(),
+        candidate_nfc: "không".into(),
+        left_token_nfc: None,
+        source_rule_id: "fuzzy:weighted:khogn->không".into(),
+    }
+}
+
 fn nen_lexicon() -> Lexicon {
     Lexicon::from_entries(
         [
@@ -1142,6 +1154,52 @@ fn space_replace_backspace_space_commits_original_once() {
     assert!(session.accept_top(13).is_none());
     assert!(session.document_text().contains("khogn"));
     assert!(!session.document_text().contains("không"));
+}
+
+#[test]
+fn immediate_backspace_rolls_back_without_strong_negative() {
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    type_keys(&mut session, "khogn", 0);
+    let replaced = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        10,
+    );
+    assert!(matches!(
+        replaced.action,
+        Some(EngineAction::ReplaceRange(_))
+    ));
+
+    session.inject(InputKind::Backspace, InputContext::default(), 11);
+
+    assert_eq!(session.composition_text(), "khogn");
+    assert_eq!(session.model().evidence_totals(&khogn_rule()).1, 0.0);
+}
+
+#[test]
+fn recommit_original_after_rollback_adds_strong_negative_once() {
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    type_keys(&mut session, "khogn", 0);
+    session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        10,
+    );
+    session.inject(InputKind::Backspace, InputContext::default(), 11);
+
+    session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        12,
+    );
+    assert_eq!(session.model().evidence_totals(&khogn_rule()).1, 1.5);
+
+    session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        13,
+    );
+    assert_eq!(session.model().evidence_totals(&khogn_rule()).1, 1.5);
 }
 
 #[test]
