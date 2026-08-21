@@ -7,6 +7,8 @@ pub mod decision;
 pub mod engine;
 pub mod feedback;
 pub mod generate;
+pub mod intervention;
+pub mod learning_config;
 pub mod lexicon;
 pub mod model;
 pub mod rank;
