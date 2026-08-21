@@ -4,7 +4,9 @@
 //! rows are decoded only by the explicit migration path; serde defaults never
 //! reinterpret a partial v2 payload as v1 state.
 
-use crate::correction_memory::{CorrectionEvidence, CorrectionMemory, ImportedOperationalMetadata};
+use crate::correction_memory::{
+    CorrectionEvidence, CorrectionMemory, ImportedOperationalMetadata, PersonalTransaction,
+};
 use crate::decision::DecisionState;
 use crate::intervention::CorrectionIdentity;
 use crate::learning_config::LearningConfigV2;
@@ -17,7 +19,6 @@ const DEFAULT_HALF_LIFE_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
 const DEFAULT_MAX_RULES: usize = 10_000;
 const DEFAULT_MAX_CONTEXT_ROWS: usize = 30_000;
 const DEFAULT_MAX_PERSONAL_PAIRS: usize = 512;
-const PERSONAL_RULE_ID: &str = "personal-correction";
 
 const fn default_max_rules() -> usize {
     DEFAULT_MAX_RULES
@@ -238,6 +239,7 @@ impl AdaptiveModel {
                     ));
                 }
                 let max_rules = model.config().max_rules;
+                model.correction_memory.normalize_personal_transactions();
                 model
                     .correction_memory
                     .enforce_limits(max_rules, DEFAULT_MAX_CONTEXT_ROWS);
@@ -288,6 +290,7 @@ impl AdaptiveModel {
         input_method: InputMethod,
         original_nfc: impl Into<String>,
         replacement_nfc: impl Into<String>,
+        transaction: PersonalTransaction,
         allow_learning: bool,
     ) -> bool {
         if !allow_learning {
@@ -299,20 +302,15 @@ impl AdaptiveModel {
         {
             return false;
         }
-        let key = RuleContextKey {
+        let max_personal_pairs = self.config().max_personal_pairs.max(1);
+        let max_corrections = self.config().max_rules.max(1);
+        self.correction_memory.observe_personal_bounded(
             input_method,
-            source: CandidateSource::Personal,
-            original_nfc: original_nfc.clone(),
-            candidate_nfc: replacement_nfc.clone(),
-            left_token_nfc: None,
-            source_rule_id: PERSONAL_RULE_ID.into(),
-        };
-        self.prepare_for(&key);
-        self.correction_memory.record_personal_count(
-            input_method,
-            original_nfc,
-            replacement_nfc,
-            self.config().max_personal_pairs.max(1),
+            &original_nfc,
+            &replacement_nfc,
+            transaction,
+            max_personal_pairs,
+            max_corrections,
         )
     }
 
@@ -324,18 +322,21 @@ impl AdaptiveModel {
         original_nfc: &str,
         replacement_nfc: &str,
     ) -> u32 {
-        self.correction_memory
-            .personal_count(input_method, original_nfc, replacement_nfc)
+        self.correction_memory.personal_observation_count(
+            input_method,
+            original_nfc,
+            replacement_nfc,
+        )
     }
 
     #[must_use]
     pub fn personal_promoted(&self) -> Vec<(InputMethod, String, String)> {
-        self.correction_memory.promoted_personal()
+        self.correction_memory.all_promoted_personal()
     }
 
     /// Physically removes a correction identity and all context/metadata rows.
     pub fn forget_rule(&mut self, key: &RuleContextKey) -> bool {
-        self.correction_memory.forget(&key.identity())
+        self.correction_memory.forget_identity(&key.identity())
     }
 
     /// Physically removes one Personal pair from probation and promoted state.
@@ -361,7 +362,7 @@ impl AdaptiveModel {
 
     /// Forget exactly one identity previously returned by inspection.
     pub fn forget_inspection_row(&mut self, row: &ModelInspectionRow) -> bool {
-        self.correction_memory.forget(&CorrectionIdentity {
+        self.correction_memory.forget_identity(&CorrectionIdentity {
             input_method: row.input_method,
             source: row.source,
             original_nfc: row.original_nfc.clone(),
@@ -452,19 +453,23 @@ impl AdaptiveModel {
             let is_promoted = promoted.contains(&row.identity_tuple());
             memory.import_personal(
                 row.input_method,
-                row.original_nfc,
-                row.replacement_nfc,
+                &row.original_nfc,
+                &row.replacement_nfc,
                 row.count,
                 is_promoted,
             );
         }
         for row in legacy.personal.promoted {
-            if memory.personal_count(row.input_method, &row.original_nfc, &row.replacement_nfc) == 0
+            if memory.personal_observation_count(
+                row.input_method,
+                &row.original_nfc,
+                &row.replacement_nfc,
+            ) == 0
             {
                 memory.import_personal(
                     row.input_method,
-                    row.original_nfc,
-                    row.replacement_nfc,
+                    &row.original_nfc,
+                    &row.replacement_nfc,
                     0,
                     true,
                 );

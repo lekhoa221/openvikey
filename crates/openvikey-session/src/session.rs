@@ -9,6 +9,7 @@ use openvikey_core::correction::{
     AutoEditContext, CorrectionSlice, InterventionConfig, candidate_rule_key,
     run_learning_correction_slice_with_guard,
 };
+use openvikey_core::correction_memory::PersonalTransaction;
 use openvikey_core::decision::{DecisionConfig, DecisionState};
 use openvikey_core::engine::{Engine, EngineConfig};
 use openvikey_core::feedback::{
@@ -1135,6 +1136,7 @@ impl LabSession {
                         input_method,
                         original_nfc.clone(),
                         replacement_nfc.clone(),
+                        PersonalTransaction { anchor: seq, at_ms },
                         true,
                     );
                     let count = self.learning.model().personal_correction_count(

@@ -17,6 +17,7 @@ const IMPLICIT_CORRECTION_MASS: f64 = 1.5;
 const SETTLEMENT_ADD: f64 = 0.3;
 const MAX_SETTLEMENTS_PER_CORRECTION: usize = 24;
 const PERSONAL_PROMOTE_K: u32 = 2;
+const MAX_PERSONAL_TRANSACTIONS: usize = 64;
 const PERSONAL_RULE_ID: &str = "personal-correction";
 
 const fn default_half_life_ms() -> i64 {
@@ -30,6 +31,13 @@ pub struct CorrectionEvidence {
     pub at_ms: i64,
     pub positive: f64,
     pub negative: f64,
+}
+
+/// Durable identity of one independently observed Personal correction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct PersonalTransaction {
+    pub anchor: u64,
+    pub at_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -212,8 +220,10 @@ struct CorrectionRow {
     identity: CorrectionIdentity,
     global: EvidenceBucket,
     contexts: Vec<ContextBucket>,
+    #[serde(default, rename = "personal_observation_count", skip_serializing)]
+    legacy_personal_observation_count: u32,
     #[serde(default)]
-    personal_observation_count: u32,
+    personal_transactions: Vec<PersonalTransaction>,
     #[serde(default)]
     personal_promoted: bool,
 }
@@ -224,7 +234,8 @@ impl CorrectionRow {
             identity,
             global: EvidenceBucket::default(),
             contexts: Vec::new(),
-            personal_observation_count: 0,
+            legacy_personal_observation_count: 0,
+            personal_transactions: Vec::new(),
             personal_promoted: false,
         }
     }
@@ -585,27 +596,51 @@ impl CorrectionMemory {
             })
     }
 
-    pub(crate) fn forget(&mut self, identity: &CorrectionIdentity) -> bool {
+    /// Remove a global correction row, all contexts, and all Personal metadata.
+    pub fn forget_identity(&mut self, identity: &CorrectionIdentity) -> bool {
         let before = self.rows.len();
         self.rows.retain(|row| &row.identity != identity);
         self.rows.len() != before
     }
 
-    pub(crate) fn record_personal_count(
+    /// Observe one independently anchored Personal correction transaction.
+    pub fn observe_personal(
         &mut self,
         input_method: InputMethod,
-        original_nfc: String,
-        replacement_nfc: String,
-        max_personal_pairs: usize,
+        original_nfc: &str,
+        replacement_nfc: &str,
+        transaction: PersonalTransaction,
     ) -> bool {
-        let identity = personal_identity(input_method, original_nfc, replacement_nfc);
-        if self.row(&identity).is_none() && !self.make_room_for_personal(max_personal_pairs.max(1))
+        if original_nfc.is_empty() || replacement_nfc.is_empty() || original_nfc == replacement_nfc
         {
             return false;
         }
+        let identity = personal_identity(
+            input_method,
+            original_nfc.to_string(),
+            replacement_nfc.to_string(),
+        );
+        let half_life_ms = self.half_life_ms;
         let row = self.row_mut(&identity);
-        row.personal_observation_count = row.personal_observation_count.saturating_add(1);
-        if row.personal_observation_count < PERSONAL_PROMOTE_K || row.personal_promoted {
+        if row
+            .personal_transactions
+            .iter()
+            .any(|observed| observed.anchor == transaction.anchor)
+        {
+            return false;
+        }
+        row.personal_transactions.push(transaction);
+        row.personal_transactions.sort_unstable();
+        trim_vec_front(&mut row.personal_transactions, MAX_PERSONAL_TRANSACTIONS);
+        row.global.apply(CorrectionEvidence {
+            seq: transaction.anchor,
+            at_ms: transaction.at_ms,
+            positive: 1.0,
+            negative: 0.0,
+        });
+        row.global
+            .compact_at(transaction.at_ms, MAX_PERSONAL_TRANSACTIONS, half_life_ms);
+        if row.personal_transactions.len() < PERSONAL_PROMOTE_K as usize || row.personal_promoted {
             return false;
         }
         row.personal_promoted = true;
@@ -613,24 +648,50 @@ impl CorrectionMemory {
         true
     }
 
+    pub(crate) fn observe_personal_bounded(
+        &mut self,
+        input_method: InputMethod,
+        original_nfc: &str,
+        replacement_nfc: &str,
+        transaction: PersonalTransaction,
+        max_personal_pairs: usize,
+        max_corrections: usize,
+    ) -> bool {
+        let identity = personal_identity(
+            input_method,
+            original_nfc.to_string(),
+            replacement_nfc.to_string(),
+        );
+        if self.row(&identity).is_none() {
+            if !self.make_room_for_personal(max_personal_pairs.max(1)) {
+                return false;
+            }
+            self.prepare_for(&identity, None, max_corrections, usize::MAX);
+        }
+        self.observe_personal(input_method, original_nfc, replacement_nfc, transaction)
+    }
+
     pub(crate) fn import_personal(
         &mut self,
         input_method: InputMethod,
-        original_nfc: String,
-        replacement_nfc: String,
+        original_nfc: &str,
+        replacement_nfc: &str,
         count: u32,
         promoted: bool,
     ) {
-        let identity = personal_identity(input_method, original_nfc, replacement_nfc);
-        let row = self.row_mut(&identity);
-        row.personal_observation_count = row.personal_observation_count.max(count);
-        row.personal_promoted |= promoted;
-        if row.personal_promoted {
-            row.global.state = DecisionState::Suggest;
+        let required = if promoted {
+            count.max(PERSONAL_PROMOTE_K)
+        } else {
+            count
+        };
+        for transaction in synthetic_personal_transactions(required) {
+            self.observe_personal(input_method, original_nfc, replacement_nfc, transaction);
         }
     }
 
-    pub(crate) fn personal_count(
+    /// Number of independent observations retained for one Personal pair.
+    #[must_use]
+    pub fn personal_observation_count(
         &self,
         input_method: InputMethod,
         original_nfc: &str,
@@ -641,11 +702,31 @@ impl CorrectionMemory {
             original_nfc.to_string(),
             replacement_nfc.to_string(),
         );
-        self.row(&identity)
-            .map_or(0, |row| row.personal_observation_count)
+        self.row(&identity).map_or(0, |row| {
+            u32::try_from(row.personal_transactions.len()).unwrap_or(u32::MAX)
+        })
     }
 
-    pub(crate) fn promoted_personal(&self) -> Vec<(InputMethod, String, String)> {
+    /// Promoted Personal pairs for a pure, method-specific generator table.
+    #[must_use]
+    pub fn promoted_personal(&self, input_method: InputMethod) -> Vec<(String, String)> {
+        self.rows
+            .iter()
+            .filter(|row| {
+                row.identity.source == CandidateSource::Personal
+                    && row.identity.input_method == input_method
+                    && row.personal_promoted
+            })
+            .map(|row| {
+                (
+                    row.identity.original_nfc.clone(),
+                    row.identity.candidate_nfc.clone(),
+                )
+            })
+            .collect()
+    }
+
+    pub(crate) fn all_promoted_personal(&self) -> Vec<(InputMethod, String, String)> {
         self.rows
             .iter()
             .filter(|row| row.identity.source == CandidateSource::Personal && row.personal_promoted)
@@ -659,13 +740,20 @@ impl CorrectionMemory {
             .collect()
     }
 
+    /// Source policy and demotion markers jointly gate Auto.
+    #[must_use]
+    pub fn allows_auto(&self, identity: &CorrectionIdentity, evaluate_at_ms: i64) -> bool {
+        identity.source.max_action() == ActionCap::Auto
+            && self.auto_allowed(identity, None, evaluate_at_ms)
+    }
+
     pub(crate) fn forget_personal(
         &mut self,
         input_method: InputMethod,
         original_nfc: &str,
         replacement_nfc: &str,
     ) -> bool {
-        self.forget(&personal_identity(
+        self.forget_identity(&personal_identity(
             input_method,
             original_nfc.to_string(),
             replacement_nfc.to_string(),
@@ -693,6 +781,42 @@ impl CorrectionMemory {
         let row = self.row_mut(identity);
         if row.global.state == DecisionState::Ignore {
             row.global.state = cap_state(identity, state.min(DecisionState::Suggest));
+        }
+    }
+
+    pub(crate) fn normalize_personal_transactions(&mut self) {
+        for row in &mut self.rows {
+            if row.identity.source != CandidateSource::Personal {
+                continue;
+            }
+            let required = if row.personal_promoted {
+                row.legacy_personal_observation_count
+                    .max(PERSONAL_PROMOTE_K)
+            } else {
+                row.legacy_personal_observation_count
+            };
+            for transaction in synthetic_personal_transactions(required) {
+                if row
+                    .personal_transactions
+                    .iter()
+                    .any(|observed| observed.anchor == transaction.anchor)
+                {
+                    continue;
+                }
+                row.personal_transactions.push(transaction);
+                row.global.apply(CorrectionEvidence {
+                    seq: transaction.anchor,
+                    at_ms: transaction.at_ms,
+                    positive: 1.0,
+                    negative: 0.0,
+                });
+            }
+            row.personal_transactions.sort_unstable();
+            row.legacy_personal_observation_count = 0;
+            if row.personal_transactions.len() >= PERSONAL_PROMOTE_K as usize {
+                row.personal_promoted = true;
+                row.global.state = DecisionState::Suggest;
+            }
         }
     }
 
@@ -872,8 +996,9 @@ impl CorrectionMemory {
                 row.identity.source == CandidateSource::Personal && !row.personal_promoted
             })
             .min_by(|(_, left), (_, right)| {
-                left.personal_observation_count
-                    .cmp(&right.personal_observation_count)
+                left.personal_transactions
+                    .len()
+                    .cmp(&right.personal_transactions.len())
                     .then_with(|| left.identity.cmp(&right.identity))
             })
             .map(|(index, _)| index);
@@ -943,18 +1068,18 @@ fn push_inspection(
     if bucket.events.is_empty()
         && bucket.summary.checkpoint_at_ms.is_none()
         && bucket.state == DecisionState::Ignore
-        && row.personal_observation_count == 0
+        && row.personal_transactions.is_empty()
     {
         return;
     }
     let raw = bucket.raw_mass();
-    let personal_count = usize::try_from(row.personal_observation_count).unwrap_or(usize::MAX);
+    let personal_count = row.personal_transactions.len();
     output.push(CorrectionInspection {
         identity: row.identity.clone(),
         left_token_nfc,
         state: cap_state(&row.identity, bucket.state),
         evidence_count: bucket.events.len().max(personal_count),
-        positive_evidence: raw.0.max(f64::from(row.personal_observation_count)),
+        positive_evidence: raw.0,
         negative_evidence: raw.1,
         last_evidence_at_ms: bucket.last_activity_at_ms(),
     });
@@ -1013,6 +1138,16 @@ fn context_priority(
 fn evidence_strength(bucket: &EvidenceBucket) -> f64 {
     let mass = bucket.raw_mass();
     mass.0 + mass.1
+}
+
+fn synthetic_personal_transactions(count: u32) -> Vec<PersonalTransaction> {
+    let retained = count.min(64);
+    (0..retained)
+        .map(|index| PersonalTransaction {
+            anchor: u64::MAX - u64::from(index),
+            at_ms: 0,
+        })
+        .collect()
 }
 
 fn personal_identity(

@@ -1285,7 +1285,7 @@ git commit -am "feat: migrate adaptive model payload to v2 correction memory"
 - Consumes: two independent transactions (`seq`/`edit`/`session` anchors)
 - Produces: Personal source Suggest-only; never Auto; decay/suppression/forget like others
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```rust
 #[test]
@@ -1306,13 +1306,13 @@ fn second_independent_transaction_promotes_suggest_only() {
 fn replayed_same_seq_does_not_count_as_second_observation() { /* idempotent */ }
 ```
 
-- [ ] **Step 2: Run — expect FAIL** if still using count-only store
+- [x] **Step 2: Run — expect FAIL** if still using count-only store
 
-- [ ] **Step 3: Implement.** Remove runtime writes to the old `PersonalCorrectionStore` after v2. Keep a deserialize path only inside migration.
+- [x] **Step 3: Implement.** Remove runtime writes to the old `PersonalCorrectionStore` after v2. Keep a deserialize path only inside migration.
 
-- [ ] **Step 4: Run** personal + session_capture personal tests
+- [x] **Step 4: Run** personal + session_capture personal tests
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git commit -am "feat: fold personal pairs into correction memory with suggest-only cap"

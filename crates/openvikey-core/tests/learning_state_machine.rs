@@ -5,6 +5,7 @@
 use openvikey_core::correction::{
     AutoEditContext, InterventionConfig, run_correction_slice, run_learning_correction_slice,
 };
+use openvikey_core::correction_memory::PersonalTransaction;
 use openvikey_core::decision::{ActionCap, DecisionConfig, DecisionState, decide};
 use openvikey_core::feedback::LearningSession;
 use openvikey_core::generate::personal::PersonalGenerator;
@@ -659,9 +660,27 @@ fn implicit_correction_adds_one_and_a_half_mass() {
 #[test]
 fn personal_store_promotes_on_second_repeat_and_old_payload_loads() {
     let mut model = AdaptiveModel::default();
-    assert!(!model.record_personal_correction(InputMethod::Vni, "x3uong", "xưởng", true));
+    assert!(!model.record_personal_correction(
+        InputMethod::Vni,
+        "x3uong",
+        "xưởng",
+        PersonalTransaction {
+            anchor: 1,
+            at_ms: 0
+        },
+        true,
+    ));
     assert!(model.personal_promoted().is_empty());
-    assert!(model.record_personal_correction(InputMethod::Vni, "x3uong", "xưởng", true));
+    assert!(model.record_personal_correction(
+        InputMethod::Vni,
+        "x3uong",
+        "xưởng",
+        PersonalTransaction {
+            anchor: 2,
+            at_ms: 0
+        },
+        true,
+    ));
     assert_eq!(
         model.personal_promoted(),
         vec![(InputMethod::Vni, "x3uong".into(), "xưởng".into())]
@@ -711,4 +730,5 @@ fn personal_generator_looks_up_promoted_normalized() {
     assert_eq!(candidates[0].text, "xưởng");
     assert_eq!(candidates[0].source, CandidateSource::Personal);
     assert_eq!(candidates[0].id, 5_000_000);
+    assert_eq!(candidates[0].evidence, "personal-correction");
 }

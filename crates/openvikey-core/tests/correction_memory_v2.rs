@@ -1,6 +1,8 @@
 //! Exact-correction memory v2 contracts.
 
-use openvikey_core::correction_memory::{CorrectionEvidence, CorrectionMemory};
+use openvikey_core::correction_memory::{
+    CorrectionEvidence, CorrectionMemory, PersonalTransaction,
+};
 use openvikey_core::decision::DecisionState;
 use openvikey_core::intervention::CorrectionIdentity;
 use openvikey_core::types::{CandidateSource, InputMethod};
@@ -154,4 +156,81 @@ fn replayed_recent_sequence_remains_idempotent_after_compaction() {
     memory.apply(&id, Some("tôi"), evidence(1, 1.0, 0.0));
 
     assert_eq!(before, memory.stable_hash());
+}
+
+fn transaction(anchor: u64) -> PersonalTransaction {
+    PersonalTransaction {
+        anchor,
+        at_ms: i64::try_from(anchor).unwrap(),
+    }
+}
+
+#[test]
+fn first_personal_observation_is_probation_and_does_not_generate() {
+    let mut memory = CorrectionMemory::default();
+
+    assert!(!memory.observe_personal(InputMethod::Telex, "aaa", "bbb", transaction(1),));
+
+    assert!(memory.promoted_personal(InputMethod::Telex).is_empty());
+    assert_eq!(
+        memory.personal_observation_count(InputMethod::Telex, "aaa", "bbb"),
+        1
+    );
+}
+
+#[test]
+fn second_independent_transaction_promotes_personal_suggest_only() {
+    let mut memory = CorrectionMemory::default();
+    memory.observe_personal(InputMethod::Telex, "aaa", "bbb", transaction(1));
+
+    assert!(memory.observe_personal(InputMethod::Telex, "aaa", "bbb", transaction(2),));
+
+    assert_eq!(
+        memory.promoted_personal(InputMethod::Telex),
+        vec![("aaa".into(), "bbb".into())]
+    );
+    let personal = CorrectionIdentity {
+        input_method: InputMethod::Telex,
+        source: CandidateSource::Personal,
+        original_nfc: "aaa".into(),
+        candidate_nfc: "bbb".into(),
+        source_rule_id: "personal-correction".into(),
+    };
+    assert_eq!(memory.query_state(&personal, None), DecisionState::Suggest);
+    assert!(!memory.allows_auto(&personal, 2));
+    assert!((memory.blended_confidence(&personal, None, 0, 2.0) - 0.75).abs() < 1e-12);
+    memory.apply(&personal, None, evidence(3, 0.0, 1.0));
+    assert!((memory.blended_confidence(&personal, None, 0, 2.0) - 0.60).abs() < 1e-12);
+}
+
+#[test]
+fn replayed_personal_transaction_does_not_count_twice() {
+    let mut memory = CorrectionMemory::default();
+    memory.observe_personal(InputMethod::Vni, "x3uong", "xưởng", transaction(7));
+
+    assert!(!memory.observe_personal(InputMethod::Vni, "x3uong", "xưởng", transaction(7),));
+
+    assert_eq!(
+        memory.personal_observation_count(InputMethod::Vni, "x3uong", "xưởng"),
+        1
+    );
+    assert!(memory.promoted_personal(InputMethod::Vni).is_empty());
+}
+
+#[test]
+fn forgetting_personal_identity_removes_probation_evidence_and_promotion() {
+    let mut memory = CorrectionMemory::default();
+    memory.observe_personal(InputMethod::Telex, "aaa", "bbb", transaction(1));
+    memory.observe_personal(InputMethod::Telex, "aaa", "bbb", transaction(2));
+    let personal = CorrectionIdentity {
+        input_method: InputMethod::Telex,
+        source: CandidateSource::Personal,
+        original_nfc: "aaa".into(),
+        candidate_nfc: "bbb".into(),
+        source_rule_id: "personal-correction".into(),
+    };
+
+    assert!(memory.forget_identity(&personal));
+    assert!(memory.promoted_personal(InputMethod::Telex).is_empty());
+    assert!((memory.blended_confidence(&personal, None, 2, 2.0) - 0.5).abs() < 1e-12);
 }

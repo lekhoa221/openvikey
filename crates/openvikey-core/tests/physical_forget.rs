@@ -1,5 +1,6 @@
 //! Physical deletion contracts for learned personal data.
 
+use openvikey_core::correction_memory::PersonalTransaction;
 use openvikey_core::learning_config::LearningConfigV2;
 use openvikey_core::model::{AdaptiveModel, ModelConfig, RuleContextKey};
 use openvikey_core::types::{CandidateSource, FeedbackEvent, FeedbackKind, InputMethod};
@@ -61,11 +62,12 @@ fn forget_rule_removes_key_and_metadata_from_serialized_model() {
 #[test]
 fn forget_personal_pair_removes_probation_and_promoted_rows() {
     let mut model = AdaptiveModel::default();
-    for _ in 0..2 {
+    for anchor in 1..=2 {
         model.record_personal_correction(
             InputMethod::Telex,
             "zz-personal-original",
             "zz-personal-candidate",
+            PersonalTransaction { anchor, at_ms: 0 },
             true,
         );
     }
@@ -100,6 +102,10 @@ fn forget_all_learning_data_resets_to_cold_start_hash() {
         InputMethod::Telex,
         "zz-personal-original",
         "zz-personal-candidate",
+        PersonalTransaction {
+            anchor: 1,
+            at_ms: 0,
+        },
         true,
     );
     assert!(model.forget_all());
@@ -167,11 +173,47 @@ fn personal_at_cap_evicts_weak_probation_before_promoted_pair() {
         ..ModelConfig::default()
     };
     let mut model = AdaptiveModel::new(config);
-    model.record_personal_correction(InputMethod::Telex, "weak", "w", true);
-    model.record_personal_correction(InputMethod::Telex, "kept", "k", true);
-    assert!(model.record_personal_correction(InputMethod::Telex, "kept", "k", true));
+    model.record_personal_correction(
+        InputMethod::Telex,
+        "weak",
+        "w",
+        PersonalTransaction {
+            anchor: 1,
+            at_ms: 0,
+        },
+        true,
+    );
+    model.record_personal_correction(
+        InputMethod::Telex,
+        "kept",
+        "k",
+        PersonalTransaction {
+            anchor: 2,
+            at_ms: 0,
+        },
+        true,
+    );
+    assert!(model.record_personal_correction(
+        InputMethod::Telex,
+        "kept",
+        "k",
+        PersonalTransaction {
+            anchor: 3,
+            at_ms: 0
+        },
+        true,
+    ));
 
-    model.record_personal_correction(InputMethod::Telex, "new", "n", true);
+    model.record_personal_correction(
+        InputMethod::Telex,
+        "new",
+        "n",
+        PersonalTransaction {
+            anchor: 4,
+            at_ms: 0,
+        },
+        true,
+    );
 
     assert_eq!(
         model.personal_correction_count(InputMethod::Telex, "weak", "w"),

@@ -23,6 +23,7 @@
 use openvikey_core::correction::{
     InterventionConfig, boundary_assist_candidate, run_correction_slice, unique_telex_fix_candidate,
 };
+use openvikey_core::correction_memory::PersonalTransaction;
 use openvikey_core::decision::{DecisionConfig, DecisionState};
 use openvikey_core::generate::telex_fix::TelexFixGenerator;
 use openvikey_core::generate::{Generator, LeftContext};
@@ -180,6 +181,10 @@ fn personal_store_evicts_weak_pair_at_512_instead_of_rejecting_new_pair() {
             InputMethod::Telex,
             &original,
             &replacement,
+            PersonalTransaction {
+                anchor: u64::from(index) + 1,
+                at_ms: 0,
+            },
             true
         ));
     }
@@ -187,7 +192,16 @@ fn personal_store_evicts_weak_pair_at_512_instead_of_rejecting_new_pair() {
         model.personal_correction_count(InputMethod::Telex, "orig511", "repl511"),
         1
     );
-    assert!(!model.record_personal_correction(InputMethod::Telex, "orig512", "repl512", true));
+    assert!(!model.record_personal_correction(
+        InputMethod::Telex,
+        "orig512",
+        "repl512",
+        PersonalTransaction {
+            anchor: 513,
+            at_ms: 0,
+        },
+        true,
+    ));
     assert_eq!(
         model.personal_correction_count(InputMethod::Telex, "orig0", "repl0"),
         0

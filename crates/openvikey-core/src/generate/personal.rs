@@ -44,7 +44,7 @@ impl Generator for PersonalGenerator {
                 id: PERSONAL_ID_BASE.saturating_add(u64::try_from(idx).unwrap_or(u64::MAX)),
                 text: replacement.clone(),
                 source: CandidateSource::Personal,
-                evidence: format!("personal:{key}"),
+                evidence: "personal-correction".into(),
                 base_score: 0.88,
                 final_score: 0.0,
             })
