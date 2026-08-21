@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust 1.96 / edition 2024; `openvikey-core` + `openvikey-session` + `openvikey-lab` + `openvikey-win`; serde JSON payloads; Unicode NFC + grapheme clusters (`unicode-segmentation`); Win32 GDI for charts; no network, no extra runtime.
 
-**Spec:** [`docs/superpowers/specs/2026-08-20-openvikey-learning-model-v2-design.md`](docs/superpowers/specs/2026-08-20-openvikey-learning-model-v2-design.md) — owner locked all 11 §20 defaults as **v1 accepted** on 2026-08-21. After this plan is approved, copy it to `docs/superpowers/plans/2026-08-21-openvikey-learning-model-v2-implementation-plan.md`.
+**Spec:** [`../specs/2026-08-20-openvikey-learning-model-v2-design.md`](../specs/2026-08-20-openvikey-learning-model-v2-design.md) — owner locked all 11 §20 defaults as **v1 accepted** on 2026-08-21.
 
 ## Global Constraints
 
@@ -168,6 +168,8 @@ pub struct InterventionPlan {
     pub candidate_id: Option<u64>,
     pub score_breakdown: ScoreBreakdown,
     pub undo_contract: UndoContract,
+    /// Persist only when `Some`. `action == None` is not Ignore.
+    pub model_transition: Option<DecisionState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,6 +205,8 @@ pub fn plan_intervention(
     revert_guard: Option<&RevertGuard>,
     evaluate_at_ms: i64,
     auto_edit_valid: bool,
+    input_method: InputMethod,
+    left_token_nfc: Option<&str>,
 ) -> InterventionPlan { unimplemented!() }
 ```
 

@@ -23,9 +23,11 @@ ADR 0002 freezes `types.rs` meanings and the Telex/VNI engine. ADR 0003 locked v
 
 6. **`FeedbackKind::SuggestionSettled` stays deserializable.** Runtime stops emitting it (Lát 5). Prefer existing kinds for immediate revert / explicit undo / confirmed reject rather than adding variants.
 
-7. **Generators stay model-free. OS adapters stay decision-free.** Only `plan_intervention` may choose None / Suggest / Replace.
+7. **Generators stay model-free. OS adapters stay decision-free.** Only `plan_intervention` may choose None / Suggest / Replace. `InterventionPlan.model_transition` is the only signal that may be persisted; `action == None` is not `DecisionState::Ignore`.
 
 8. **`minimum_correction_graphemes = 2` is a product invariant** from Lát 2. Settings must not expose a control that lowers it.
+
+9. **`plan_intervention` query identity.** Besides the ranked list, the planner takes `input_method: InputMethod` and `left_token_nfc: Option<&str>` so it can build `RuleContextKey` without changing frozen `CompositionSnapshot`.
 
 ## Consequences
 
