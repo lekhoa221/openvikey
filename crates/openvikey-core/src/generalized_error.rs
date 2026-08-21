@@ -1,6 +1,6 @@
 //! Observe-only aggregate statistics for trusted typing-error corrections.
 
-use crate::generate::vietnamese::folded_ascii;
+use crate::generate::folded_ascii;
 use crate::types::InputMethod;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -106,14 +106,19 @@ fn is_single_adjacent_substitution(original: &str, replacement: &str) -> bool {
 fn has_single_extra_key(original: &str, replacement: &str) -> bool {
     let original: Vec<char> = original.chars().collect();
     let replacement: Vec<char> = replacement.chars().collect();
-    original.len() == replacement.len().saturating_add(1)
-        && (0..original.len()).any(|skip| {
+    if original.len() != replacement.len().saturating_add(1) {
+        return false;
+    }
+    let alignments = (0..original.len())
+        .filter(|&skip| {
             original
                 .iter()
                 .enumerate()
                 .filter_map(|(index, ch)| (index != skip).then_some(*ch))
                 .eq(replacement.iter().copied())
         })
+        .count();
+    alignments == 1
 }
 
 fn is_early_tone(original: &str, replacement: &str, input_method: InputMethod) -> bool {

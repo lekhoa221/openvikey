@@ -267,6 +267,30 @@ fn recognized_pattern_is_recorded_from_unmatched_personal_retype() {
 }
 
 #[test]
+fn transposition_pattern_is_recorded_from_committed_unmatched_retype() {
+    let mut session = telex_session();
+    type_keys(&mut session, "ab", 0);
+    space_at(&mut session, 10);
+    backspace_n(&mut session, 3, 11);
+    type_keys(&mut session, "ba", 20);
+    space_at(&mut session, 30);
+
+    assert_eq!(
+        session
+            .model()
+            .generalized_error_model()
+            .count(ErrorOperationClass::Transpose),
+        1
+    );
+    assert_eq!(
+        session
+            .model()
+            .personal_correction_count(InputMethod::Telex, "ab", "ba"),
+        0
+    );
+}
+
+#[test]
 fn pasted_replacement_does_not_train_generalized_error_model() {
     let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
     type_keys(&mut session, "khogn", 0);
@@ -280,6 +304,74 @@ fn pasted_replacement_does_not_train_generalized_error_model() {
         20,
     );
 
+    assert_eq!(
+        session
+            .model()
+            .generalized_error_model()
+            .total_observations(),
+        0
+    );
+}
+
+#[test]
+fn pasted_replacement_during_composition_rewind_does_not_train_error_model() {
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    type_keys(&mut session, "khogn", 0);
+    backspace_n(&mut session, 5, 5);
+    session.inject(
+        InputKind::InsertText {
+            text: "không".into(),
+        },
+        InputContext::default(),
+        20,
+    );
+
+    assert_eq!(
+        session
+            .model()
+            .generalized_error_model()
+            .total_observations(),
+        0
+    );
+}
+
+#[test]
+fn explicit_accept_records_adjacent_extra_and_early_tone_classes() {
+    let cases = [
+        ("khpng", khong_lexicon(), ErrorOperationClass::AdjacentKey),
+        ("khbong", khong_lexicon(), ErrorOperationClass::ExtraKey),
+        ("chfao", chao_lexicon(), ErrorOperationClass::EarlyTone),
+        ("ch2ao", chao_lexicon(), ErrorOperationClass::EarlyTone),
+    ];
+    for (keys, lexicon, expected) in cases {
+        let engine = if keys.contains('2') {
+            vni_config()
+        } else {
+            EngineConfig::default()
+        };
+        let mut session = LabSession::new(engine, lexicon);
+        type_keys(&mut session, keys, 0);
+        assert!(
+            session.accept_top(10).is_some(),
+            "expected accept for {keys}"
+        );
+        assert_eq!(
+            session.model().generalized_error_model().count(expected),
+            1,
+            "{keys}"
+        );
+    }
+}
+
+#[test]
+fn private_context_does_not_train_generalized_error_model() {
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    let context = InputContext {
+        allow_transform: true,
+        allow_learning: false,
+    };
+    session.type_text("khogn", context, 0);
+    assert!(session.accept_top_with_learning(10, false).is_some());
     assert_eq!(
         session
             .model()

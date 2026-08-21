@@ -559,7 +559,7 @@ impl LabSession {
             self.learning
                 .model_mut()
                 .apply_feedback(&key, &feedback, allow_learning);
-        self.observe_generalized_rule(&key, positive_delta, allow_learning);
+        self.observe_generalized_rule(&key, allow_learning);
         if self.capturing && allow_learning {
             self.record_capture(CaptureRecord::CorrectionConfirmed {
                 seq,
@@ -1308,7 +1308,7 @@ impl LabSession {
             allow_learning,
             observe_generalized,
         );
-        self.finish_rewind_implicit(replacement, seq, at_ms, allow_learning);
+        self.finish_rewind_implicit(replacement, seq, at_ms, allow_learning, observe_generalized);
     }
 
     fn finish_committed_implicit(
@@ -1333,6 +1333,14 @@ impl LabSession {
             .iter()
             .find(|candidate| candidate.text == replacement)
         else {
+            if observe_generalized {
+                self.learning.model_mut().observe_error_pattern(
+                    &snapshot.original_nfc,
+                    replacement,
+                    snapshot.input_method,
+                    true,
+                );
+            }
             return;
         };
         let key = RuleContextKey {
@@ -1353,7 +1361,7 @@ impl LabSession {
             .model_mut()
             .apply_feedback(&key, &feedback, true);
         if observe_generalized {
-            self.observe_generalized_rule(&key, positive_delta, true);
+            self.observe_generalized_rule(&key, true);
         }
         let (positive_total, negative_total) = self.learning.model().evidence_totals(&key);
         if self.capturing {
@@ -1382,6 +1390,7 @@ impl LabSession {
         seq: u64,
         at_ms: i64,
         allow_learning: bool,
+        observe_generalized: bool,
     ) {
         match self.rewind.evaluate(replacement, seq, at_ms) {
             RewindEvaluate::Ignored => {}
@@ -1391,7 +1400,7 @@ impl LabSession {
                         .learning
                         .model_mut()
                         .apply_feedback(&key, &feedback, true);
-                    self.observe_generalized_rule(&key, positive_delta, true);
+                    self.observe_generalized_rule(&key, observe_generalized);
                     let (positive_total, negative_total) =
                         self.learning.model().evidence_totals(&key);
                     if self.capturing {
@@ -1442,7 +1451,7 @@ impl LabSession {
                             &original_nfc,
                             &replacement_nfc,
                             input_method,
-                            true,
+                            observe_generalized,
                         );
                         if self.capturing {
                             self.record_capture(CaptureRecord::CorrectionConfirmed {
@@ -1482,20 +1491,13 @@ impl LabSession {
         }
     }
 
-    fn observe_generalized_rule(
-        &mut self,
-        key: &RuleContextKey,
-        positive_delta: f64,
-        allow_learning: bool,
-    ) {
-        if positive_delta > 0.0 {
-            self.learning.model_mut().observe_error_pattern(
-                &key.original_nfc,
-                &key.candidate_nfc,
-                key.input_method,
-                allow_learning,
-            );
-        }
+    fn observe_generalized_rule(&mut self, key: &RuleContextKey, allow_learning: bool) {
+        self.learning.model_mut().observe_error_pattern(
+            &key.original_nfc,
+            &key.candidate_nfc,
+            key.input_method,
+            allow_learning,
+        );
     }
 
     fn try_restore_policy_undo(

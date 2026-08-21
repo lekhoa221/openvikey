@@ -130,6 +130,27 @@ fn disabled_or_unrecognized_observations_leave_stats_empty() {
     assert_eq!(model.generalized_error_model().total_observations(), 0);
 }
 
+#[test]
+fn ambiguous_extra_key_alignment_is_not_recorded() {
+    let mut model = AdaptiveModel::default();
+
+    assert_eq!(
+        model.observe_error_pattern("khongg", "không", InputMethod::Telex, true),
+        None
+    );
+    assert_eq!(model.generalized_error_model().total_observations(), 0);
+}
+
+#[test]
+fn forget_all_clears_generalized_error_counts() {
+    let mut model = AdaptiveModel::default();
+    model.observe_error_pattern("khogn", "không", InputMethod::Telex, true);
+    assert_eq!(model.generalized_error_model().total_observations(), 1);
+
+    assert!(model.forget_all());
+    assert_eq!(model.generalized_error_model().total_observations(), 0);
+}
+
 fn ranked_and_planned(model: &AdaptiveModel) -> (Vec<Candidate>, InterventionPlan) {
     let snapshot = CompositionSnapshot::new(1, "khogn".into(), "khogn".into());
     let config = LearningConfigV2::product_v2();
