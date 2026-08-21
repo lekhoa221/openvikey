@@ -9,7 +9,7 @@ use openvikey_core::types::{InputKind, InputMethod, TonePlacement};
 use openvikey_session::session::LabSession;
 use openvikey_win::hook::ll_return;
 use openvikey_win::host::{ContextProjectionSlot, TypingHost, handle_key_locked, on_try_lock_fail};
-use openvikey_win::policy::{HostHotkey, KeyDecision, OVK_EXTRA, RawKey};
+use openvikey_win::policy::{HostHotkey, KeyDecision, Mode, OVK_EXTRA, RawKey};
 use openvikey_win::sync::InjectCommand;
 use openvikey_win_context::{ContextProjection, ContextState, ForegroundIdentity};
 
@@ -252,8 +252,24 @@ fn mode_toggle_clears_composition_and_candidates_without_backspacing() {
 
     host.recorded.clear();
     host.handle_hotkey(HostHotkey::ToggleMode, 3);
-    assert_eq!(host.mode, openvikey_win::policy::Mode::English);
+    assert_eq!(host.mode, Mode::English);
     assert!(host.sent.is_empty());
+    assert!(host.session.candidate_texts().is_empty());
+    assert!(host.recorded.is_empty());
+}
+
+#[test]
+fn english_mode_typing_does_not_mutate_the_model() {
+    let mut host = TypingHost::new_telex_fixture();
+    let before = host.session.model_payload().unwrap();
+    host.handle_hotkey(HostHotkey::ToggleMode, 1);
+    assert_eq!(host.mode, Mode::English);
+
+    host.handle_key(key(0x4B), 2); // k
+    host.handle_key(key(0x4F), 3); // o
+    host.handle_key(key(0x20), 4); // space
+
+    assert_eq!(host.session.model_payload().unwrap(), before);
     assert!(host.session.candidate_texts().is_empty());
     assert!(host.recorded.is_empty());
 }

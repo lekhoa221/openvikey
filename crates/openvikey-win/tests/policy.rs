@@ -56,6 +56,13 @@ fn letter_eaten_as_key_in_viet() {
 }
 
 #[test]
+fn letter_passes_in_english() {
+    let mut state = viet();
+    state.mode = Mode::English;
+    assert_eq!(decide(&key(0x41), &state), KeyDecision::Pass);
+}
+
+#[test]
 fn terminal_apps_are_transformed_during_development() {
     for exe in [
         "WindowsTerminal.exe",

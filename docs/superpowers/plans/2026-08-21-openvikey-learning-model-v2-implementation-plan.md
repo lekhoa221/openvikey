@@ -1868,7 +1868,7 @@ Lát 10 done when: patterns record from strong intent; planner/rank unchanged; n
 
 **Files:** none new unless a DoD test is missing
 
-- [ ] **Step 1: Run the full gate**
+- [x] **Step 1: Run the full gate**
 
 ```powershell
 cargo fmt --all -- --check
@@ -1887,9 +1887,11 @@ cargo test -p openvikey-lab --test session_capture
 cargo deny check
 ```
 
-- [ ] **Step 2: Check spec §19 point-by-point** (see coverage table below). If a box is empty, add the missing test in the matching lát, do not skip.
+- [x] **Step 2: Check spec §19 point-by-point** (see coverage table below). If a box is empty, add the missing test in the matching lát, do not skip.
 
-- [ ] **Step 3: Commit only if verification produced doc/test-name index updates**
+  Gap closed in Task 27: §19.12 English zero-mutation had no test. Added `letter_passes_in_english` (`openvikey-win` `policy`) and `english_mode_typing_does_not_mutate_the_model` (`openvikey-win` `host`).
+
+- [x] **Step 3: Commit only if verification produced doc/test-name index updates**
 
 ```powershell
 git commit -am "test: confirm learning v2 definition of done"
@@ -1920,6 +1922,32 @@ git commit -am "test: confirm learning v2 definition of done"
 | §18 ADR 0002 engine freeze | Task 0 ADR 0011; engine never in file map |
 | §19 DoD | Task 27 |
 | No NN / no cloud / no GPL copy | Global constraints |
+
+## §19 Definition of done — test index
+
+Verified 2026-08-22 on `brainstorm/next`. One representative public test per point; siblings live in the same file.
+
+| §19 | Witness test |
+|---|---|
+| 1. one planner + stable reason | `intervention_planner::learned_auto_with_valid_edit_replaces_and_reasons_learned_correction`; `session_capture::session_does_not_replace_when_planner_returned_suggest` |
+| 2. UI state matches runtime | `overlay::corrected_notice_tells_the_user_to_backspace`; `learning_chart::overview_counts_match_guarded_persisted_states_not_raw_stored_states` |
+| 3. global/context blend | `correction_memory_v2::empty_context_uses_global_confidence`; `low_support_context_shrinks_toward_global`; `high_support_context_can_diverge_from_global`; `sibling_context_auto_does_not_force_other_context_auto` |
+| 4. Personal lifecycle, Suggest-only | `correction_memory_v2::second_independent_transaction_promotes_personal_suggest_only`; `source_cap_prevents_personal_auto_state` |
+| 5. immediate Backspace rollback, not strong reject | `session_capture::immediate_backspace_rolls_back_without_strong_negative` |
+| 6. explicit reject/undo + confirmed correction | `session_capture::reject_top_adds_negative_mass_without_changing_document`; `recommit_original_after_rollback_adds_strong_negative_once`; `undo_properties::auto_edit_undo_returns_exact_inverse_and_negative_evidence` |
+| 7. weak settlement cap | `learning_state_machine::settlement_alone_cannot_cross_the_weak_positive_cap_or_promote` |
+| 8. unigram/bigram rank-only | `user_language::unigram_can_rerank_but_cannot_grant_auto_without_exact_evidence`; `bigram_can_rerank_in_context_but_cannot_grant_auto` |
+| 9. bounds, compaction, replay | `correction_memory_v2::compaction_preserves_decayed_mass_within_1e_9`; `session_capture::replay_of_captured_inputs_matches_live_model_hash` |
+| 10. Forget selected/all scrub | `physical_forget::forget_rule_removes_key_and_metadata_from_serialized_model`; `forget_all_learning_data_resets_to_cold_start_hash` |
+| 11. v1→v2 migration, no rights bump | `model_migration_v2::v1_fixture_migrates_deterministically`; `migration_does_not_let_sibling_auto_promote_other_contexts`; `store_recovery::corrupt_primary_recovers_last_valid_backup` |
+| 12. private/sensitive/terminal/English zero mutation | `learning_v2_characterization::allow_learning_false_is_zero_mutation`; `session_capture::sensitive_context_skips_candidates_model_and_capture`; `development_experience::terminal_context_cannot_leak_into_later_learning`; `policy::letter_passes_in_english`; `host::english_mode_typing_does_not_mutate_the_model` |
+| 13. hook/perf budgets | `hook_thread_discipline::hook_and_mouse_forbid_blocking_and_serialize`; `perf_report::report_benchmarks_dp_generation_against_thousands_of_entries`; `learning_chart::chart_build_is_not_invoked_from_inject_path` |
+| 14. <2 alphabetic graphemes | `intervention_planner::one_alphabetic_grapheme_is_none_token_too_short`; `a1_rendered_as_a_acute_is_token_too_short`; `session_capture::one_letter_a_has_no_visible_candidates_or_accept`; `learning_v2_characterization::token_too_short_dd_is_engine_only` |
+| 15. undo+Space loop, 3s cooldown, one-shot bypass | `session_capture::space_replace_backspace_space_commits_original_once`; `bypass_still_applies_after_cooldown_if_raw_token_unchanged`; `changing_raw_token_clears_guard_and_allows_new_correction`; `two_abbrev_assist_undos_stop_further_space_auto` |
+| 16. local chart snapshot | `chart_snapshot::chart_snapshot_is_byte_identical_for_same_model_config_time`; `confidence_line_matches_model_query_at_each_recent_event`; `revert_veto_presents_cooldown_band`; `learning_chart::selecting_a_rule_exposes_chart_snapshot_and_text_alternative` |
+| 17. corpus reports + config hash | `evaluation_report::report_contains_frozen_corpus_lexicon_and_config_hashes` |
+| 18. fmt/clippy/test/deny | Task 27 Step 1 gate (2026-08-22): all green |
+| 19. generalized error observe-only | `generalized_error::observation_does_not_change_ranked_order_or_plan_action`; `session_capture::ignored_suggestion_does_not_train_generalized_error_model` |
 
 ## Type consistency
 
