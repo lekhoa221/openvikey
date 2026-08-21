@@ -118,7 +118,7 @@ enum CorpusCmd {
     Evaluate {
         #[arg(long, default_value = "data/corpus-manifest.toml")]
         manifest: PathBuf,
-        #[arg(long, default_value = "target/evaluation.json")]
+        #[arg(long, default_value = "target/evaluation-learning-v2.json")]
         out: PathBuf,
         #[arg(long, default_value = "unit")]
         mode: String,

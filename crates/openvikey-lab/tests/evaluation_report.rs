@@ -1,5 +1,6 @@
 //! M9 corpus runner: pinned inputs produce deterministic machine-readable evidence.
 
+use openvikey_core::learning_config::LearningConfigV2;
 use openvikey_lab::corpus::{ErrorKind, EvaluationMode};
 use openvikey_lab::report::evaluate_manifest;
 use openvikey_lab::report::{AUTO_PRECISION_FORMULA, CORRECT_TOKEN_FPR_FORMULA};
@@ -56,12 +57,21 @@ fn report_contains_frozen_corpus_lexicon_and_config_hashes() {
     )
     .unwrap();
 
-    assert_eq!(report.schema_version, 1);
+    assert_eq!(report.schema_version, 2);
     assert_eq!(report.corpus.version, "1.0.0");
     assert_eq!(report.corpus.manifest_sha256.len(), 64);
     assert_eq!(report.corpus.lexicon_sha256.len(), 64);
     assert_eq!(report.config.score_sha256.len(), 64);
     assert_eq!(report.config.decision_sha256.len(), 64);
+    assert_eq!(report.config.learning_version, 2);
+    assert_eq!(
+        report.config.learning_sha256,
+        LearningConfigV2::product_v2().hash()
+    );
+    assert_eq!(report.intervention_paths.structural_auto, 0);
+    assert_eq!(report.intervention_paths.heuristic_auto, 0);
+    assert_eq!(report.intervention_paths.learned_auto, 0);
+    assert_eq!(report.intervention_paths.suggest, 2);
     assert_eq!(report.taxonomy.len(), 4);
     let transpose = &report.taxonomy[&ErrorKind::Transpose];
     assert_eq!(transpose.counts.labeled_errors, 1);

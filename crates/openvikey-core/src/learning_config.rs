@@ -74,6 +74,12 @@ impl LearningConfigV2 {
     }
 }
 
+impl Default for LearningConfigV2 {
+    fn default() -> Self {
+        Self::product_v2()
+    }
+}
+
 fn hex_lower(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len().saturating_mul(2));

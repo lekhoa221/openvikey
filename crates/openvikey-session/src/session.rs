@@ -8,10 +8,10 @@ use crate::document::{CommittedUnit, DocumentBuffer};
 use openvikey_core::chart::ChartAssessment;
 use openvikey_core::correction::{
     AutoEditContext, CorrectionSlice, InterventionConfig, candidate_rule_key,
-    run_learning_correction_slice_with_guard,
+    run_learning_correction_slice_with_config_and_guard,
 };
 use openvikey_core::correction_memory::PersonalTransaction;
-use openvikey_core::decision::{DecisionConfig, DecisionState};
+use openvikey_core::decision::DecisionState;
 use openvikey_core::engine::{Engine, EngineConfig};
 use openvikey_core::feedback::{
     CompositionPeak, CompositionRewindMiner, ImplicitCorrectionMiner, LearningSession,
@@ -29,7 +29,6 @@ use openvikey_core::intervention::{
 use openvikey_core::learning_config::LearningConfigV2;
 use openvikey_core::lexicon::Lexicon;
 use openvikey_core::model::{AdaptiveModel, ModelError, ModelInspectionRow, RuleContextKey};
-use openvikey_core::rank::ScoreConfig;
 use openvikey_core::types::{
     Candidate, CandidateSource, CompositionSnapshot, EditRange, EngineAction, FeedbackEvent,
     FeedbackKind, InputContext, InputEvent, InputKind, InputMethod, Modifiers, RangeBasis,
@@ -200,8 +199,7 @@ pub struct LabSession {
     left_context: LeftContext,
     next_seq: u64,
     next_edit_id: u64,
-    score_config: ScoreConfig,
-    decision_config: DecisionConfig,
+    learning_config: LearningConfigV2,
     document: DocumentBuffer,
     miner: ImplicitCorrectionMiner,
     mining_snapshot: Option<CommittedUnit>,
@@ -216,7 +214,6 @@ pub struct LabSession {
     capturing: bool,
     rewind: CompositionRewindMiner,
     intervention: InterventionConfig,
-    learning_config_hash: String,
     pending_policy_undo: Option<PendingPolicyUndo>,
     pending_confirmed_reject: Option<PendingConfirmedReject>,
     revert_guard: Option<RevertGuard>,
@@ -229,11 +226,21 @@ pub struct LabSession {
 impl LabSession {
     #[must_use]
     pub fn new(engine_config: EngineConfig, lexicon: Lexicon) -> Self {
-        Self::new_with_model(
+        Self::new_with_learning_config(engine_config, lexicon, LearningConfigV2::default())
+    }
+
+    #[must_use]
+    pub fn new_with_learning_config(
+        engine_config: EngineConfig,
+        lexicon: Lexicon,
+        learning_config: LearningConfigV2,
+    ) -> Self {
+        Self::new_with_model_and_learning_config(
             engine_config,
             lexicon,
             AdaptiveModel::default(),
             SessionCursors::default(),
+            learning_config,
         )
     }
 
@@ -244,6 +251,23 @@ impl LabSession {
         model: AdaptiveModel,
         cursors: SessionCursors,
     ) -> Self {
+        Self::new_with_model_and_learning_config(
+            engine_config,
+            lexicon,
+            model,
+            cursors,
+            LearningConfigV2::default(),
+        )
+    }
+
+    #[must_use]
+    pub fn new_with_model_and_learning_config(
+        engine_config: EngineConfig,
+        lexicon: Lexicon,
+        model: AdaptiveModel,
+        cursors: SessionCursors,
+        learning_config: LearningConfigV2,
+    ) -> Self {
         let method = engine_config.method;
         Self {
             engine: Engine::new(engine_config),
@@ -253,8 +277,7 @@ impl LabSession {
             left_context: LeftContext::default(),
             next_seq: cursors.next_seq.max(1),
             next_edit_id: cursors.next_edit_id.max(1),
-            score_config: ScoreConfig::default(),
-            decision_config: DecisionConfig::default(),
+            learning_config,
             document: DocumentBuffer::new(),
             miner: ImplicitCorrectionMiner::default(),
             mining_snapshot: None,
@@ -269,7 +292,6 @@ impl LabSession {
             capturing: true,
             rewind: CompositionRewindMiner::default(),
             intervention: InterventionConfig::win32(),
-            learning_config_hash: LearningConfigV2::compatibility_v1().hash(),
             pending_policy_undo: None,
             pending_confirmed_reject: None,
             revert_guard: None,
@@ -287,6 +309,11 @@ impl LabSession {
     #[must_use]
     pub fn intervention_config(&self) -> InterventionConfig {
         self.intervention
+    }
+
+    #[must_use]
+    pub const fn learning_config(&self) -> &LearningConfigV2 {
+        &self.learning_config
     }
 
     pub fn type_text(
@@ -818,7 +845,7 @@ impl LabSession {
                     correction_identity_hash(&correction_identity(snapshot, candidate, method))
                 })
                 .collect(),
-            config_hash: self.learning_config_hash.clone(),
+            config_hash: self.learning_config.hash(),
         });
     }
 
@@ -860,6 +887,14 @@ impl LabSession {
     #[must_use]
     pub fn last_decision(&self) -> Option<DecisionState> {
         self.last_slice.as_ref().and_then(|slice| slice.decision)
+    }
+
+    #[must_use]
+    pub fn last_intervention_reason(&self) -> Option<InterventionReason> {
+        self.last_slice
+            .as_ref()
+            .and_then(|slice| slice.plan.as_ref())
+            .map(|plan| plan.reason)
     }
 
     #[must_use]
@@ -999,7 +1034,7 @@ impl LabSession {
             delimiter,
         });
         let guard = self.revert_guard.clone();
-        let slice = run_learning_correction_slice_with_guard(
+        let slice = run_learning_correction_slice_with_config_and_guard(
             snapshot,
             &self.left_context,
             event.context,
@@ -1007,8 +1042,7 @@ impl LabSession {
             method,
             &mut self.learning,
             event.at_ms,
-            &self.score_config,
-            &self.decision_config,
+            &self.learning_config,
             auto_edit,
             &self.lexicon,
             self.intervention,
@@ -1430,9 +1464,10 @@ impl LabSession {
         let Some(pending) = self.pending_policy_undo.clone() else {
             return false;
         };
-        let config = LearningConfigV2::compatibility_v1();
+        let immediate_revert_window_ms = self.learning_config.immediate_revert_window_ms;
+        let reapply_cooldown_ms = self.learning_config.reapply_cooldown_ms;
         if at_ms < pending.applied_at_ms
-            || at_ms.saturating_sub(pending.applied_at_ms) > config.immediate_revert_window_ms
+            || at_ms.saturating_sub(pending.applied_at_ms) > immediate_revert_window_ms
         {
             return false;
         }
@@ -1473,7 +1508,7 @@ impl LabSession {
             raw_token: pending.raw_token,
             focus_generation: self.focus_generation,
             composition_revision: restored.revision,
-            reapply_cooldown_until_ms: at_ms.saturating_add(config.reapply_cooldown_ms),
+            reapply_cooldown_until_ms: at_ms.saturating_add(reapply_cooldown_ms),
             bypass_next_boundary: true,
         });
         self.sync_left_context();

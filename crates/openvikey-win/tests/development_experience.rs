@@ -6,6 +6,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use openvikey_core::engine::EngineConfig;
+use openvikey_core::learning_config::LearningConfigV2;
 use openvikey_core::lexicon::{Lexicon, LexiconArtifact};
 use openvikey_core::model::{ModelView, RuleContextKey};
 use openvikey_core::types::{CandidateSource, InputKind, InputMethod, TonePlacement};
@@ -310,7 +311,11 @@ fn ntn_space_does_not_auto_replace_a_guess() {
 
 #[test]
 fn abbrev_space_replaces_without_ctrl_period() {
-    let session = LabSession::new(vni_engine(), development_lexicon());
+    let session = LabSession::new_with_learning_config(
+        vni_engine(),
+        development_lexicon(),
+        LearningConfigV2::compatibility_v1(),
+    );
     let mut host = TypingHost::new_with_session(session);
     type_ascii(&mut host, "ko");
     host.recorded.clear();
@@ -343,7 +348,11 @@ fn abbrev_space_replaces_without_ctrl_period() {
 
 #[test]
 fn fuzzy_space_replaces_unique_typo_without_ctrl_period() {
-    let session = LabSession::new(vni_engine(), development_lexicon());
+    let session = LabSession::new_with_learning_config(
+        vni_engine(),
+        development_lexicon(),
+        LearningConfigV2::compatibility_v1(),
+    );
     let mut host = TypingHost::new_with_session(session);
     type_ascii(&mut host, "khogn");
     host.recorded.clear();

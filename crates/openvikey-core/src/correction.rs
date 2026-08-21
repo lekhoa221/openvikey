@@ -114,6 +114,9 @@ pub fn run_correction_slice(
     score_config: &ScoreConfig,
     decision_config: &DecisionConfig,
 ) -> CorrectionSlice {
+    let mut learning_config = LearningConfigV2::compatibility_v1();
+    learning_config.decision = decision_config.clone();
+    learning_config.score = score_config.clone();
     let mut slice = evaluate_correction_slice(
         snapshot,
         left_context,
@@ -122,8 +125,7 @@ pub fn run_correction_slice(
         input_method,
         model,
         evaluate_at_ms,
-        score_config,
-        decision_config,
+        &learning_config,
         false,
         &Lexicon::empty(),
         InterventionConfig::default(),
@@ -149,8 +151,7 @@ fn evaluate_correction_slice(
     input_method: InputMethod,
     model: &dyn ModelView,
     evaluate_at_ms: i64,
-    score_config: &ScoreConfig,
-    decision_config: &DecisionConfig,
+    learning_config: &LearningConfigV2,
     auto_edit_valid: bool,
     lexicon: &Lexicon,
     intervention: InterventionConfig,
@@ -172,22 +173,19 @@ fn evaluate_correction_slice(
         raw,
         model,
         evaluate_at_ms,
-        score_config,
+        &learning_config.score,
         Some(&RankingContext {
             input_method,
             original_nfc: snapshot.normalized.clone(),
             left_token_nfc: left_context.prev_token_nfc.clone(),
         }),
     );
-    let mut learning = LearningConfigV2::compatibility_v1();
-    learning.decision = decision_config.clone();
-    learning.score = score_config.clone();
     let plan = plan_intervention(
         snapshot,
         &candidates,
         lexicon,
         model,
-        &learning,
+        learning_config,
         intervention,
         context,
         delimiter,
@@ -280,6 +278,42 @@ pub fn run_learning_correction_slice_with_guard(
     intervention: InterventionConfig,
     revert_guard: Option<&RevertGuard>,
 ) -> CorrectionSlice {
+    let mut learning_config = LearningConfigV2::compatibility_v1();
+    learning_config.decision = decision_config.clone();
+    learning_config.score = score_config.clone();
+    run_learning_correction_slice_with_config_and_guard(
+        snapshot,
+        left_context,
+        context,
+        generators,
+        input_method,
+        session,
+        evaluate_at_ms,
+        &learning_config,
+        auto_edit,
+        lexicon,
+        intervention,
+        revert_guard,
+    )
+}
+
+/// Runs correction with one versioned policy shared by ranking, planning, and capture.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn run_learning_correction_slice_with_config_and_guard(
+    snapshot: &CompositionSnapshot,
+    left_context: &LeftContext,
+    context: InputContext,
+    generators: &[&dyn Generator],
+    input_method: InputMethod,
+    session: &mut LearningSession,
+    evaluate_at_ms: i64,
+    learning_config: &LearningConfigV2,
+    auto_edit: Option<AutoEditContext>,
+    lexicon: &Lexicon,
+    intervention: InterventionConfig,
+    revert_guard: Option<&RevertGuard>,
+) -> CorrectionSlice {
     let auto_edit_valid = auto_edit.as_ref().is_some_and(|edit| {
         edit.range.revision == snapshot.revision
             && edit.range.length_grapheme == snapshot.rendered.graphemes(true).count()
@@ -293,8 +327,7 @@ pub fn run_learning_correction_slice_with_guard(
         input_method,
         session.model(),
         evaluate_at_ms,
-        score_config,
-        decision_config,
+        learning_config,
         auto_edit_valid,
         lexicon,
         intervention,
@@ -429,12 +462,11 @@ pub fn unique_telex_fix_candidate(candidates: &[Candidate]) -> Option<&Candidate
     unique
 }
 
-/// Unique Space/punct replacement that may be applied without `Ctrl+.`.
+/// Unique Space/punct replacement under the current product policy.
 ///
 /// TelexFix keeps its reconstruction rule (may not be ranked first). Abbreviation
-/// applies only as a unique single-word top expansion. Fuzzy applies only when it
-/// is the sole ranked candidate and the typed token is long enough to be a typo
-/// rather than a guess. Diacritics and multi-word expansions never apply.
+/// and Fuzzy cold-start assists are disabled by the product config. Diacritics and
+/// multi-word expansions never apply.
 #[must_use]
 pub fn boundary_assist_candidate<'a>(
     snapshot: &CompositionSnapshot,
@@ -444,6 +476,28 @@ pub fn boundary_assist_candidate<'a>(
     lexicon: &Lexicon,
     allow_transform: bool,
 ) -> Option<&'a Candidate> {
+    boundary_assist_candidate_with_learning_config(
+        snapshot,
+        candidates,
+        delimiter,
+        config,
+        lexicon,
+        allow_transform,
+        &LearningConfigV2::default(),
+    )
+}
+
+/// Boundary-assist query with an explicit policy, retained for deterministic replay tests.
+#[must_use]
+pub fn boundary_assist_candidate_with_learning_config<'a>(
+    snapshot: &CompositionSnapshot,
+    candidates: &'a [Candidate],
+    delimiter: Option<char>,
+    config: InterventionConfig,
+    lexicon: &Lexicon,
+    allow_transform: bool,
+    learning_config: &LearningConfigV2,
+) -> Option<&'a Candidate> {
     crate::intervention::policy_assist_candidate(
         snapshot,
         candidates,
@@ -451,7 +505,7 @@ pub fn boundary_assist_candidate<'a>(
         config,
         lexicon,
         allow_transform,
-        &LearningConfigV2::compatibility_v1(),
+        learning_config,
     )
     .map(|(candidate, _)| candidate)
 }

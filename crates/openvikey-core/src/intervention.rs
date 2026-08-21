@@ -518,10 +518,23 @@ pub fn plan_intervention(
     breakdown.top1_top2_margin = effective_ranked.get(1).map_or(1.0, |second| {
         (top.final_score - second.final_score).max(0.0)
     });
-    // v1 order through Lát 8: learned Auto, then structural, then heuristic.
-    // `auto_margin` guards only this learned-Auto branch; the structural and
-    // heuristic replaces below never consult it.
-    if !guard_cooldown_active && state == DecisionState::Auto && auto_edit_valid {
+    let structural = if !guard_cooldown_active && auto_edit_valid {
+        assist.and_then(|(candidate, reason)| {
+            (reason == InterventionReason::SafeStructuralFix).then_some(candidate)
+        })
+    } else {
+        None
+    };
+    // Product v2 prioritizes deterministic structural repair. Compatibility v1
+    // keeps the historical learned-before-structural order for replay.
+    let structural_preempts_learned = config.version >= 2 && structural.is_some();
+    // `auto_margin` guards only this learned-Auto branch; structural and
+    // heuristic replaces never consult it.
+    if !structural_preempts_learned
+        && !guard_cooldown_active
+        && state == DecisionState::Auto
+        && auto_edit_valid
+    {
         if breakdown.top1_top2_margin < config.auto_margin {
             return InterventionPlan {
                 action: InterventionAction::DisplaySuggestion,
@@ -541,10 +554,7 @@ pub fn plan_intervention(
         }
         return learned_replace(top, breakdown);
     }
-    if !guard_cooldown_active
-        && auto_edit_valid
-        && let Some((candidate, InterventionReason::SafeStructuralFix)) = assist
-    {
+    if let Some(candidate) = structural {
         return replace_without_persisting(InterventionReason::SafeStructuralFix, candidate);
     }
     if !guard_cooldown_active

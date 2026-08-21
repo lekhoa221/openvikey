@@ -1774,7 +1774,7 @@ Lát 8 done when: golden JSON stable; Settings shows timeline + breakdown + over
 - Consumes: owner-locked §20.2–20.3
 - Produces: `LearningConfigV2::product_v2()` with `abbrev_cold_start_auto=false`, `fuzzy_heuristic_assist=false`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```rust
 #[test]
@@ -1801,13 +1801,13 @@ fn product_v2_abbrev_replaces_after_personal_evidence() {
 }
 ```
 
-- [ ] **Step 2: FAIL → switch host/session default to `product_v2()`. Keep `compatibility_v1()` for replay of old characterization if needed.
+- [x] **Step 2: FAIL → switch host/session default to `product_v2()`. Keep `compatibility_v1()` for replay of old characterization if needed.
 
-- [ ] **Step 3: Add lab report command or test that writes config hash + per-kind counts** into `target/evaluation-learning-v2.json`. Do not claim G3 corpus floors if they are still unmet; default high-risk Fuzzy heuristic stays **off**.
+- [x] **Step 3: Add lab report command or test that writes config hash + per-kind counts** into `target/evaluation-learning-v2.json`. Do not claim G3 corpus floors if they are still unmet; default high-risk Fuzzy heuristic stays **off**.
 
-- [ ] **Step 4: Run workspace tests; update any remaining Assist tests to opt into `compatibility_v1()` explicitly.
+- [x] **Step 4: Run workspace tests; update any remaining Assist tests to opt into `compatibility_v1()` explicitly.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git commit -am "feat: ship learning v2 product policy with safer Auto defaults"

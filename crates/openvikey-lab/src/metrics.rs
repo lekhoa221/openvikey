@@ -7,6 +7,38 @@
 
 #![allow(clippy::cast_precision_loss)]
 
+use openvikey_core::intervention::{InterventionAction, InterventionReason};
+use serde::Serialize;
+
+/// Counts planner outcomes without merging their different risk profiles.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct InterventionPathCounts {
+    pub structural_auto: u64,
+    pub heuristic_auto: u64,
+    pub learned_auto: u64,
+    pub suggest: u64,
+}
+
+impl InterventionPathCounts {
+    pub fn observe(&mut self, action: InterventionAction, reason: InterventionReason) {
+        match (action, reason) {
+            (InterventionAction::Replace, InterventionReason::SafeStructuralFix) => {
+                self.structural_auto = self.structural_auto.saturating_add(1);
+            }
+            (InterventionAction::Replace, InterventionReason::UniqueHeuristicAssist) => {
+                self.heuristic_auto = self.heuristic_auto.saturating_add(1);
+            }
+            (InterventionAction::Replace, InterventionReason::LearnedCorrection) => {
+                self.learned_auto = self.learned_auto.saturating_add(1);
+            }
+            (InterventionAction::DisplaySuggestion, _) => {
+                self.suggest = self.suggest.saturating_add(1);
+            }
+            (InterventionAction::None | InterventionAction::Replace, _) => {}
+        }
+    }
+}
+
 /// `TP / (TP + FP)`. Undefined when there are no auto decisions.
 #[must_use]
 pub fn auto_precision(true_auto: u64, false_auto: u64) -> Option<f64> {

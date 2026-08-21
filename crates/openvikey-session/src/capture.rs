@@ -437,8 +437,14 @@ pub fn replay_with_model(
     log: &CaptureLog,
 ) -> Result<LabSession, SessionStoreError> {
     log.validate()?;
-    validate_replay_config(log)?;
-    let mut session = LabSession::new_with_model(engine_config, lexicon, model, cursors);
+    let learning_config = replay_config(log)?;
+    let mut session = LabSession::new_with_model_and_learning_config(
+        engine_config,
+        lexicon,
+        model,
+        cursors,
+        learning_config,
+    );
     session.set_capturing(false);
     for record in &log.records {
         match record {
@@ -468,23 +474,36 @@ pub fn replay_with_model(
     Ok(session)
 }
 
-fn validate_replay_config(log: &CaptureLog) -> Result<(), SessionStoreError> {
+fn replay_config(log: &CaptureLog) -> Result<LearningConfigV2, SessionStoreError> {
     if log.header.v == LEGACY_CAPTURE_VERSION {
-        return Ok(());
+        return Ok(LearningConfigV2::compatibility_v1());
     }
-    let available = LearningConfigV2::compatibility_v1().hash();
-    if let Some(captured) = log.records.iter().find_map(|record| match record {
-        CaptureRecord::CandidateSetEvaluated { config_hash, .. } if config_hash != &available => {
-            Some(config_hash.clone())
+    let compatibility = LearningConfigV2::compatibility_v1();
+    let product = LearningConfigV2::product_v2();
+    let mut captured = None;
+    for record in &log.records {
+        let CaptureRecord::CandidateSetEvaluated { config_hash, .. } = record else {
+            continue;
+        };
+        if let Some(first) = captured
+            && first != config_hash
+        {
+            return Err(SessionStoreError::ReplayConfigUnavailable {
+                captured: format!("{first},{config_hash}"),
+                available: product.hash(),
+            });
         }
-        _ => None,
-    }) {
-        return Err(SessionStoreError::ReplayConfigUnavailable {
-            captured,
-            available,
-        });
+        captured = Some(config_hash);
     }
-    Ok(())
+    match captured {
+        None => Ok(product),
+        Some(hash) if hash == &compatibility.hash() => Ok(compatibility),
+        Some(hash) if hash == &product.hash() => Ok(product),
+        Some(hash) => Err(SessionStoreError::ReplayConfigUnavailable {
+            captured: hash.clone(),
+            available: product.hash(),
+        }),
+    }
 }
 
 #[derive(Debug, Error)]

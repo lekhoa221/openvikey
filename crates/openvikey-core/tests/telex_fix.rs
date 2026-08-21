@@ -1,10 +1,12 @@
 //! Milestone 7A: raw-key Telex/VNI modifier reconstruction.
 
 use openvikey_core::correction::{
-    InterventionConfig, boundary_assist_candidate, candidate_rule_key,
+    InterventionConfig, boundary_assist_candidate, boundary_assist_candidate_with_learning_config,
+    candidate_rule_key,
 };
 use openvikey_core::generate::telex_fix::TelexFixGenerator;
 use openvikey_core::generate::{Generator, LeftContext};
+use openvikey_core::learning_config::LearningConfigV2;
 use openvikey_core::lexicon::{Lexicon, LexiconEntry};
 use openvikey_core::types::{
     Candidate, CandidateSource, CompositionSnapshot, InputMethod, TonePlacement,
@@ -209,20 +211,38 @@ fn khong_lexicon() -> Lexicon {
 }
 
 #[test]
-fn boundary_assist_picks_unique_abbrev_on_space() {
+fn boundary_assist_compatibility_picks_unique_abbrev_on_space() {
     let snapshot = snapshot("ko", "ko");
     let candidates = vec![abbrev_candidate("không")];
-    let picked = boundary_assist_candidate(
+    let picked = boundary_assist_candidate_with_learning_config(
         &snapshot,
         &candidates,
         Some(' '),
         InterventionConfig::win32(),
         &khong_lexicon(),
         true,
+        &LearningConfigV2::compatibility_v1(),
     );
     assert_eq!(
         picked.map(|candidate| candidate.text.as_str()),
         Some("không")
+    );
+}
+
+#[test]
+fn boundary_assist_default_rejects_cold_abbrev() {
+    let snapshot = snapshot("ko", "ko");
+    let candidates = vec![abbrev_candidate("không")];
+    assert!(
+        boundary_assist_candidate(
+            &snapshot,
+            &candidates,
+            Some(' '),
+            InterventionConfig::win32(),
+            &khong_lexicon(),
+            true,
+        )
+        .is_none()
     );
 }
 
@@ -244,17 +264,18 @@ fn boundary_assist_rejects_diacritics_even_when_unique() {
 }
 
 #[test]
-fn boundary_assist_picks_unique_fuzzy_on_space() {
+fn boundary_assist_compatibility_picks_unique_fuzzy_on_space() {
     let snapshot = snapshot("khogn", "khogn");
     let candidates = vec![fuzzy_candidate(1, "không")];
     assert_eq!(
-        boundary_assist_candidate(
+        boundary_assist_candidate_with_learning_config(
             &snapshot,
             &candidates,
             Some(' '),
             InterventionConfig::win32(),
             &khong_lexicon(),
             true,
+            &LearningConfigV2::compatibility_v1(),
         )
         .map(|candidate| candidate.text.as_str()),
         Some("không")

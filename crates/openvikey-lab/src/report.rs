@@ -4,12 +4,13 @@ use crate::corpus::{
     CorpusError, CorpusLabel, ErrorKind, EvaluationMode, RELEASE_MIN_CORRECT_TOKENS,
     RELEASE_MIN_ERROR_CASES, RELEASE_MIN_PER_ERROR_TYPE, build_lexicon, hash_file, load_and_verify,
 };
-use crate::metrics::{auto_precision, correct_token_fpr, wilson_interval};
+use crate::metrics::{InterventionPathCounts, auto_precision, correct_token_fpr, wilson_interval};
 use crate::session::LabSession;
-use openvikey_core::decision::{DecisionConfig, DecisionState};
+use openvikey_core::decision::DecisionState;
 use openvikey_core::engine::EngineConfig;
-use openvikey_core::rank::ScoreConfig;
-use openvikey_core::types::{InputContext, InputMethod, TonePlacement};
+use openvikey_core::intervention::{InterventionAction, InterventionReason};
+use openvikey_core::learning_config::LearningConfigV2;
+use openvikey_core::types::{EngineAction, InputContext, InputKind, InputMethod, TonePlacement};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -41,6 +42,7 @@ pub struct EvaluationReport {
     pub corpus: CorpusEvidence,
     pub config: ConfigEvidence,
     pub counts: EvaluationCounts,
+    pub intervention_paths: InterventionPathCounts,
     pub metrics: EvaluationMetrics,
     pub taxonomy: BTreeMap<ErrorKind, TaxonomyEvidence>,
     pub release_gates: ReleaseGates,
@@ -63,6 +65,8 @@ pub struct CorpusEvidence {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ConfigEvidence {
+    pub learning_version: u32,
+    pub learning_sha256: String,
     pub score_version: u32,
     pub score_sha256: String,
     pub decision_version: u32,
@@ -149,9 +153,11 @@ pub fn evaluate_manifest(
     let corpus = load_and_verify(manifest_path, workspace_root, mode)?;
     let lexicon = build_lexicon(&corpus, manifest_path)?;
     let lexicon_bytes = serde_json::to_vec(&lexicon.to_artifact())?;
-    let score_config = ScoreConfig::default();
-    let decision_config = DecisionConfig::default();
+    let learning_config = LearningConfigV2::default();
+    let score_config = learning_config.score.clone();
+    let decision_config = learning_config.decision.clone();
     let mut counts = EvaluationCounts::default();
+    let mut intervention_paths = InterventionPathCounts::default();
     let mut taxonomy = all_taxonomy_rows();
 
     for item in corpus.items_in("held_out") {
@@ -159,7 +165,9 @@ pub fn evaluate_manifest(
             CorpusLabel::Correct => {
                 for token in item.input.split_whitespace() {
                     counts.correct_tokens = counts.correct_tokens.saturating_add(1);
-                    let outcome = evaluate_token(token, &lexicon);
+                    let outcome = evaluate_token(token, &lexicon, &learning_config);
+                    intervention_paths.observe(outcome.action, outcome.reason);
+                    let outcome = outcome.observation;
                     if outcome.decision == Some(DecisionState::Auto) {
                         counts.auto_false_positive = counts.auto_false_positive.saturating_add(1);
                         counts.false_auto_on_correct =
@@ -173,7 +181,9 @@ pub fn evaluate_manifest(
                     continue;
                 };
                 counts.supported_error_cases = counts.supported_error_cases.saturating_add(1);
-                let outcome = evaluate_token(&item.input, &lexicon);
+                let outcome = evaluate_token(&item.input, &lexicon, &learning_config);
+                intervention_paths.observe(outcome.action, outcome.reason);
+                let outcome = outcome.observation;
                 let position = outcome
                     .candidates
                     .iter()
@@ -208,7 +218,7 @@ pub fn evaluate_manifest(
     let taxonomy = make_taxonomy_evidence(taxonomy);
     let release_gates = make_release_gates(&counts, &metrics, &taxonomy);
     Ok(EvaluationReport {
-        schema_version: 1,
+        schema_version: 2,
         mode: match mode {
             EvaluationMode::Unit => "unit",
             EvaluationMode::Release => "release",
@@ -220,33 +230,59 @@ pub fn evaluate_manifest(
             lexicon_sha256: sha256_bytes(&lexicon_bytes),
         },
         config: ConfigEvidence {
+            learning_version: learning_config.version,
+            learning_sha256: learning_config.hash(),
             score_version: score_config.version,
             score_sha256: score_config.hash,
             decision_version: decision_config.version,
             decision_sha256: sha256_json(&decision_config)?,
         },
         counts,
+        intervention_paths,
         metrics,
         taxonomy,
         release_gates,
     })
 }
 
+struct TokenEvaluation {
+    observation: crate::session::SessionObservation,
+    action: InterventionAction,
+    reason: InterventionReason,
+}
+
 fn evaluate_token(
     token: &str,
     lexicon: &openvikey_core::lexicon::Lexicon,
-) -> crate::session::SessionObservation {
-    let mut session = LabSession::new(
+    learning_config: &LearningConfigV2,
+) -> TokenEvaluation {
+    let mut session = LabSession::new_with_learning_config(
         EngineConfig {
             method: InputMethod::Telex,
             tone_placement: TonePlacement::Modern,
         },
         lexicon.clone(),
+        learning_config.clone(),
     );
-    session
-        .type_text(token, InputContext::default(), 0)
-        .pop()
-        .expect("corpus tokens are non-empty")
+    session.type_text(token, InputContext::default(), 0);
+    let observation = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        i64::try_from(token.chars().count()).unwrap_or(i64::MAX),
+    );
+    let action = match observation.action {
+        Some(EngineAction::ReplaceRange(_)) => InterventionAction::Replace,
+        Some(EngineAction::ShowSuggestions { .. }) => InterventionAction::DisplaySuggestion,
+        _ => InterventionAction::None,
+    };
+    let reason = session
+        .last_intervention_reason()
+        .unwrap_or(InterventionReason::NoCandidate);
+    TokenEvaluation {
+        observation,
+        action,
+        reason,
+    }
 }
 
 fn all_taxonomy_rows() -> BTreeMap<ErrorKind, TaxonomyCounts> {

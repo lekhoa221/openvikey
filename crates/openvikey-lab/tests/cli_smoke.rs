@@ -42,6 +42,17 @@ fn help_lists_every_required_command() {
 }
 
 #[test]
+fn corpus_evaluate_defaults_to_learning_v2_report_path() {
+    let output = Command::new(binary())
+        .args(["corpus", "evaluate", "--help"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("target/evaluation-learning-v2.json"));
+}
+
+#[test]
 fn type_command_emits_machine_readable_live_candidates() {
     let lexicon = workspace_root().join("data/fixtures/lexicon/authored.json");
     let mut child = Command::new(binary())
@@ -158,7 +169,7 @@ fn script_and_corpus_reports_are_reproducible_json() {
         String::from_utf8_lossy(&output.stderr)
     );
     let report: Value = serde_json::from_slice(&fs::read(report_path).unwrap()).unwrap();
-    assert_eq!(report["schema_version"], 1);
+    assert_eq!(report["schema_version"], 2);
     assert_eq!(report["counts"]["error_cases"], 2);
 
     let perf_path = artifact("perf.json");

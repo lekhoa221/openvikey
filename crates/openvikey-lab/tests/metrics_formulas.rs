@@ -4,7 +4,10 @@
 //! Wilson 95% expected bounds are frozen literals from an independent
 //! calculation of the Wikipedia Wilson score interval (z = 1.96).
 
-use openvikey_lab::metrics::{auto_precision, correct_token_fpr, wilson_interval};
+use openvikey_core::intervention::{InterventionAction, InterventionReason};
+use openvikey_lab::metrics::{
+    InterventionPathCounts, auto_precision, correct_token_fpr, wilson_interval,
+};
 
 #[test]
 fn auto_precision_uses_tp_plus_fp_denominator() {
@@ -63,4 +66,31 @@ fn wilson_95_matches_hand_calculated_cases() {
         assert!((0.0..=1.0).contains(&lo.max(0.0)));
         assert!((0.0..=1.0).contains(&hi.min(1.0)));
     }
+}
+
+#[test]
+fn intervention_paths_count_structural_heuristic_learned_and_suggest_separately() {
+    let mut counts = InterventionPathCounts::default();
+    counts.observe(
+        InterventionAction::Replace,
+        InterventionReason::SafeStructuralFix,
+    );
+    counts.observe(
+        InterventionAction::Replace,
+        InterventionReason::UniqueHeuristicAssist,
+    );
+    counts.observe(
+        InterventionAction::Replace,
+        InterventionReason::LearnedCorrection,
+    );
+    counts.observe(
+        InterventionAction::DisplaySuggestion,
+        InterventionReason::LowScore,
+    );
+    counts.observe(InterventionAction::None, InterventionReason::NoCandidate);
+
+    assert_eq!(counts.structural_auto, 1);
+    assert_eq!(counts.heuristic_auto, 1);
+    assert_eq!(counts.learned_auto, 1);
+    assert_eq!(counts.suggest, 1);
 }

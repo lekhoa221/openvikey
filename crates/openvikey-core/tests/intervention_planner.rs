@@ -146,6 +146,11 @@ fn product_v2_bumps_config_version_and_hash() {
 }
 
 #[test]
+fn default_learning_config_is_product_v2() {
+    assert_eq!(LearningConfigV2::default(), LearningConfigV2::product_v2());
+}
+
+#[test]
 fn low_score_keeps_top_candidate_and_breakdown_without_persisting_as_required_undo() {
     let mut weak = fuzzy_khogn();
     weak.base_score = 0.4;
@@ -454,6 +459,60 @@ fn learned_auto_top_wins_over_unique_telex_fix_below() {
     assert_eq!(plan.action, InterventionAction::Replace);
     assert_eq!(plan.reason, InterventionReason::LearnedCorrection);
     assert_eq!(plan.candidate_id, Some(11));
+}
+
+#[test]
+fn product_v2_structural_fix_wins_over_learned_auto() {
+    let snapshot = CompositionSnapshot::new(1, "chfao".into(), "chfao".into());
+    let fuzzy = Candidate {
+        id: 11,
+        text: "cháu".into(),
+        source: CandidateSource::Fuzzy,
+        evidence: "fuzzy:chfao".into(),
+        base_score: 0.95,
+        final_score: 0.95,
+    };
+    let telex = telex_fix_candidate("chào");
+    let mut model = AdaptiveModel::default();
+    let key = RuleContextKey {
+        input_method: InputMethod::Telex,
+        source: CandidateSource::Fuzzy,
+        original_nfc: "chfao".into(),
+        candidate_nfc: "cháu".into(),
+        left_token_nfc: None,
+        source_rule_id: "fuzzy:chfao".into(),
+    };
+    for seq in 1..=18 {
+        model.apply_feedback(
+            &key,
+            &FeedbackEvent {
+                seq,
+                at_ms: 0,
+                kind: FeedbackKind::Accept { candidate_id: 11 },
+            },
+            true,
+        );
+    }
+
+    let plan = plan_intervention(
+        &snapshot,
+        &[fuzzy, telex.clone()],
+        &lex(&["cháu", "chào"]),
+        &model,
+        &LearningConfigV2::product_v2(),
+        InterventionConfig::win32(),
+        InputContext::default(),
+        Some(' '),
+        None,
+        0,
+        true,
+        InputMethod::Telex,
+        None,
+    );
+
+    assert_eq!(plan.action, InterventionAction::Replace);
+    assert_eq!(plan.reason, InterventionReason::SafeStructuralFix);
+    assert_eq!(plan.candidate_id, Some(telex.id));
 }
 
 #[test]

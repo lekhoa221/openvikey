@@ -4,11 +4,11 @@
 //! Every other test here must stay green unless a later lát explicitly inverts it.
 //!
 //! Covered elsewhere (do not duplicate):
-//! - `telex_fix::boundary_assist_picks_unique_abbrev_on_space`
-//! - `telex_fix::boundary_assist_picks_unique_fuzzy_on_space`
+//! - `telex_fix::boundary_assist_compatibility_picks_unique_abbrev_on_space`
+//! - `telex_fix::boundary_assist_compatibility_picks_unique_fuzzy_on_space`
 //! - `telex_fix::boundary_assist_rejects_diacritics_even_when_unique`
-//! - `session_capture::abbrev_boundary_assist_replaces_on_space_without_accept_mass`
-//! - `session_capture::fuzzy_boundary_assist_replaces_unique_typo_on_space`
+//! - `session_capture::product_v2_abbrev_ko_space_does_not_replace_without_evidence`
+//! - `session_capture::product_v2_fuzzy_khogn_is_suggest_without_heuristic_flag`
 //! - `session_capture::ntn_space_does_not_boundary_assist_a_guess`
 //! - `session_capture::diacritics_does_not_boundary_assist_on_space`
 //! - `session_capture::two_abbrev_assist_undos_stop_further_space_auto`

@@ -495,10 +495,11 @@ pub struct ControlSnapshot {
 #[must_use]
 pub fn rule_chart_runtime(row: &ModelInspectionRow) -> Option<ChartSnapshot> {
     let rt = RUNTIME.get()?;
-    let (memory, assessment) = {
+    let (memory, config, assessment) = {
         let guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
         (
             guard.session.model().correction_memory().clone(),
+            guard.session.learning_config().clone(),
             guard.session.chart_assessment(row),
         )
     };
@@ -509,7 +510,6 @@ pub fn rule_chart_runtime(row: &ModelInspectionRow) -> Option<ChartSnapshot> {
         candidate_nfc: row.candidate_nfc.clone(),
         source_rule_id: row.source_rule_id.clone(),
     };
-    let config = LearningConfigV2::compatibility_v1();
     let at_ms = crate::hook::now_ms();
     ChartSnapshot::from_memory_with_context(
         &memory,
@@ -524,10 +524,10 @@ pub fn rule_chart_runtime(row: &ModelInspectionRow) -> Option<ChartSnapshot> {
 fn learning_overview_from_rows(
     memory: &openvikey_core::correction_memory::CorrectionMemory,
     rows: &[ModelInspectionRow],
+    config: &LearningConfigV2,
     evaluate_at_ms: i64,
     pruned_rows: u64,
 ) -> crate::chart_view::LearningOverview {
-    let config = LearningConfigV2::compatibility_v1();
     let mut bands = Vec::with_capacity(rows.len());
     let mut confidences = Vec::with_capacity(rows.len());
     for row in rows {
@@ -582,6 +582,7 @@ pub fn control_snapshot() -> Option<ControlSnapshot> {
         last_external_exe,
         learning_allowed,
         memory,
+        learning_config,
         pruned_rows,
         learned_rows,
         chart_assessment,
@@ -600,13 +601,15 @@ pub fn control_snapshot() -> Option<ControlSnapshot> {
             guard.last_external_exe.clone(),
             guard.allow_learning_for_foreground(),
             guard.session.model().correction_memory().clone(),
+            guard.session.learning_config().clone(),
             pruned_rows,
             learned_rows,
             chart_assessment,
         )
     };
     let at_ms = crate::hook::now_ms();
-    let learning_overview = learning_overview_from_rows(&memory, &learned_rows, at_ms, pruned_rows);
+    let learning_overview =
+        learning_overview_from_rows(&memory, &learned_rows, &learning_config, at_ms, pruned_rows);
     let chart = most_recent_row(&learned_rows).and_then(|row| {
         let identity = openvikey_core::intervention::CorrectionIdentity {
             input_method: row.input_method,
@@ -615,11 +618,10 @@ pub fn control_snapshot() -> Option<ControlSnapshot> {
             candidate_nfc: row.candidate_nfc.clone(),
             source_rule_id: row.source_rule_id.clone(),
         };
-        let config = LearningConfigV2::compatibility_v1();
         ChartSnapshot::from_memory_with_context(
             &memory,
             &identity,
-            &config,
+            &learning_config,
             at_ms,
             row.left_token_nfc.as_deref(),
             chart_assessment.as_ref(),

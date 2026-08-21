@@ -4,7 +4,8 @@
 
 use openvikey_core::correction::InterventionConfig;
 use openvikey_core::engine::EngineConfig;
-use openvikey_core::intervention::CorrectionIdentity;
+use openvikey_core::intervention::{CorrectionIdentity, InterventionReason};
+use openvikey_core::learning_config::LearningConfigV2;
 use openvikey_core::lexicon::{Lexicon, LexiconEntry};
 use openvikey_core::model::{AdaptiveModel, ModelView, RuleContextKey};
 use openvikey_core::types::{
@@ -26,6 +27,14 @@ fn empty_lexicon() -> Lexicon {
 
 fn telex_session() -> LabSession {
     LabSession::new(EngineConfig::default(), empty_lexicon())
+}
+
+fn compatibility_session(engine_config: EngineConfig, lexicon: Lexicon) -> LabSession {
+    LabSession::new_with_learning_config(
+        engine_config,
+        lexicon,
+        LearningConfigV2::compatibility_v1(),
+    )
 }
 
 fn ko_rule() -> RuleContextKey {
@@ -816,7 +825,7 @@ fn replay_includes_undo_last_commands() {
 
 #[test]
 fn capture_v2_records_evaluated_and_applied_interventions() {
-    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    let mut session = compatibility_session(EngineConfig::default(), khong_lexicon());
     commit_ko(&mut session);
     let log = session.capture_log();
 
@@ -906,6 +915,28 @@ fn v2_replay_fails_closed_when_recorded_config_is_unavailable() {
             *config_hash = "0".repeat(64);
         }
     }
+
+    assert!(matches!(
+        replay(EngineConfig::default(), empty_lexicon(), &log),
+        Err(SessionStoreError::ReplayConfigUnavailable { .. })
+    ));
+}
+
+#[test]
+fn v2_replay_fails_closed_when_capture_mixes_config_hashes() {
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    commit_ko(&mut session);
+    let mut log = session.capture_log();
+    let mut candidate_records = log.records.iter_mut().filter_map(|record| match record {
+        CaptureRecord::CandidateSetEvaluated { config_hash, .. } => Some(config_hash),
+        _ => None,
+    });
+    *candidate_records.next().expect("first candidate record") =
+        LearningConfigV2::compatibility_v1().hash();
+    assert!(
+        candidate_records.next().is_some(),
+        "mixed-hash fixture needs two records"
+    );
 
     assert!(matches!(
         replay(EngineConfig::default(), empty_lexicon(), &log),
@@ -1294,45 +1325,36 @@ fn nen_lexicon() -> Lexicon {
 }
 
 #[test]
-fn abbrev_boundary_assist_replaces_on_space_without_accept_mass() {
-    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+fn product_v2_abbrev_ko_space_does_not_replace_without_evidence() {
+    let mut session = LabSession::new_with_learning_config(
+        EngineConfig::default(),
+        khong_lexicon(),
+        LearningConfigV2::product_v2(),
+    );
     type_keys(&mut session, "ko", 0);
     let last = session.inject(
         InputKind::Boundary { delimiter: ' ' },
         InputContext::default(),
         10,
     );
-    match &last.action {
-        Some(EngineAction::ReplaceRange(action)) => {
-            assert_eq!(action.original, "ko");
-            assert_eq!(action.replacement, "không");
-        }
-        other => panic!("expected abbrev ReplaceRange, got {other:?}"),
-    }
-    let notice = session
-        .take_learning_notice()
-        .expect("boundary assist must show a notice");
-    assert_eq!(notice.original_nfc, "ko");
-    assert_eq!(notice.replacement_nfc, "không");
     assert!(
-        notice.display_text().starts_with("Đã sửa:"),
-        "notice was {}",
-        notice.display_text()
+        !matches!(last.action, Some(EngineAction::ReplaceRange(_))),
+        "product policy must keep cold abbreviation as Suggest, got {:?}",
+        last.action
     );
-    assert!(
-        notice.display_text().contains("Backspace"),
-        "notice was {}",
-        notice.display_text()
-    );
+    assert!(matches!(
+        last.action,
+        Some(EngineAction::ShowSuggestions { .. })
+    ));
+    assert!(session.take_learning_notice().is_none());
     assert_eq!(session.model().positive_mass(&ko_rule(), 10), 0.0);
-    session.inject(InputKind::Backspace, InputContext::default(), 11);
-    assert_eq!(session.composition_text(), "ko");
+    assert!(session.document_text().contains("ko"));
     assert!(!session.document_text().contains("không"));
 }
 
 #[test]
 fn two_abbrev_assist_undos_stop_further_space_auto() {
-    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    let mut session = compatibility_session(EngineConfig::default(), khong_lexicon());
     for (typed_at, space_ms, undo_ms, bypass_ms) in [(0, 10, 11, 12), (20, 30, 31, 32)] {
         type_keys(&mut session, "ko", typed_at);
         let replaced = session.inject(
@@ -1375,7 +1397,7 @@ fn two_abbrev_assist_undos_stop_further_space_auto() {
 
 #[test]
 fn space_replace_backspace_space_commits_original_once() {
-    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    let mut session = compatibility_session(EngineConfig::default(), khong_lexicon());
     type_keys(&mut session, "khogn", 0);
     let first = session.inject(
         InputKind::Boundary { delimiter: ' ' },
@@ -1409,7 +1431,7 @@ fn space_replace_backspace_space_commits_original_once() {
 
 #[test]
 fn immediate_backspace_rolls_back_without_strong_negative() {
-    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    let mut session = compatibility_session(EngineConfig::default(), khong_lexicon());
     type_keys(&mut session, "khogn", 0);
     let replaced = session.inject(
         InputKind::Boundary { delimiter: ' ' },
@@ -1429,7 +1451,7 @@ fn immediate_backspace_rolls_back_without_strong_negative() {
 
 #[test]
 fn recommit_original_after_rollback_adds_strong_negative_once() {
-    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    let mut session = compatibility_session(EngineConfig::default(), khong_lexicon());
     type_keys(&mut session, "khogn", 0);
     session.inject(
         InputKind::Boundary { delimiter: ' ' },
@@ -1455,7 +1477,7 @@ fn recommit_original_after_rollback_adds_strong_negative_once() {
 
 #[test]
 fn immediate_revert_window_expires_after_three_seconds() {
-    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    let mut session = compatibility_session(EngineConfig::default(), khong_lexicon());
     type_keys(&mut session, "khogn", 0);
     let first = session.inject(
         InputKind::Boundary { delimiter: ' ' },
@@ -1474,7 +1496,7 @@ fn immediate_revert_window_expires_after_three_seconds() {
 
 #[test]
 fn bypass_still_applies_after_cooldown_if_raw_token_unchanged() {
-    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    let mut session = compatibility_session(EngineConfig::default(), khong_lexicon());
     type_keys(&mut session, "khogn", 0);
     let first = session.inject(
         InputKind::Boundary { delimiter: ' ' },
@@ -1501,7 +1523,7 @@ fn bypass_still_applies_after_cooldown_if_raw_token_unchanged() {
 
 #[test]
 fn changing_raw_token_clears_guard_and_allows_new_correction() {
-    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    let mut session = compatibility_session(EngineConfig::default(), khong_lexicon());
     type_keys(&mut session, "khogn", 0);
     let first = session.inject(
         InputKind::Boundary { delimiter: ' ' },
@@ -1536,7 +1558,7 @@ fn changing_raw_token_clears_guard_and_allows_new_correction() {
 
 #[test]
 fn focus_context_change_clears_revert_guard() {
-    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    let mut session = compatibility_session(EngineConfig::default(), khong_lexicon());
     type_keys(&mut session, "khogn", 0);
     let first = session.inject(
         InputKind::Boundary { delimiter: ' ' },
@@ -1564,7 +1586,7 @@ fn focus_context_change_clears_revert_guard() {
 
 #[test]
 fn abbrev_revert_bypasses_the_next_boundary_once() {
-    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    let mut session = compatibility_session(EngineConfig::default(), khong_lexicon());
     type_keys(&mut session, "ko", 0);
     let first = session.inject(
         InputKind::Boundary { delimiter: ' ' },
@@ -1651,9 +1673,38 @@ fn ntn_space_does_not_boundary_assist_a_guess() {
 }
 
 #[test]
-fn fuzzy_boundary_assist_replaces_unique_typo_on_space() {
-    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+fn product_v2_fuzzy_khogn_is_suggest_without_heuristic_flag() {
+    let mut session = LabSession::new_with_learning_config(
+        EngineConfig::default(),
+        khong_lexicon(),
+        LearningConfigV2::product_v2(),
+    );
     type_keys(&mut session, "khogn", 0);
+    let last = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        10,
+    );
+    assert!(matches!(
+        last.action,
+        Some(EngineAction::ShowSuggestions { .. })
+    ));
+    assert_eq!(
+        session.last_intervention_reason(),
+        Some(InterventionReason::LowScore)
+    );
+    assert!(session.document_text().contains("khogn"));
+    assert!(!session.document_text().contains("không"));
+}
+
+#[test]
+fn product_v2_telex_fix_chfao_still_replaces() {
+    let mut session = LabSession::new_with_learning_config(
+        EngineConfig::default(),
+        chao_lexicon(),
+        LearningConfigV2::product_v2(),
+    );
+    type_keys(&mut session, "chfao", 0);
     let last = session.inject(
         InputKind::Boundary { delimiter: ' ' },
         InputContext::default(),
@@ -1661,10 +1712,50 @@ fn fuzzy_boundary_assist_replaces_unique_typo_on_space() {
     );
     match &last.action {
         Some(EngineAction::ReplaceRange(action)) => {
-            assert_eq!(action.replacement, "không");
+            assert_eq!(action.original, "chfao");
+            assert_eq!(action.replacement, "chào");
         }
-        other => panic!("expected fuzzy ReplaceRange, got {other:?}"),
+        other => panic!("expected structural chfao → chào replacement, got {other:?}"),
     }
+    assert_eq!(
+        session.last_intervention_reason(),
+        Some(InterventionReason::SafeStructuralFix)
+    );
+}
+
+#[test]
+fn product_v2_abbrev_replaces_after_personal_evidence() {
+    let mut session = LabSession::new_with_learning_config(
+        EngineConfig::default(),
+        khong_lexicon(),
+        LearningConfigV2::product_v2(),
+    );
+    for round in 0..19 {
+        let at_ms = i64::from(round) * 10;
+        type_keys(&mut session, "ko", at_ms);
+        assert!(session.accept_top(at_ms + 2).is_some());
+        session.clear_document_context();
+    }
+    type_keys(&mut session, "ko", 200);
+    let last = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        210,
+    );
+    assert!(
+        matches!(last.action, Some(EngineAction::ReplaceRange(_))),
+        "expected learned abbreviation replace, got action={:?} reason={:?} decision={:?} candidates={:?} mass={} confidence={}",
+        last.action,
+        session.last_intervention_reason(),
+        last.decision,
+        last.candidates,
+        session.model().positive_mass(&ko_rule(), 210),
+        session.model().confidence(&ko_rule(), 210),
+    );
+    assert_eq!(
+        session.last_intervention_reason(),
+        Some(InterventionReason::LearnedCorrection)
+    );
 }
 
 #[test]

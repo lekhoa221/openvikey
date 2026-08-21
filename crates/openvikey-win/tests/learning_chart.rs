@@ -8,6 +8,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use openvikey_core::decision::DecisionState;
+use openvikey_core::learning_config::LearningConfigV2;
 use openvikey_core::model::RuleContextKey;
 use openvikey_core::types::{CandidateSource, FeedbackEvent, FeedbackKind, InputMethod};
 use openvikey_win::chart_view::text_alternative;
@@ -195,6 +196,18 @@ fn selecting_a_rule_exposes_chart_snapshot_and_text_alternative() {
     assert!(text.contains("Có thể tự sửa"));
     assert!(text.contains("Phân rã điểm: chưa có đánh giá planner"));
     assert!(text.contains("Kết luận"));
+}
+
+#[test]
+fn charts_use_the_bound_sessions_product_policy() {
+    shared_runtime();
+    let snapshot = control_snapshot().unwrap();
+    let expected = LearningConfigV2::product_v2().hash();
+    assert_eq!(snapshot.chart.unwrap().config_hash, expected);
+
+    let row = snapshot.learned_rows.first().expect("learned row");
+    let selected = rule_chart_runtime(row).expect("selected chart");
+    assert_eq!(selected.config_hash, expected);
 }
 
 #[test]
