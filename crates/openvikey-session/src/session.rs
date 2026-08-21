@@ -6,8 +6,8 @@ use crate::capture::{
 };
 use crate::document::{CommittedUnit, DocumentBuffer};
 use openvikey_core::correction::{
-    AutoEditContext, CorrectionSlice, InterventionConfig, boundary_assist_candidate,
-    candidate_rule_key, is_telex_fix_candidate, run_learning_correction_slice,
+    AutoEditContext, CorrectionSlice, InterventionConfig, candidate_rule_key,
+    run_learning_correction_slice,
 };
 use openvikey_core::decision::{DecisionConfig, DecisionState};
 use openvikey_core::engine::{Engine, EngineConfig};
@@ -21,8 +21,9 @@ use openvikey_core::generate::fuzzy::FuzzyGenerator;
 use openvikey_core::generate::personal::PersonalGenerator;
 use openvikey_core::generate::telex_fix::TelexFixGenerator;
 use openvikey_core::generate::{Generator, LeftContext};
+use openvikey_core::intervention::InterventionReason;
 use openvikey_core::lexicon::Lexicon;
-use openvikey_core::model::{AdaptiveModel, ModelError, ModelView, RuleContextKey};
+use openvikey_core::model::{AdaptiveModel, ModelError, RuleContextKey};
 use openvikey_core::rank::ScoreConfig;
 use openvikey_core::types::{
     Candidate, CompositionSnapshot, EditRange, EngineAction, FeedbackEvent, FeedbackKind,
@@ -824,7 +825,7 @@ impl LabSession {
             },
             delimiter,
         });
-        let mut slice = run_learning_correction_slice(
+        let slice = run_learning_correction_slice(
             snapshot,
             &self.left_context,
             event.context,
@@ -835,58 +836,42 @@ impl LabSession {
             &self.score_config,
             &self.decision_config,
             auto_edit,
+            &self.lexicon,
+            self.intervention,
         );
-        if at_commit
-            && !matches!(&slice.action, Some(EngineAction::ReplaceRange(_)))
-            && let (Some(fix), Some(edit)) = (
-                boundary_assist_candidate(
-                    snapshot,
-                    &slice.candidates,
-                    delimiter,
-                    self.intervention,
-                    &self.lexicon,
-                    event.context.allow_transform,
-                )
-                .cloned(),
-                auto_edit,
-            )
-        {
-            let telex_fix = is_telex_fix_candidate(&fix);
-            let rule = candidate_rule_key(snapshot, &self.left_context, method, &fix);
-            if !telex_fix && !self.learning.model().auto_allowed(&rule, event.at_ms) {
-                return slice;
-            }
-            let action = openvikey_core::types::ReplaceRangeAction {
-                edit_id: edit.edit_id,
-                range: edit.range,
-                original: snapshot.rendered.clone(),
-                replacement: fix.text.clone(),
-                delimiter: edit.delimiter,
-            };
-            self.learning.record_auto_edit(
-                rule.clone(),
-                action.clone(),
-                event.at_ms,
-                event.context.allow_learning,
-            );
-            self.pending_restore_raw = Some(snapshot.raw_keys.clone());
-            self.pending_restore_learn_undo = !telex_fix;
-            if !telex_fix {
-                self.pending_learning_notice = Some(LearningNotice {
-                    kind: LearningNoticeKind::Corrected,
-                    original_nfc: snapshot.normalized.clone(),
-                    replacement_nfc: fix.text.clone(),
-                    positive_delta: 0.0,
-                    negative_delta: 0.0,
-                    positive_total: 0.0,
-                    negative_total: 0.0,
+        if at_commit && let Some(EngineAction::ReplaceRange(action)) = &slice.action {
+            let reason = slice.plan.as_ref().map(|plan| plan.reason);
+            let structural = reason == Some(InterventionReason::SafeStructuralFix);
+            let chosen = slice
+                .plan
+                .as_ref()
+                .and_then(|plan| plan.candidate_id)
+                .and_then(|id| {
+                    slice
+                        .candidates
+                        .iter()
+                        .find(|candidate| candidate.id == id)
+                        .cloned()
                 });
+            if let Some(fix) = chosen {
+                let rule = candidate_rule_key(snapshot, &self.left_context, method, &fix);
+                self.pending_restore_raw = Some(snapshot.raw_keys.clone());
+                self.pending_restore_learn_undo = !structural;
+                if !structural {
+                    self.pending_learning_notice = Some(LearningNotice {
+                        kind: LearningNoticeKind::Corrected,
+                        original_nfc: snapshot.normalized.clone(),
+                        replacement_nfc: action.replacement.clone(),
+                        positive_delta: 0.0,
+                        negative_delta: 0.0,
+                        positive_total: 0.0,
+                        negative_total: 0.0,
+                    });
+                }
+                if event.context.allow_learning {
+                    self.last_learned = Some(LastLearned::Rule(rule));
+                }
             }
-            if event.context.allow_learning {
-                self.last_learned = Some(LastLearned::Rule(rule));
-            }
-            slice.decision = Some(DecisionState::Auto);
-            slice.action = Some(EngineAction::ReplaceRange(action));
         }
         slice
     }

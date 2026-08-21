@@ -1168,6 +1168,23 @@ fn v1_space_backspace_space_repeats_abbrev_replace() {
 }
 
 #[test]
+fn session_does_not_replace_when_planner_returned_suggest() {
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    session.set_intervention_config(InterventionConfig::default());
+    type_keys(&mut session, "ko", 0);
+    let last = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        10,
+    );
+    assert!(
+        !matches!(last.action, Some(EngineAction::ReplaceRange(_))),
+        "policy auto off must not upgrade Suggest, got {:?}",
+        last.action
+    );
+}
+
+#[test]
 fn ntn_space_does_not_boundary_assist_a_guess() {
     let mut session = LabSession::new(vni_config(), nen_lexicon());
     type_keys(&mut session, "ntn", 0);
