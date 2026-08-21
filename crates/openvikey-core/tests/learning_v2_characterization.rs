@@ -196,3 +196,13 @@ fn personal_store_rejects_new_pair_at_512() {
         0
     );
 }
+
+#[test]
+fn v1_single_letter_telex_dd_may_still_enter_correction_pipeline() {
+    // Document: raw "dd" / rendered "đ" is one alphabetic letter after NFC.
+    // Current pipeline has no minimum_correction_graphemes guard.
+    // Lát 2 replaces this with token_too_short_dd_is_engine_only.
+    let snapshot = CompositionSnapshot::new(1, "dd".into(), "đ".into());
+    assert_eq!(snapshot.normalized, "đ");
+    assert_eq!(snapshot.normalized.chars().count(), 1);
+}

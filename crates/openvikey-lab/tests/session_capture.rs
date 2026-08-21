@@ -1105,6 +1105,69 @@ fn two_abbrev_assist_undos_stop_further_space_auto() {
 }
 
 #[test]
+fn v1_space_backspace_space_repeats_fuzzy_replace() {
+    // Lát 2 inverts this: the second Space must commit original once.
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    type_keys(&mut session, "khogn", 0);
+    let first = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        10,
+    );
+    match &first.action {
+        Some(EngineAction::ReplaceRange(action)) => {
+            assert_eq!(action.replacement, "không");
+        }
+        other => panic!("expected first fuzzy replace, got {other:?}"),
+    }
+    session.inject(InputKind::Backspace, InputContext::default(), 11);
+    assert_eq!(session.composition_text(), "khogn");
+    let second = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        12,
+    );
+    match &second.action {
+        Some(EngineAction::ReplaceRange(action)) => {
+            assert_eq!(action.replacement, "không");
+        }
+        other => panic!("v1 re-applies after one undo; Lát 2 inverts this: {other:?}"),
+    }
+}
+
+#[test]
+fn v1_space_backspace_space_repeats_abbrev_replace() {
+    // Equivalent to the first iteration of two_abbrev_assist_undos.
+    // Lát 2 inverts this to commit original on the second Space.
+    let mut session = LabSession::new(EngineConfig::default(), khong_lexicon());
+    type_keys(&mut session, "ko", 0);
+    let first = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        10,
+    );
+    match &first.action {
+        Some(EngineAction::ReplaceRange(action)) => {
+            assert_eq!(action.replacement, "không");
+        }
+        other => panic!("expected first abbrev replace, got {other:?}"),
+    }
+    session.inject(InputKind::Backspace, InputContext::default(), 11);
+    assert_eq!(session.composition_text(), "ko");
+    let second = session.inject(
+        InputKind::Boundary { delimiter: ' ' },
+        InputContext::default(),
+        12,
+    );
+    match &second.action {
+        Some(EngineAction::ReplaceRange(action)) => {
+            assert_eq!(action.replacement, "không");
+        }
+        other => panic!("v1 re-applies abbrev after one undo; Lát 2 inverts this: {other:?}"),
+    }
+}
+
+#[test]
 fn ntn_space_does_not_boundary_assist_a_guess() {
     let mut session = LabSession::new(vni_config(), nen_lexicon());
     type_keys(&mut session, "ntn", 0);
