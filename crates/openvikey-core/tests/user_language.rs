@@ -45,6 +45,7 @@ fn unsafe_or_ambiguous_surfaces_are_not_learned() {
     assert!(!language.commit("hai từ", None, 1));
     assert!(!language.commit("https://example.test", None, 2));
     assert!(!language.commit("name@example.test", None, 3));
+    assert!(!language.commit("Abc123!", None, 4));
     assert_eq!(language.unigram_count(), 0);
 }
 
@@ -191,4 +192,104 @@ fn unigram_inspection_and_forget_survive_payload_round_trip() {
     let reloaded = AdaptiveModel::from_json_payload(&payload).unwrap();
 
     assert!(reloaded.language_unigrams().is_empty());
+}
+
+#[test]
+fn one_left_token_bigram_is_normalized_and_counted() {
+    let mut language = UserLanguageModel::default();
+
+    assert!(language.commit("Nam", Some("Việt"), 0));
+    assert!(language.commit("Nam", Some("Vie\u{0323}\u{0302}t"), 1));
+
+    assert_eq!(language.bigram("Việt", "Nam"), 2);
+    assert_eq!(language.bigram_count(), 1);
+
+    let payload = serde_json::to_vec(&language).unwrap();
+    let reloaded: UserLanguageModel = serde_json::from_slice(&payload).unwrap();
+    assert_eq!(reloaded.bigram("Việt", "Nam"), 2);
+}
+
+#[test]
+fn replayed_language_transaction_is_idempotent() {
+    let mut language = UserLanguageModel::default();
+
+    assert!(language.commit_transaction("Nam", Some("Việt"), 0, 7));
+    assert!(!language.commit_transaction("Nam", Some("Việt"), 1, 7));
+
+    assert_eq!(language.unigram("Nam"), 1);
+    assert_eq!(language.bigram("Việt", "Nam"), 1);
+}
+
+#[test]
+fn bigram_can_rerank_in_context_but_cannot_grant_auto() {
+    let mut model = AdaptiveModel::default();
+    for transaction_id in 1..=8 {
+        assert!(model.record_language_commit("Nam", Some("Việt"), 0, transaction_id, true));
+    }
+    for transaction_id in 9..=16 {
+        assert!(model.record_language_commit("năm", Some("mỗi"), 0, transaction_id, true));
+    }
+    let candidates = vec![
+        Candidate {
+            id: 1,
+            text: "năm".into(),
+            source: CandidateSource::Fuzzy,
+            evidence: "fuzzy:nam:năm".into(),
+            base_score: 0.69,
+            final_score: 0.69,
+        },
+        Candidate {
+            id: 2,
+            text: "Nam".into(),
+            source: CandidateSource::Fuzzy,
+            evidence: "fuzzy:nam:Nam".into(),
+            base_score: 0.66,
+            final_score: 0.66,
+        },
+    ];
+    let context = RankingContext {
+        input_method: InputMethod::Telex,
+        original_nfc: "nam".into(),
+        left_token_nfc: Some("Việt".into()),
+    };
+    let ranked = rank(
+        candidates,
+        &model,
+        0,
+        &ScoreConfig::abbrev_v1(),
+        Some(&context),
+    );
+    assert_eq!(ranked[0].text, "Nam");
+
+    let plan = plan_intervention(
+        &CompositionSnapshot::new(1, "nam".into(), "nam".into()),
+        &ranked,
+        &Lexicon::empty(),
+        &model,
+        &LearningConfigV2::product_v2(),
+        InterventionConfig::win32(),
+        InputContext::default(),
+        Some(' '),
+        None,
+        0,
+        true,
+        InputMethod::Telex,
+        Some("Việt"),
+    );
+    assert_eq!(plan.action, InterventionAction::DisplaySuggestion);
+    assert!(plan.score_breakdown.bigram > 0.0);
+    assert!(plan.score_breakdown.unigram.abs() < f64::EPSILON);
+}
+
+#[test]
+fn bigram_pruning_is_bounded_and_forget_token_removes_connected_rows() {
+    let mut language = UserLanguageModel::default();
+    assert!(language.commit_bounded("một", Some("alpha"), 0, 10, 2));
+    assert!(language.commit_bounded("hai", Some("beta"), 1, 10, 2));
+    assert!(language.commit_bounded("ba", Some("gamma"), 2, 10, 2));
+
+    assert_eq!(language.bigram_count(), 2);
+    assert_eq!(language.bigram("alpha", "một"), 0);
+    assert!(language.forget_token("gamma"));
+    assert_eq!(language.bigram("gamma", "ba"), 0);
 }

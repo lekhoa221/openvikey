@@ -1610,7 +1610,7 @@ Lát 6 done when: unigrams improve ranking only; private mode zero-write; prune 
 - Consumes: `max_bigrams = 30_000`; left token only
 - Produces: `ScoreBreakdown.bigram`; `LowMargin` when top1–top2 too close for Auto
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```rust
 #[test]
@@ -1633,11 +1633,11 @@ fn small_margin_blocks_learned_auto() {
 }
 ```
 
-- [ ] **Step 2: Implement bigram counts, backoff (unigram if bigram missing), clamp, prune like unigrams. Planner Auto requires margin from `LearningConfigV2` (add `auto_margin` default matching current implicit uniqueness: treat `top1_top2_margin` below a versioned threshold as LowMargin). Until calibrated, set compatibility threshold so current unique-candidate Auto tests still pass (margin vacuously large when `ranked.len()==1`).
+- [x] **Step 2: Implement bigram counts, backoff (unigram if bigram missing), clamp, prune like unigrams. Planner Auto requires margin from `LearningConfigV2` (add `auto_margin` default matching current implicit uniqueness: treat `top1_top2_margin` below a versioned threshold as LowMargin). Until calibrated, set compatibility threshold so current unique-candidate Auto tests still pass (margin vacuously large when `ranked.len()==1`).
 
-- [ ] **Step 3: Run** user_language + intervention_planner + session_capture
+- [x] **Step 3: Run** user_language + intervention_planner + session_capture
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```powershell
 git commit -am "feat: add left-token bigrams and use margin as an Auto guard"

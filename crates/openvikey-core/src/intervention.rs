@@ -143,6 +143,7 @@ fn ranked_breakdown_for(
         generator_base: candidate.base_score,
         exact_correction: contributions.exact_correction,
         unigram: contributions.unigram,
+        bigram: contributions.bigram,
         final_score: contributions.final_score,
         ..ScoreBreakdown::default()
     }
@@ -498,7 +499,7 @@ pub fn plan_intervention(
         cap,
         &config.decision,
     );
-    let breakdown = ranked_breakdown_for(
+    let mut breakdown = ranked_breakdown_for(
         top,
         model,
         config,
@@ -507,8 +508,28 @@ pub fn plan_intervention(
         left_token_nfc,
         evaluate_at_ms,
     );
+    breakdown.top1_top2_margin = effective_ranked.get(1).map_or(1.0, |second| {
+        (top.final_score - second.final_score).max(0.0)
+    });
     // v1 order through Lát 8: learned Auto, then structural, then heuristic.
     if !guard_cooldown_active && state == DecisionState::Auto && auto_edit_valid {
+        if breakdown.top1_top2_margin < config.auto_margin {
+            return InterventionPlan {
+                action: InterventionAction::DisplaySuggestion,
+                reason: InterventionReason::LowMargin,
+                candidate_id: Some(top.id),
+                display_candidate_ids: effective_ranked
+                    .iter()
+                    .map(|candidate| candidate.id)
+                    .collect(),
+                score_breakdown: breakdown,
+                undo_contract: UndoContract {
+                    required: false,
+                    uses_original_rendered: true,
+                },
+                model_transition: Some(DecisionState::Suggest),
+            };
+        }
         return learned_replace(top, breakdown);
     }
     if !guard_cooldown_active

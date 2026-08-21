@@ -369,7 +369,7 @@ fn seed_fixture_is_the_only_abbrev_table() {
     assert_eq!(config.calibration_source_hash, actual_hash);
     assert_eq!(config.hash, SCORE_CONFIG_V1_HASH);
     let canonical = format!(
-        "version=1\nabbrev_seed_sha256={ABBREV_SEED_SHA256}\npersonal_weight=0.2\nunigram_weight=0.08\n"
+        "version=1\nabbrev_seed_sha256={ABBREV_SEED_SHA256}\npersonal_weight=0.2\nunigram_weight=0.08\nbigram_weight=0.10\n"
     );
     assert_eq!(
         hex::encode(Sha256::digest(canonical.as_bytes())),

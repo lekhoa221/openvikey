@@ -455,3 +455,39 @@ fn learned_auto_top_wins_over_unique_telex_fix_below() {
     assert_eq!(plan.reason, InterventionReason::LearnedCorrection);
     assert_eq!(plan.candidate_id, Some(11));
 }
+
+#[test]
+fn small_margin_blocks_learned_auto() {
+    let model = model_with_accepts(18);
+    let top = fuzzy_khogn();
+    let second = Candidate {
+        id: 43,
+        text: "khổng".into(),
+        source: CandidateSource::Fuzzy,
+        evidence: "fuzzy:khogn:khổng".into(),
+        base_score: 0.94,
+        final_score: 0.94,
+    };
+    let mut config = LearningConfigV2::compatibility_v1();
+    config.auto_margin = 0.02;
+
+    let plan = plan_intervention(
+        &khogn_snapshot(),
+        &[top, second],
+        &lex(&["không", "khổng"]),
+        &model,
+        &config,
+        InterventionConfig::win32(),
+        InputContext::default(),
+        Some(' '),
+        None,
+        0,
+        true,
+        InputMethod::Telex,
+        None,
+    );
+
+    assert_eq!(plan.action, InterventionAction::DisplaySuggestion);
+    assert_eq!(plan.reason, InterventionReason::LowMargin);
+    assert!((plan.score_breakdown.top1_top2_margin - 0.01).abs() < 1e-12);
+}

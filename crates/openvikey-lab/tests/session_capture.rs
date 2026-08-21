@@ -386,6 +386,7 @@ fn accept_top_writes_expansion_into_document_and_adds_mass() {
     );
     assert!(session.document_text().starts_with("không"));
     assert!(session.model().positive_mass(&ko_rule(), 2) >= 1.0);
+    assert_eq!(session.model().unigram_count("không"), 1);
 }
 
 #[test]
@@ -490,6 +491,15 @@ fn committed_user_token_updates_unigram_once() {
         record,
         CaptureRecord::LanguageCommitSettled { token, .. } if token == "nam"
     )));
+}
+
+#[test]
+fn consecutive_user_commits_update_one_left_bigram() {
+    let mut session = telex_session();
+
+    session.type_text("viet nam ", InputContext::default(), 0);
+
+    assert_eq!(session.model().bigram_count("viet", "nam"), 1);
 }
 
 #[test]

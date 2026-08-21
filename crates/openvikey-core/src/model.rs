@@ -65,6 +65,10 @@ pub trait ModelView {
     fn unigram_signal(&self, _token_nfc: &str) -> f64 {
         0.0
     }
+
+    fn bigram_signal(&self, _left_token_nfc: &str, _token_nfc: &str) -> f64 {
+        0.0
+    }
 }
 
 /// Versioned operational limits retained across model saves.
@@ -252,6 +256,11 @@ impl AdaptiveModel {
     #[must_use]
     pub fn unigram_count(&self, token: &str) -> u64 {
         self.user_language_model.unigram(token)
+    }
+
+    #[must_use]
+    pub fn bigram_count(&self, left_token: &str, token: &str) -> u64 {
+        self.user_language_model.bigram(left_token, token)
     }
 
     #[must_use]
@@ -660,6 +669,11 @@ impl ModelView for AdaptiveModel {
 
     fn unigram_signal(&self, token_nfc: &str) -> f64 {
         self.user_language_model.unigram_signal(token_nfc)
+    }
+
+    fn bigram_signal(&self, left_token_nfc: &str, token_nfc: &str) -> f64 {
+        self.user_language_model
+            .bigram_signal(left_token_nfc, token_nfc)
     }
 }
 
