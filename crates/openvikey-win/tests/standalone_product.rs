@@ -29,3 +29,19 @@ fn release_product_is_a_windows_gui_subsystem_binary() {
 
     assert!(main.contains("windows_subsystem = \"windows\""));
 }
+
+#[test]
+fn release_product_embeds_a_multisize_branded_icon() {
+    let root = workspace_root();
+    let manifest = std::fs::read_to_string(root.join("crates/openvikey-win/Cargo.toml")).unwrap();
+    let build_script = std::fs::read_to_string(root.join("crates/openvikey-win/build.rs")).unwrap();
+    let package_script =
+        std::fs::read_to_string(root.join("scripts/build-standalone-preview.ps1")).unwrap();
+    let icon = std::fs::read(root.join("crates/openvikey-win/assets/openvikey.ico")).unwrap();
+
+    assert!(manifest.contains("build = \"build.rs\""));
+    assert!(build_script.contains("set_icon(\"assets/openvikey.ico\")"));
+    assert!(package_script.contains("OpenViKey.ico"));
+    assert_eq!(&icon[..4], &[0, 0, 1, 0]);
+    assert!(u16::from_le_bytes([icon[4], icon[5]]) >= 6);
+}

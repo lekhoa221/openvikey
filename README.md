@@ -20,11 +20,11 @@ Không hai người gõ giống nhau — như nét chữ tay. OpenViKey xây m�
 1. Engine gõ Telex/VNI.
 2. Sửa lỗi gõ/đảo chữ (fuzzy): `khogn → không`.
 3. Sửa telex/dấu sai vị trí: `ch2ao → chào`.
-4. Viết tắt tự bung: `ko → không`. Cụm như `ntn → như thế nào` chỉ gợi ý (`Ctrl+.`), không tự bung.
+4. Viết tắt được gợi ý và có thể tự bung sau khi đủ bằng chứng cá nhân: `ko → không`. Cụm như `ntn → như thế nào` chỉ gợi ý (`Ctrl+.`), không tự bung.
 5. Tự thêm dấu cho chữ không dấu: `khong the nao → không thể nào`.
 6. Mô hình tự tin thích nghi theo từng người dùng.
 
-(1) luôn inject khi gõ. (3) tự thay lúc Space, im lặng. Khi chỉ còn **một** ứng viên thắng, (2) và viết tắt một chữ (4) cũng tự thay lúc Space. Cụm viết tắt và (5) thiếu dấu chỉ gợi ý. Chi tiết ở mục [Gợi ý vs tự thay](#gợi-ý-vs-tự-thay).
+(1) luôn inject khi gõ. (3) tự thay lúc Space, im lặng. Ở cold start, (2) và viết tắt một chữ (4) chỉ gợi ý; chúng chỉ được tự thay sau khi đủ bằng chứng cá nhân theo policy learning v2. Cụm viết tắt và (5) thiếu dấu luôn chỉ gợi ý. Chi tiết ở mục [Gợi ý vs tự thay](#gợi-ý-vs-tự-thay).
 
 ## Lộ trình
 
@@ -80,8 +80,8 @@ Overlay góc màn hình hiện **một** gợi ý kèm `Ctrl+.`. Việc chữ tr
 |---|---|---|
 | `ch2ao` + Space | không nháy capsule | **Tự thay** thành `chào` (TelexFix, im lặng) |
 | `d91o` + Space | không nháy capsule | **Tự thay** thành `đó` |
-| `ko` + Space | *Đã sửa: ko → không* | **Tự thay** thành `không` nếu viết tắt unique một chữ |
-| `khogn` + Space | *Đã sửa* nếu chỉ còn một fuzzy thắng | **Tự thay** `không`; token ngắn hoặc nhiều ứng viên thì chỉ gợi ý |
+| `ko` + Space | Cold start: gợi ý `không`; đã học đủ: *Đã sửa* | Cold start vẫn là `ko `; sau đủ bằng chứng có thể **tự thay** thành `không` |
+| `khogn` + Space | Cold start: gợi ý `không`; đã học đủ: *Đã sửa* | Cold start vẫn là `khogn `; sau đủ bằng chứng có thể **tự thay** thành `không` |
 | `ntn` + Space | gợi ý cụm / fuzzy | Vẫn là `ntn ` — không đoán `nên` hay bung cụm |
 | `khong` + Space | Gợi ý dấu thanh | Vẫn là `khong ` — Diacritics **không** Auto |
 
@@ -92,7 +92,7 @@ Tự thay lúc Space **không** tính như `Ctrl+.` (không +1.0 điểm). Backs
 | Phím | Hành vi |
 |---|---|
 | Chữ / số / Backspace | Compose Telex hoặc VNI; inject vào app đang focus |
-| Space / dấu câu | Commit. Tự replace khi TelexFix/viết tắt/fuzzy unique |
+| Space / dấu câu | Commit. TelexFix an toàn tự replace; viết tắt/fuzzy chỉ tự replace sau khi đủ bằng chứng cá nhân |
 | **Enter** | Commit + inject **rồi** trả Enter cho app |
 | **Ctrl+.** | Nhận gợi ý trên cùng (khi chưa tự thay, hoặc muốn Accept mạnh) |
 | **Ctrl+,** | Từ chối gợi ý |
@@ -103,7 +103,7 @@ Tự thay lúc Space **không** tính như `Ctrl+.` (không +1.0 điểm). Backs
 ### Checklist thủ công (không nằm trong CI)
 
 - [ ] UniKey (và IME hook khác) tắt
-- [ ] Notepad, VNI: `ch2ao` + Space thành `chào`; `ko` + Space thành `không`; Backspace hoàn tác `ko`
+- [ ] Notepad, VNI: `ch2ao` + Space thành `chào`; cold `ko` + Space chỉ gợi ý, `Ctrl+.` nhận thành `không`
 - [ ] Notepad: Enter xuống dòng sau chữ Việt đã hiện
 - [ ] Cursor: Enter gửi prompt **sau** chữ Việt đã inject
 - [ ] Password/PIN: phím đi nguyên, không học

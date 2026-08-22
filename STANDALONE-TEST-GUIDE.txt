@@ -1,7 +1,7 @@
 OPENVIKEY STANDALONE PREVIEW — HƯỚNG DẪN SAU KHI RESTART
 =========================================================
 
-Ngày chuẩn bị: 2026-08-19
+Ngày chuẩn bị: 2026-08-19; cập nhật policy learning v2: 2026-08-22
 Workspace: D:\Workspace\Project_Khoa\openvikey
 App cần chạy: D:\Workspace\Project_Khoa\openvikey\dist\OpenViKey-preview\OpenViKey.exe
 
@@ -136,22 +136,20 @@ Kỳ vọng:
 BƯỚC 7 — KIỂM TRA GỢI Ý VÀ LEARNING
 -----------------------------------
 1. Chọn lại VNI để dùng smoke đã khóa.
-2. Trong Notepad gõ:
-
-   ko
-
-   rồi Space.
-
-3. Kỳ vọng text thành:
-
-   không
-
-   Overlay: Đã sửa: ko → không · Backspace để hoàn tác
-4. Backspace ngay. Kỳ vọng lại composition `ko`.
-5. Gõ lại `ko` + Space, rồi gõ tiếp (không Backspace).
+2. Trong Notepad gõ `ko` rồi Space.
+3. Policy learning v2 không cho viết tắt tự sửa ở cold start:
+   - nếu rule chưa đủ bằng chứng: text vẫn là `ko ` và overlay gợi ý `không`;
+     nhấn Ctrl+. để nhận thành `không` và ghi nhận bằng chứng tường minh;
+   - nếu model local đã học đủ từ lần test trước: app có thể tự sửa thành `không`
+     và hiện `Đã sửa: ko → không · Backspace để hoàn tác`.
+4. Nếu app vừa tự sửa, Backspace ngay. Kỳ vọng trở lại composition `ko`.
+5. Lặp lại `ko`, dùng Ctrl+. để nhận gợi ý vài lần; không kỳ vọng một lần nhận đã
+   lập tức cấp quyền Auto.
 6. Gõ `ntn` + Space. Kỳ vọng vẫn `ntn` (không thành `nên` hay `như thế nào`).
-7. Gõ `khogn` + Space. Kỳ vọng thành `không` kèm overlay Đã sửa.
-8. Gõ `ch2ao` + Space. Kỳ vọng thành `chào` và **không** nháy capsule Đã sửa.
+7. Gõ `khogn` + Space. Ở cold start, text vẫn là `khogn ` và overlay gợi ý
+   `không`; chỉ model đã đủ bằng chứng cá nhân mới được tự sửa.
+8. Gõ `ch2ao` + Space. Kỳ vọng thành `chào` và **không** nháy capsule Đã sửa;
+   đây là TelexFix cấu trúc an toàn nên vẫn Auto ngay.
 9. Click phải tray → Cài đặt và rule đã học...
 10. Có thể thử:
    - `khong` + Space     chỉ gợi ý, không tự thay
@@ -160,7 +158,7 @@ BƯỚC 7 — KIỂM TRA GỢI Ý VÀ LEARNING
    - Ctrl+Shift+Z        hoàn tác Auto gần nhất
    - Ctrl+Shift+.        quên rule vừa học
 
-Lưu ý: một typo không lập tức trở thành Auto vĩnh viễn. Vòng đời là:
+Vòng đời learning v2:
 
    Ghi nhận → Gợi ý → Tự sửa khi đủ bằng chứng
 

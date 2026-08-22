@@ -16,8 +16,11 @@ try {
 
     New-Item -ItemType Directory -Force -Path $Output | Out-Null
     $SourceExe = Join-Path $Target 'release\openvikey-win.exe'
+    $SourceIcon = Join-Path $Root 'crates\openvikey-win\assets\openvikey.ico'
     $ProductExe = Join-Path $Output 'OpenViKey.exe'
+    $ProductIcon = Join-Path $Output 'OpenViKey.ico'
     Copy-Item -Force $SourceExe $ProductExe
+    Copy-Item -Force $SourceIcon $ProductIcon
 
     @'
 OpenViKey standalone preview
@@ -41,6 +44,7 @@ Preview dùng development lexicon và plaintext local development stores. Không
     }
     "package=$Output"
     "exe=$ProductExe"
+    "icon=$ProductIcon"
     "sha256=$Hash"
 } finally {
     Pop-Location
