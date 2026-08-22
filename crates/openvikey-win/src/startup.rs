@@ -27,7 +27,7 @@ pub fn set_enabled(enable: bool) -> windows::core::Result<()> {
         let executable = std::env::current_exe().map_err(|error| {
             windows::core::Error::new(windows::Win32::Foundation::E_FAIL, error.to_string())
         })?;
-        let command = format!("\"{}\"", executable.display());
+        let command = format!("\"{}\" --background", executable.display());
         key.set_string(VALUE_NAME, command)?;
     } else if key.get_value(VALUE_NAME).is_ok() {
         key.remove_value(VALUE_NAME)?;

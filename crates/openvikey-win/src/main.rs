@@ -52,6 +52,9 @@ struct Cli {
     /// Explicitly enable transformation in local terminal hosts. Learning/capture stay disabled.
     #[arg(long)]
     allow_terminal: bool,
+    /// Start only the tray/hook host (used by Start with Windows).
+    #[arg(long, hide = true)]
+    background: bool,
     /// Open development model JSON path.
     #[arg(long)]
     model: Option<PathBuf>,
@@ -107,6 +110,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     startup_trace("single-instance");
     let cli = Cli::parse();
+    let show_control_on_start = !cli.background;
     startup_trace("cli");
     // Reserved for Electron SendInput gap (inject path).
     let _ = cli.electron_gap_ms;
@@ -216,8 +220,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(windows)]
     let hooks = HostHooks::install(Arc::clone(&focus))?;
     startup_trace("hooks");
+    #[cfg(windows)]
+    if show_control_on_start {
+        openvikey_win::control::show_settings_window(Some(0));
+        startup_trace("control-window");
+    }
     #[cfg(not(windows))]
-    let _ = initial_mode;
+    let _ = (initial_mode, show_control_on_start);
 
     startup_trace("message-loop");
     run_host_message_loop(&shutdown);

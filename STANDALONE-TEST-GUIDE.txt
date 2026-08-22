@@ -61,6 +61,7 @@ Hoặc chạy từ PowerShell:
    Start-Process .\dist\OpenViKey-preview\OpenViKey.exe
 
 Kỳ vọng:
+- cửa sổ Cài đặt/control hiện ngay khi mở app thủ công;
 - không có cửa sổ console màu đen;
 - có icon V hoặc E trong system tray (có thể nằm dưới nút ^);
 - Task Manager chỉ có một process OpenViKey.exe;
@@ -71,6 +72,9 @@ Windows Terminal phải gõ được tiếng Việt, nhưng OpenViKey không lea
 trong các process terminal chuyên dụng. Nếu settings bị reset, có thể khởi động tạm:
 
    Start-Process .\dist\OpenViKey-preview\OpenViKey.exe -ArgumentList '--allow-terminal'
+
+Đóng cửa sổ Cài đặt chỉ ẩn UI; process và tray phải tiếp tục chạy. Mục
+Khởi động cùng Windows dùng chế độ nền nên không tự bật cửa sổ mỗi lần đăng nhập.
 
 Nếu không thấy tray icon:
 - kiểm tra vùng icon ẩn (^);

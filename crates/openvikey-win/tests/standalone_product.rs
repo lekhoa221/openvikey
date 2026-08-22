@@ -23,6 +23,29 @@ fn product_startup_has_no_tsf_bridge_or_registration_dependency() {
 }
 
 #[test]
+fn manual_startup_opens_settings_while_autostart_remains_background() {
+    let root = workspace_root();
+    let main = std::fs::read_to_string(root.join("crates/openvikey-win/src/main.rs")).unwrap();
+    let startup =
+        std::fs::read_to_string(root.join("crates/openvikey-win/src/startup.rs")).unwrap();
+    let install_hooks = main
+        .find("HostHooks::install")
+        .expect("product startup must install hooks");
+    let show_settings = main
+        .find("openvikey_win::control::show_settings_window(Some(0))")
+        .expect("manual startup must show Settings");
+    let message_loop = main
+        .find("run_host_message_loop(&shutdown)")
+        .expect("product startup must enter the message loop");
+
+    assert!(main.contains("background: bool"));
+    assert!(main.contains("if show_control_on_start"));
+    assert!(install_hooks < show_settings);
+    assert!(show_settings < message_loop);
+    assert!(startup.contains("--background"));
+}
+
+#[test]
 fn release_product_is_a_windows_gui_subsystem_binary() {
     let main =
         std::fs::read_to_string(workspace_root().join("crates/openvikey-win/src/main.rs")).unwrap();

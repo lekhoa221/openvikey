@@ -62,7 +62,7 @@ Hướng dẫn nghiệm thu thủ công: [`STANDALONE-TEST-GUIDE.txt`](STANDALON
 
 Mặc định **VNI**. Đổi Telex/VNI từ tray hoặc cửa sổ Cài đặt; lựa chọn lưu ở `%LOCALAPPDATA%\OpenViKey\settings.json`. `--method telex|vni` chỉ là override lúc dev. Evidence học **theo kiểu gõ**: Telex không chuyển sang VNI.
 
-Click trái tray: đổi Vietnamese/English. Click phải hoặc double-click: Cài đặt. Đóng cửa sổ Cài đặt **không** thoát bộ gõ; chỉ *Thoát* mới tháo hook.
+Mở app thủ công sẽ hiện ngay cửa sổ Cài đặt/control; Start with Windows dùng chế độ nền. Click trái tray: đổi Vietnamese/English. Click phải hoặc double-click: mở lại Cài đặt. Đóng cửa sổ Cài đặt **không** thoát bộ gõ; chỉ *Thoát* mới tháo hook.
 
 Optional: `--model` / `--capture` (mặc định `%LOCALAPPDATA%\OpenViKey\model.ovkdev.json` và `capture.ovkdev.json`). Tên file custom phải kết thúc `.ovkdev.json`. Host Windows development **không hỏi passphrase**; hai file này là JSON plaintext để soi learning state. Overlay nhớ trong `ui.ovkdev.json`. File `.ovk` mã hoá cũ không bị đụng.
 
