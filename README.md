@@ -60,9 +60,9 @@ powershell -File scripts/build-standalone-preview.ps1
 
 Hướng dẫn nghiệm thu thủ công: [`STANDALONE-TEST-GUIDE.txt`](STANDALONE-TEST-GUIDE.txt).
 
-Mặc định **VNI**. Đổi Telex/VNI từ tray hoặc cửa sổ Cài đặt; lựa chọn lưu ở `%LOCALAPPDATA%\OpenViKey\settings.json`. `--method telex|vni` chỉ là override lúc dev. Evidence học **theo kiểu gõ**: Telex không chuyển sang VNI.
+Mặc định **VNI**. Đổi Telex/VNI từ tray hoặc cửa sổ Điều khiển; lựa chọn lưu ở `%LOCALAPPDATA%\OpenViKey\settings.json`. `--method telex|vni` chỉ là override lúc dev. Evidence học **theo kiểu gõ**: Telex không chuyển sang VNI.
 
-Mở app thủ công sẽ hiện ngay cửa sổ Cài đặt/control; Start with Windows dùng chế độ nền. Click trái tray: đổi Vietnamese/English. Click phải hoặc double-click: mở lại Cài đặt. Đóng cửa sổ Cài đặt **không** thoát bộ gõ; chỉ *Thoát* mới tháo hook.
+Mở app thủ công sẽ hiện cửa sổ **Điều khiển** gọn: V/E, VNI/Telex, tự học và gợi ý. Chọn **Nâng cao** để mở Settings đầy đủ (Đã học/chart, ứng dụng, phím tắt, riêng tư). Start with Windows dùng chế độ nền. Click trái tray đổi Vietnamese/English; double-click mở lại Điều khiển. Đóng cửa sổ chỉ ẩn UI; chỉ *Kết thúc/Thoát* mới tháo hook graceful.
 
 Optional: `--model` / `--capture` (mặc định `%LOCALAPPDATA%\OpenViKey\model.ovkdev.json` và `capture.ovkdev.json`). Tên file custom phải kết thúc `.ovkdev.json`. Host Windows development **không hỏi passphrase**; hai file này là JSON plaintext để soi learning state. Overlay nhớ trong `ui.ovkdev.json`. File `.ovk` mã hoá cũ không bị đụng.
 

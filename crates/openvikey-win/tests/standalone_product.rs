@@ -32,8 +32,8 @@ fn manual_startup_opens_settings_while_autostart_remains_background() {
         .find("HostHooks::install")
         .expect("product startup must install hooks");
     let show_settings = main
-        .find("openvikey_win::control::show_settings_window(Some(0))")
-        .expect("manual startup must show Settings");
+        .find("openvikey_win::control::show_simple_window()")
+        .expect("manual startup must show the simple control surface");
     let message_loop = main
         .find("run_host_message_loop(&shutdown)")
         .expect("product startup must enter the message loop");

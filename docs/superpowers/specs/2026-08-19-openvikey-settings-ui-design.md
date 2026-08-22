@@ -57,6 +57,14 @@
   6. *Giới thiệu* (About & Diagnostics)
 - **Controls nội dung**: Standard Win32 Button (`BS_RADIOBUTTON`, `BS_AUTORADIOBUTTON`, `BS_AUTOCHECKBOX`, `BS_PUSHBUTTON`), ComboBox (`CBS_DROPDOWNLIST`), ListView (`WC_LISTVIEWW` với `LVS_REPORT | LVS_SINGLESEL | LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER`), Edit (`ES_AUTOHSCROLL`).
 
+### 2.4 Hai mức giao diện
+
+- **Đơn giản (mặc định khi mở thủ công):** cửa sổ `OpenViKey - v0.1.0` cho thao tác hằng ngày; V/E dùng radio trong nhóm Điều khiển và title-bar icon đổi giữa V đỏ/E xanh. Màn hình có VNI/Telex, bảng mã Unicode, bật/tắt tự học, bật/tắt gợi ý, checkbox hướng dẫn phím tắt gắn vào gợi ý, đóng cửa sổ và kết thúc graceful.
+- **Nâng cao:** toàn bộ Settings 6 trang hiện có, gồm quản lý rule/chart, policy ứng dụng, phím tắt, riêng tư và chẩn đoán.
+- Nút **Nâng cao** mở rộng cùng một HWND; nút **Đơn giản** thu gọn lại. Không tạo process hoặc backend thứ hai.
+- Đóng cửa sổ ở cả hai mức chỉ ẩn UI. `Kết thúc`/tray `Thoát` mới yêu cầu shutdown và flush model/capture.
+- Preview chỉ hỗ trợ bảng mã Unicode; UI không cung cấp lựa chọn legacy giả.
+
 ---
 
 ## 3. Tích hợp Tray Icon & Chuột

@@ -3,7 +3,7 @@
 use openvikey_session::session::{LearningNotice, LearningNoticeKind};
 use openvikey_win::overlay::{
     OverlayPresentation, overlay_display_lines, overlay_lines, overlay_presentation,
-    overlay_presentation_if,
+    overlay_presentation_if, overlay_presentation_with_options,
 };
 
 #[test]
@@ -20,9 +20,23 @@ fn candidates_show_and_empty_candidates_hide_the_overlay() {
             candidate: "không".into(),
             position: 1,
             total: 2,
+            show_hotkey_hint: true,
         }
     );
     assert_eq!(overlay_presentation(&[], 3), OverlayPresentation::Hidden);
+}
+
+#[test]
+fn hotkey_guidance_is_attached_only_when_requested() {
+    assert_eq!(
+        overlay_presentation_with_options(&["không".into()], 3, true, false),
+        OverlayPresentation::Suggestion {
+            candidate: "không".into(),
+            position: 1,
+            total: 1,
+            show_hotkey_hint: false,
+        }
+    );
 }
 
 #[test]
@@ -89,6 +103,21 @@ fn windows_overlay_is_visible_with_text_and_hides_when_empty() {
     assert!(len > 0);
     let text = String::from_utf16_lossy(&text[..usize::try_from(len).unwrap_or(0)]);
     assert!(text.contains("không"));
+    assert!(text.contains("Ctrl+."));
+
+    unsafe {
+        overlay.set_presentation(OverlayPresentation::Suggestion {
+            candidate: "không".into(),
+            position: 1,
+            total: 1,
+            show_hotkey_hint: false,
+        });
+    }
+    let mut no_hint_buffer = [0u16; 128];
+    let len = unsafe { GetWindowTextW(overlay.hwnd(), &mut no_hint_buffer) };
+    let no_hint_text =
+        String::from_utf16_lossy(&no_hint_buffer[..usize::try_from(len).unwrap_or(0)]);
+    assert!(!no_hint_text.contains("Ctrl+."));
 
     let mut suggestion_rect = RECT::default();
     unsafe { GetWindowRect(overlay.hwnd(), &raw mut suggestion_rect).expect("overlay rect") };

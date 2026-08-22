@@ -23,6 +23,8 @@ fn missing_settings_start_as_vni_without_registration() {
     assert_eq!(settings.input_method, InputMethod::Vni);
     assert_eq!(settings.tone_placement, TonePlacement::Modern);
     assert!(settings.show_suggestions);
+    assert!(settings.show_hotkey_hints);
+    assert!(settings.learning_enabled);
     assert!(!settings.allow_terminal);
     assert!(!settings.start_with_windows);
 }
@@ -34,6 +36,7 @@ fn settings_round_trip_through_versioned_file() {
     let settings = SettingsV1 {
         input_method: InputMethod::Telex,
         show_suggestions: false,
+        show_hotkey_hints: false,
         allow_terminal: true,
         start_with_windows: true,
         ..SettingsV1::default()

@@ -301,6 +301,24 @@ fn english_mode_typing_does_not_mutate_the_model() {
 }
 
 #[test]
+fn disabled_personal_learning_keeps_typing_active_without_model_or_capture_mutation() {
+    let mut host = TypingHost::new_telex_fixture();
+    let before_model = host.session.model_payload().unwrap();
+    let before_capture = host.session.save_snapshot().capture_records;
+    host.learning_enabled = false;
+    host.learning_enabled_flag
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+
+    host.handle_key(key(0x4B), 1); // k
+    host.handle_key(key(0x4F), 2); // o
+    host.handle_key(key(0x20), 3); // space
+
+    assert_eq!(host.last_injected_token, "ko");
+    assert_eq!(host.session.model_payload().unwrap(), before_model);
+    assert_eq!(host.session.save_snapshot().capture_records, before_capture);
+}
+
+#[test]
 fn toggling_suggestions_hides_overlay_without_clearing_candidates() {
     let mut host = TypingHost::new_telex_fixture();
     host.handle_key(key(0x4B), 1); // k

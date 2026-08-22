@@ -61,7 +61,12 @@ Hoặc chạy từ PowerShell:
    Start-Process .\dist\OpenViKey-preview\OpenViKey.exe
 
 Kỳ vọng:
-- cửa sổ Cài đặt/control hiện ngay khi mở app thủ công;
+- cửa sổ `OpenViKey - v0.1.0` hiện ngay khi mở app thủ công;
+- V/E là hai lựa chọn radio; title-bar icon là V đỏ hoặc E xanh tương ứng;
+- có VNI/Telex, Tự học cá nhân, Hiển thị gợi ý và Hướng dẫn phím tắt;
+- checkbox Hướng dẫn phím tắt bật/tắt thông tin Ctrl+. trên gợi ý;
+- nút Nâng cao mở Settings đầy đủ; nút Đơn giản thu gọn lại;
+- Bảng mã hiện Unicode (preview chưa giả lập bảng mã legacy);
 - không có cửa sổ console màu đen;
 - có icon V hoặc E trong system tray (có thể nằm dưới nút ^);
 - Task Manager chỉ có một process OpenViKey.exe;
@@ -73,7 +78,8 @@ trong các process terminal chuyên dụng. Nếu settings bị reset, có thể
 
    Start-Process .\dist\OpenViKey-preview\OpenViKey.exe -ArgumentList '--allow-terminal'
 
-Đóng cửa sổ Cài đặt chỉ ẩn UI; process và tray phải tiếp tục chạy. Mục
+Đóng cửa sổ Điều khiển/Cài đặt chỉ ẩn UI; process và tray phải tiếp tục chạy.
+Nút Kết thúc và mục Thoát ở tray mới kết thúc process theo đường graceful. Mục
 Khởi động cùng Windows dùng chế độ nền nên không tự bật cửa sổ mỗi lần đăng nhập.
 
 Nếu không thấy tray icon:

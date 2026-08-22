@@ -167,12 +167,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let sending = Arc::new(AtomicBool::new(false));
     let mut typing = TypingHost::new_with_session(session);
+    typing.learning_enabled = settings.learning_enabled;
+    typing
+        .learning_enabled_flag
+        .store(typing.learning_enabled, std::sync::atomic::Ordering::SeqCst);
     typing.allow_terminal = cli.allow_terminal || settings.allow_terminal;
     typing
         .allow_terminal_flag
         .store(typing.allow_terminal, std::sync::atomic::Ordering::SeqCst);
     typing.app_policies.clone_from(&settings.app_policies);
     typing.set_show_suggestions(settings.show_suggestions);
+    typing.set_show_hotkey_hints(settings.show_hotkey_hints);
     typing.set_initial_mode(if settings.starts_in_vietnamese() {
         Mode::Viet
     } else {
@@ -222,7 +227,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     startup_trace("hooks");
     #[cfg(windows)]
     if show_control_on_start {
-        openvikey_win::control::show_settings_window(Some(0));
+        openvikey_win::control::show_simple_window();
         startup_trace("control-window");
     }
     #[cfg(not(windows))]
@@ -248,6 +253,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         settings.tone_placement = engine.tone_placement;
         settings.last_mode_viet = guard.mode == Mode::Viet;
         settings.show_suggestions = guard.show_suggestions;
+        settings.show_hotkey_hints = guard.show_hotkey_hints;
         settings.allow_terminal = guard.allow_terminal;
     }
     #[cfg(windows)]

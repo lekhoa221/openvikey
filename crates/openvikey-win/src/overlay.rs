@@ -25,13 +25,14 @@ pub enum OverlayPresentation {
         candidate: String,
         position: usize,
         total: usize,
+        show_hotkey_hint: bool,
     },
     Learning(LearningNotice),
 }
 
 #[must_use]
 pub fn overlay_presentation(candidates: &[String], max: usize) -> OverlayPresentation {
-    overlay_presentation_if(candidates, max, true)
+    overlay_presentation_with_options(candidates, max, true, true)
 }
 
 #[must_use]
@@ -39,6 +40,16 @@ pub fn overlay_presentation_if(
     candidates: &[String],
     max: usize,
     show: bool,
+) -> OverlayPresentation {
+    overlay_presentation_with_options(candidates, max, show, true)
+}
+
+#[must_use]
+pub fn overlay_presentation_with_options(
+    candidates: &[String],
+    max: usize,
+    show: bool,
+    show_hotkey_hint: bool,
 ) -> OverlayPresentation {
     let lines = overlay_display_lines(candidates, max, show);
     let Some(candidate) = lines.first() else {
@@ -48,6 +59,7 @@ pub fn overlay_presentation_if(
         candidate: candidate.clone(),
         position: 1,
         total: lines.len(),
+        show_hotkey_hint,
     }
 }
 
@@ -60,8 +72,13 @@ pub fn bind_overlay_hwnd(hwnd: isize) {
 }
 
 /// Push the latest top candidate to the compact capsule (no-op if unbound).
-pub fn push_overlay_lines(lines: &[String]) {
-    push_overlay_presentation(overlay_presentation(lines, 3));
+pub fn push_overlay_lines(lines: &[String], show_hotkey_hint: bool) {
+    push_overlay_presentation(overlay_presentation_with_options(
+        lines,
+        3,
+        true,
+        show_hotkey_hint,
+    ));
 }
 
 /// Give a learning result priority over ordinary candidate updates.
@@ -223,7 +240,9 @@ mod hwnd_overlay {
         pub unsafe fn set_lines(&self, lines: &[String]) {
             apply_command(
                 self.hwnd,
-                OverlayCommand::Present(super::overlay_presentation(lines, 3)),
+                OverlayCommand::Present(super::overlay_presentation_with_options(
+                    lines, 3, true, true,
+                )),
             );
         }
 
@@ -421,7 +440,11 @@ mod hwnd_overlay {
                 candidate,
                 position,
                 total,
-            } => format!("Gợi ý: {candidate} · Ctrl+. · {position}/{total}"),
+                show_hotkey_hint,
+            } => {
+                let hint = if *show_hotkey_hint { " · Ctrl+." } else { "" };
+                format!("Gợi ý: {candidate}{hint} · {position}/{total}")
+            }
             OverlayPresentation::Learning(notice) => notice.display_text(),
         }
     }
@@ -601,7 +624,16 @@ mod hwnd_overlay {
                 candidate,
                 position,
                 total,
-            } => draw_suggestion(hdc, width, height, candidate, *position, *total, dpi),
+                show_hotkey_hint,
+            } => draw_suggestion(
+                hdc,
+                width,
+                height,
+                candidate,
+                (*position, *total),
+                *show_hotkey_hint,
+                dpi,
+            ),
             OverlayPresentation::Learning(notice) => {
                 draw_learning(hdc, width, height, notice, dpi);
             }
@@ -622,10 +654,11 @@ mod hwnd_overlay {
         width: i32,
         height: i32,
         candidate: &str,
-        position: usize,
-        total: usize,
+        position: (usize, usize),
+        show_hotkey_hint: bool,
         dpi: u32,
     ) {
+        let (position, total) = position;
         let pad = scale_dpi(14, dpi);
         let mut label_rect = RECT {
             left: pad,
@@ -635,21 +668,24 @@ mod hwnd_overlay {
         };
         draw_text(hdc, "Gợi ý", &mut label_rect, rgb(37, 99, 235));
 
+        let candidate_right = if show_hotkey_hint { 108 } else { 46 };
         let mut candidate_rect = RECT {
             left: scale_dpi(68, dpi),
             top: 0,
-            right: width - scale_dpi(108, dpi),
+            right: width - scale_dpi(candidate_right, dpi),
             bottom: height,
         };
         draw_text(hdc, candidate, &mut candidate_rect, rgb(15, 23, 42));
 
-        let mut shortcut_rect = RECT {
-            left: width - scale_dpi(104, dpi),
-            top: 0,
-            right: width - scale_dpi(46, dpi),
-            bottom: height,
-        };
-        draw_text(hdc, "Ctrl+.", &mut shortcut_rect, rgb(71, 85, 105));
+        if show_hotkey_hint {
+            let mut shortcut_rect = RECT {
+                left: width - scale_dpi(104, dpi),
+                top: 0,
+                right: width - scale_dpi(46, dpi),
+                bottom: height,
+            };
+            draw_text(hdc, "Ctrl+.", &mut shortcut_rect, rgb(71, 85, 105));
+        }
 
         let mut count_rect = RECT {
             left: width - scale_dpi(44, dpi),

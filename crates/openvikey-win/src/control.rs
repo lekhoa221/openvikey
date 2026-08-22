@@ -31,15 +31,15 @@ use windows::Win32::UI::WindowsAndMessaging::{
     BS_OWNERDRAW, BS_PUSHBUTTON, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CBN_SELCHANGE,
     CBS_DROPDOWNLIST, CS_HREDRAW, CS_VREDRAW, CreateIcon, CreateWindowExW, DefWindowProcW,
     DestroyIcon, EN_CHANGE, ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY,
-    GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW, HCURSOR, HICON, HMENU, IsWindow,
-    LB_ADDSTRING, LB_GETCURSEL, LB_RESETCONTENT, LBN_SELCHANGE, LBS_NOINTEGRALHEIGHT, LBS_NOTIFY,
-    MB_ICONERROR, MB_OK, MessageBoxW, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_HIDE,
-    SW_RESTORE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    SendMessageW, SetForegroundWindow, SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_DESTROY,
-    WM_DPICHANGED, WM_DRAWITEM, WM_NOTIFY, WM_SETFONT, WM_SETREDRAW, WNDCLASSW, WS_BORDER,
-    WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_GROUP, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU,
-    WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    GetSystemMetrics, GetWindowTextLengthW, GetWindowTextW, HCURSOR, HICON, HMENU, ICON_SMALL,
+    IsWindow, LB_ADDSTRING, LB_GETCURSEL, LB_RESETCONTENT, LBN_SELCHANGE, LBS_NOINTEGRALHEIGHT,
+    LBS_NOTIFY, MB_ICONERROR, MB_OK, MessageBoxW, PostMessageW, RegisterClassW, SM_CXSCREEN,
+    SM_CYSCREEN, SW_HIDE, SW_RESTORE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetForegroundWindow, SetWindowPos, SetWindowTextW,
+    ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN,
+    WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_NOTIFY, WM_SETFONT, WM_SETICON,
+    WM_SETREDRAW, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_GROUP, WS_MINIMIZEBOX,
+    WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 use windows::core::{HSTRING, PCWSTR, PWSTR, Result, w};
 
@@ -52,6 +52,8 @@ use crate::settings::{
 
 const BASE_WINDOW_WIDTH: i32 = 760;
 const BASE_WINDOW_HEIGHT: i32 = 610;
+const SIMPLE_WINDOW_WIDTH: i32 = 560;
+const SIMPLE_WINDOW_HEIGHT: i32 = 300;
 
 const BST_UNCHECKED: usize = 0;
 const BST_CHECKED: usize = 1;
@@ -97,6 +99,20 @@ const IDC_BTN_REFRESH_ABOUT: usize = 701;
 
 const IDC_BTN_CLOSE: usize = 801;
 const IDC_BTN_APPLY: usize = 802;
+const IDC_BTN_SIMPLE_VIEW: usize = 803;
+
+const IDC_SIMPLE_METHOD: usize = 901;
+const IDC_SIMPLE_ENCODING: usize = 902;
+const IDC_SIMPLE_LEARNING: usize = 903;
+const IDC_SIMPLE_SUGGESTIONS: usize = 904;
+const IDC_SIMPLE_GUIDE: usize = 905;
+const IDC_SIMPLE_EXIT: usize = 906;
+const IDC_SIMPLE_ADVANCED: usize = 907;
+const IDC_SIMPLE_CLOSE: usize = 908;
+const IDC_SIMPLE_VIET: usize = 909;
+const IDC_SIMPLE_ENGLISH: usize = 910;
+
+const WM_MODE_CHANGED: u32 = WM_APP + 52;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 struct SendHwnd(HWND);
@@ -154,6 +170,12 @@ fn create_nav_icon(rows: &[u16; 16]) -> Result<HICON> {
     unsafe { CreateIcon(None, 16, 16, 1, 1, and_mask.as_ptr(), xor_mask.as_ptr()) }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UiViewMode {
+    Simple,
+    Advanced,
+}
+
 struct ControlLayout {
     hwnd: HWND,
     base_x: i32,
@@ -196,6 +218,15 @@ struct UiControls {
     chk_suggestions: HWND,
     chk_autostart: HWND,
     chk_terminal: HWND,
+    simple_status: HWND,
+    simple_method: HWND,
+    simple_learning: HWND,
+    simple_suggestions: HWND,
+    simple_hotkey_hints: HWND,
+    simple_radio_viet: HWND,
+    simple_radio_eng: HWND,
+    window_mode_icon: HICON,
+    window_icon_mode: Option<Mode>,
     txt_search_rules: HWND,
     chk_evidence_only: HWND,
     list_rules: HWND,
@@ -237,6 +268,8 @@ struct UiControls {
     window_brush: HBRUSH,
     page_controls: [Vec<HWND>; 6],
     persistent_controls: Vec<HWND>,
+    simple_controls: Vec<HWND>,
+    view_mode: UiViewMode,
     active_page: Option<usize>,
     layouts: Vec<ControlLayout>,
 }
@@ -261,6 +294,18 @@ pub fn active_settings_window_handle() -> HWND {
         .ok()
         .and_then(|guard| *guard)
         .map_or_else(HWND::default, |h| h.0)
+}
+
+/// Queue a title-bar icon and radio refresh on the settings UI thread.
+pub fn notify_mode_changed(mode: Mode) {
+    let hwnd = active_settings_window_handle();
+    if hwnd.is_invalid() {
+        return;
+    }
+    let mode_value = usize::from(mode == Mode::English);
+    unsafe {
+        let _ = PostMessageW(Some(hwnd), WM_MODE_CHANGED, WPARAM(mode_value), LPARAM(0));
+    }
 }
 
 #[must_use]
@@ -334,10 +379,20 @@ pub fn show_startup_error(message: &str) {
 }
 
 pub fn show_control_window(_owner: HWND) {
-    show_settings_window(Some(0));
+    show_simple_window();
 }
 
+/// Open the compact, everyday control surface.
+pub fn show_simple_window() {
+    show_window(UiViewMode::Simple, None);
+}
+
+/// Open a specific page in the full advanced Settings surface.
 pub fn show_settings_window(page_index: Option<usize>) {
+    show_window(UiViewMode::Advanced, Some(page_index.unwrap_or(0)));
+}
+
+fn show_window(view_mode: UiViewMode, page_index: Option<usize>) {
     #[cfg(windows)]
     {
         let existing = SETTINGS_HWND
@@ -359,11 +414,11 @@ pub fn show_settings_window(page_index: Option<usize>) {
             h
         };
 
-        if let Some(index) = page_index {
-            select_page(hwnd, index);
+        set_view_mode(hwnd, view_mode, page_index);
+        match view_mode {
+            UiViewMode::Simple => populate_simple_controls(),
+            UiViewMode::Advanced => populate_controls(hwnd),
         }
-
-        populate_controls(hwnd);
 
         unsafe {
             let _ = ShowWindow(hwnd, SW_RESTORE);
@@ -373,7 +428,7 @@ pub fn show_settings_window(page_index: Option<usize>) {
     }
     #[cfg(not(windows))]
     {
-        let _ = page_index;
+        let _ = (view_mode, page_index);
     }
 }
 
@@ -417,7 +472,7 @@ fn create_settings_window() -> Result<HWND> {
             WINDOW_EX_STYLE::default(),
             w!("OpenViKeySettingsWindowClass"),
             w!("OpenViKey — Cài đặt"),
-            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
+            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
             x,
             y,
             BASE_WINDOW_WIDTH,
@@ -1637,51 +1692,229 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
     )?;
     page_5.push(btn_refresh_about);
 
-    let status_label = create_label(
-        hwnd,
+    let status_label = make_control(
+        w!("STATIC"),
         "● OpenViKey đang chạy · Local-only · v0.1.0",
-        scale_dpi(16, dpi),
-        scale_dpi(492, dpi),
-        scale_dpi(470, dpi),
-        scale_dpi(24, dpi),
+        WS_CHILD | WS_VISIBLE,
+        None,
+        16,
+        492,
+        470,
+        24,
     )?;
-    add_layout(status_label, 16, 492, 470, 24);
 
-    let btn_close = unsafe {
-        CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
-            w!("BUTTON"),
-            w!("Đóng"),
-            ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_PUSHBUTTON as u32),
-            scale_dpi(510, dpi),
-            scale_dpi(486, dpi),
-            scale_dpi(100, dpi),
-            scale_dpi(30, dpi),
-            Some(hwnd),
-            Some(HMENU(IDC_BTN_CLOSE as *mut core::ffi::c_void)),
-            Some(HINSTANCE::default()),
-            None,
-        )?
-    };
-    add_layout(btn_close, 510, 486, 100, 30);
+    let btn_close = make_control(
+        w!("BUTTON"),
+        "Đóng",
+        ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_PUSHBUTTON as u32),
+        Some(IDC_BTN_CLOSE),
+        510,
+        486,
+        100,
+        30,
+    )?;
 
-    let btn_apply = unsafe {
-        CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
-            w!("BUTTON"),
-            w!("Áp dụng"),
-            ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_OWNERDRAW as u32),
-            scale_dpi(625, dpi),
-            scale_dpi(486, dpi),
-            scale_dpi(105, dpi),
-            scale_dpi(30, dpi),
-            Some(hwnd),
-            Some(HMENU(IDC_BTN_APPLY as *mut core::ffi::c_void)),
-            Some(HINSTANCE::default()),
-            None,
-        )?
-    };
-    add_layout(btn_apply, 625, 486, 105, 30);
+    let btn_apply = make_control(
+        w!("BUTTON"),
+        "Áp dụng",
+        ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_OWNERDRAW as u32),
+        Some(IDC_BTN_APPLY),
+        625,
+        486,
+        105,
+        30,
+    )?;
+
+    let btn_simple_view = make_control(
+        w!("BUTTON"),
+        "Đơn giản",
+        ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_PUSHBUTTON as u32),
+        Some(IDC_BTN_SIMPLE_VIEW),
+        390,
+        486,
+        110,
+        30,
+    )?;
+
+    // Compact mode follows the supplied native-window sketch. Layout comes
+    // first; native control styling remains intentionally unchanged.
+    let mut simple_controls = Vec::new();
+    simple_controls.push(make_control(
+        w!("BUTTON"),
+        " Điều khiển ",
+        ws(WS_CHILD | WS_VISIBLE, BS_GROUPBOX as u32),
+        None,
+        16,
+        10,
+        528,
+        108,
+    )?);
+    let simple_radio_viet = make_control(
+        w!("BUTTON"),
+        "Tiếng Việt (V)",
+        ws(
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP,
+            BS_AUTORADIOBUTTON as u32,
+        ),
+        Some(IDC_SIMPLE_VIET),
+        32,
+        30,
+        135,
+        22,
+    )?;
+    simple_controls.push(simple_radio_viet);
+    let simple_radio_eng = make_control(
+        w!("BUTTON"),
+        "Tiếng Anh (E)",
+        ws(
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            BS_AUTORADIOBUTTON as u32,
+        ),
+        Some(IDC_SIMPLE_ENGLISH),
+        180,
+        30,
+        135,
+        22,
+    )?;
+    simple_controls.push(simple_radio_eng);
+    simple_controls.push(make_control(
+        w!("STATIC"),
+        "Kiểu gõ:",
+        WS_CHILD | WS_VISIBLE,
+        None,
+        32,
+        76,
+        65,
+        22,
+    )?);
+    let simple_method = make_control(
+        w!("COMBOBOX"),
+        "",
+        ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, CBS_DROPDOWNLIST as u32),
+        Some(IDC_SIMPLE_METHOD),
+        100,
+        72,
+        150,
+        120,
+    )?;
+    for value in ["VNI", "Telex"] {
+        let value = HSTRING::from(value);
+        unsafe {
+            let _ = send_msg(simple_method, CB_ADDSTRING, 0, value.as_ptr() as isize);
+        }
+    }
+    simple_controls.push(simple_method);
+    simple_controls.push(make_control(
+        w!("STATIC"),
+        "Bảng mã:",
+        WS_CHILD | WS_VISIBLE,
+        None,
+        286,
+        76,
+        72,
+        22,
+    )?);
+    let simple_encoding = make_control(
+        w!("COMBOBOX"),
+        "",
+        ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, CBS_DROPDOWNLIST as u32),
+        Some(IDC_SIMPLE_ENCODING),
+        362,
+        72,
+        165,
+        120,
+    )?;
+    unsafe {
+        let unicode = HSTRING::from("Unicode");
+        let _ = send_msg(simple_encoding, CB_ADDSTRING, 0, unicode.as_ptr() as isize);
+        let _ = send_msg(simple_encoding, CB_SETCURSEL, 0, 0);
+    }
+    simple_controls.push(simple_encoding);
+
+    simple_controls.push(make_control(
+        w!("BUTTON"),
+        " Hệ thống ",
+        ws(WS_CHILD | WS_VISIBLE, BS_GROUPBOX as u32),
+        None,
+        16,
+        126,
+        528,
+        58,
+    )?);
+    let simple_learning = make_control(
+        w!("BUTTON"),
+        "Tự học cá nhân",
+        ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_AUTOCHECKBOX as u32),
+        Some(IDC_SIMPLE_LEARNING),
+        32,
+        147,
+        145,
+        24,
+    )?;
+    simple_controls.push(simple_learning);
+    let simple_suggestions = make_control(
+        w!("BUTTON"),
+        "Hiển thị gợi ý",
+        ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_AUTOCHECKBOX as u32),
+        Some(IDC_SIMPLE_SUGGESTIONS),
+        194,
+        147,
+        145,
+        24,
+    )?;
+    simple_controls.push(simple_suggestions);
+    let simple_hotkey_hints = make_control(
+        w!("BUTTON"),
+        "Hướng dẫn phím tắt",
+        ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_AUTOCHECKBOX as u32),
+        Some(IDC_SIMPLE_GUIDE),
+        356,
+        147,
+        172,
+        24,
+    )?;
+    simple_controls.push(simple_hotkey_hints);
+    let simple_status = make_control(
+        w!("STATIC"),
+        "● Đang chạy · Local-only",
+        WS_CHILD | WS_VISIBLE,
+        None,
+        20,
+        191,
+        250,
+        20,
+    )?;
+    simple_controls.push(simple_status);
+    simple_controls.push(make_control(
+        w!("BUTTON"),
+        "Kết thúc",
+        ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_PUSHBUTTON as u32),
+        Some(IDC_SIMPLE_EXIT),
+        20,
+        216,
+        130,
+        34,
+    )?);
+    simple_controls.push(make_control(
+        w!("BUTTON"),
+        "Nâng cao",
+        ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_DEFPUSHBUTTON as u32),
+        Some(IDC_SIMPLE_ADVANCED),
+        195,
+        216,
+        170,
+        34,
+    )?);
+    simple_controls.push(make_control(
+        w!("BUTTON"),
+        "Đóng cửa sổ",
+        ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_PUSHBUTTON as u32),
+        Some(IDC_SIMPLE_CLOSE),
+        410,
+        216,
+        130,
+        34,
+    )?);
 
     // A+B layout: compact horizontal navigation with the visual breathing room
     // of the modern variant. Non-general pages keep their proven vertical
@@ -1749,7 +1982,8 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
     override_layout(&mut layouts, lbl_chart_overview, 390, 320, 340, 95);
     override_layout(&mut layouts, chart_canvas, 24, 422, 430, 105);
     override_layout(&mut layouts, lbl_chart_breakdown, 464, 422, 266, 105);
-    override_layout(&mut layouts, status_label, 18, 545, 480, 20);
+    override_layout(&mut layouts, status_label, 18, 545, 355, 20);
+    override_layout(&mut layouts, btn_simple_view, 390, 536, 110, 32);
     override_layout(&mut layouts, btn_close, 515, 536, 100, 32);
     override_layout(&mut layouts, btn_apply, 625, 536, 105, 32);
 
@@ -1790,6 +2024,15 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
         chk_suggestions,
         chk_autostart,
         chk_terminal,
+        simple_status,
+        simple_method,
+        simple_learning,
+        simple_suggestions,
+        simple_hotkey_hints,
+        simple_radio_viet,
+        simple_radio_eng,
+        window_mode_icon: HICON::default(),
+        window_icon_mode: None,
         txt_search_rules,
         chk_evidence_only,
         list_rules,
@@ -1840,9 +2083,12 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
             radio_viet,
             radio_eng,
             status_label,
+            btn_simple_view,
             btn_close,
             btn_apply,
         ],
+        simple_controls,
+        view_mode: UiViewMode::Advanced,
         active_page: None,
         layouts,
     };
@@ -1900,6 +2146,92 @@ fn apply_dpi_layout(hwnd: HWND, dpi: u32) {
     }
 }
 
+fn resize_window_for_view(hwnd: HWND, view_mode: UiViewMode) {
+    let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
+    let (base_width, base_height) = match view_mode {
+        UiViewMode::Simple => (SIMPLE_WINDOW_WIDTH, SIMPLE_WINDOW_HEIGHT),
+        UiViewMode::Advanced => (BASE_WINDOW_WIDTH, BASE_WINDOW_HEIGHT),
+    };
+    let width = scale_dpi(base_width, dpi);
+    let height = scale_dpi(base_height, dpi);
+    let screen_width = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+    let screen_height = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            (screen_width - width) / 2,
+            (screen_height - height) / 2,
+            width,
+            height,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+}
+
+fn set_view_mode(hwnd: HWND, view_mode: UiViewMode, page_index: Option<usize>) {
+    let Ok(mut guard) = CONTROLS.lock() else {
+        return;
+    };
+    let Some(controls) = guard.as_mut() else {
+        return;
+    };
+
+    unsafe {
+        let _ = send_msg(hwnd, WM_SETREDRAW, 0, 0);
+        for &control in &controls.simple_controls {
+            let _ = ShowWindow(control, SW_HIDE);
+        }
+        for &control in &controls.persistent_controls {
+            let _ = ShowWindow(control, SW_HIDE);
+        }
+        for page in &controls.page_controls {
+            for &control in page {
+                let _ = ShowWindow(control, SW_HIDE);
+            }
+        }
+    }
+    controls.view_mode = view_mode;
+    controls.active_page = None;
+    let title = HSTRING::from(match view_mode {
+        UiViewMode::Simple => "OpenViKey - v0.1.0",
+        UiViewMode::Advanced => "OpenViKey - v0.1.0 - Nâng cao",
+    });
+    unsafe {
+        let _ = SetWindowTextW(hwnd, PCWSTR(title.as_ptr()));
+    }
+
+    if view_mode == UiViewMode::Simple {
+        for &control in &controls.simple_controls {
+            unsafe {
+                let _ = ShowWindow(control, SW_SHOW);
+            }
+        }
+    } else {
+        for &control in &controls.persistent_controls {
+            unsafe {
+                let _ = ShowWindow(control, SW_SHOW);
+            }
+        }
+    }
+    drop(guard);
+
+    resize_window_for_view(hwnd, view_mode);
+    if view_mode == UiViewMode::Advanced {
+        select_page(hwnd, page_index.unwrap_or(0));
+    } else {
+        unsafe {
+            let _ = send_msg(hwnd, WM_SETREDRAW, 1, 0);
+            let _ = RedrawWindow(
+                Some(hwnd),
+                None,
+                None,
+                RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW,
+            );
+        }
+    }
+}
+
 fn select_page(hwnd: HWND, page_index: usize) {
     let Ok(mut guard) = CONTROLS.lock() else {
         return;
@@ -1937,9 +2269,8 @@ fn select_page(hwnd: HWND, page_index: usize) {
         }
     }
 
-    // Clear the previous page while every content control is hidden. Painting only
-    // after showing the next page leaves stale pixels beneath transparent labels
-    // because the parent uses WS_CLIPCHILDREN.
+    // Clear the previous page while every content control is hidden so no stale
+    // pixels remain beneath transparent labels when the next page appears.
     unsafe {
         let _ = send_msg(hwnd, WM_SETREDRAW, 1, 0);
         let _ = RedrawWindow(
@@ -2447,6 +2778,130 @@ fn save_hotkeys(controls: &UiControls) -> std::result::Result<(), String> {
         .map(|_| ())
 }
 
+fn update_window_mode_icon(controls: &mut UiControls, mode: Mode) {
+    if controls.window_icon_mode == Some(mode) {
+        return;
+    }
+    let Ok(icon) = crate::tray::create_mode_icon(mode, crate::tray::ModeIconSurface::Window) else {
+        return;
+    };
+    let hwnd = active_settings_window_handle();
+    if hwnd.is_invalid() {
+        unsafe {
+            let _ = DestroyIcon(icon);
+        }
+        return;
+    }
+    unsafe {
+        let _ = send_msg(
+            hwnd,
+            WM_SETICON,
+            usize::try_from(ICON_SMALL).unwrap_or(0),
+            icon.0 as isize,
+        );
+        if !controls.window_mode_icon.is_invalid() {
+            let _ = DestroyIcon(controls.window_mode_icon);
+        }
+    }
+    controls.window_mode_icon = icon;
+    controls.window_icon_mode = Some(mode);
+}
+
+fn set_simple_control_state(
+    controls: &mut UiControls,
+    mode: Mode,
+    method: InputMethod,
+    learning_enabled: bool,
+    show_suggestions: bool,
+    show_hotkey_hints: bool,
+) {
+    unsafe {
+        let _ = send_msg(
+            controls.simple_radio_viet,
+            BM_SETCHECK,
+            if mode == Mode::Viet {
+                BST_CHECKED
+            } else {
+                BST_UNCHECKED
+            },
+            0,
+        );
+        let _ = send_msg(
+            controls.simple_radio_eng,
+            BM_SETCHECK,
+            if mode == Mode::English {
+                BST_CHECKED
+            } else {
+                BST_UNCHECKED
+            },
+            0,
+        );
+        let _ = send_msg(
+            controls.simple_method,
+            CB_SETCURSEL,
+            usize::from(method != InputMethod::Vni),
+            0,
+        );
+        for (control, checked) in [
+            (controls.simple_learning, learning_enabled),
+            (controls.simple_suggestions, show_suggestions),
+            (controls.simple_hotkey_hints, show_hotkey_hints),
+        ] {
+            let _ = send_msg(
+                control,
+                BM_SETCHECK,
+                if checked { BST_CHECKED } else { BST_UNCHECKED },
+                0,
+            );
+        }
+    }
+    update_window_mode_icon(controls, mode);
+}
+
+fn populate_simple_controls() {
+    let Ok(mut guard) = CONTROLS.lock() else {
+        return;
+    };
+    let Some(controls) = guard.as_mut() else {
+        return;
+    };
+    let local_app_data = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
+    let settings =
+        load_settings(&default_settings_path(local_app_data.as_ref())).unwrap_or_default();
+    let tray = crate::host::tray_snapshot();
+    let mode = tray.as_ref().map_or(
+        if settings.starts_in_vietnamese() {
+            Mode::Viet
+        } else {
+            Mode::English
+        },
+        |snapshot| snapshot.mode,
+    );
+    let method = tray
+        .as_ref()
+        .map_or(settings.input_method, |snapshot| snapshot.method);
+    let learning_enabled = tray.as_ref().map_or(settings.learning_enabled, |snapshot| {
+        snapshot.learning_enabled
+    });
+    let show_suggestions = tray.as_ref().map_or(settings.show_suggestions, |snapshot| {
+        snapshot.show_suggestions
+    });
+    let show_hotkey_hints = tray
+        .as_ref()
+        .map_or(settings.show_hotkey_hints, |snapshot| {
+            snapshot.show_hotkey_hints
+        });
+
+    set_simple_control_state(
+        controls,
+        mode,
+        method,
+        learning_enabled,
+        show_suggestions,
+        show_hotkey_hints,
+    );
+}
+
 #[allow(clippy::too_many_lines)]
 fn populate_controls(_hwnd: HWND) {
     let Ok(mut guard) = CONTROLS.lock() else {
@@ -2471,10 +2926,24 @@ fn populate_controls(_hwnd: HWND) {
     let current_suggestions = snapshot
         .as_ref()
         .map_or(settings.show_suggestions, |s| s.show_suggestions);
+    let current_learning = snapshot
+        .as_ref()
+        .map_or(settings.learning_enabled, |s| s.learning_enabled);
+    let current_hotkey_hints =
+        crate::host::tray_snapshot().map_or(settings.show_hotkey_hints, |s| s.show_hotkey_hints);
     let current_terminal = snapshot
         .as_ref()
         .map_or(settings.allow_terminal, |s| s.allow_terminal);
     let current_autostart = crate::startup::enabled();
+
+    set_simple_control_state(
+        controls,
+        current_mode,
+        current_method,
+        current_learning,
+        current_suggestions,
+        current_hotkey_hints,
+    );
 
     unsafe {
         let _ = send_msg(
@@ -2738,6 +3207,80 @@ fn on_refresh_rules(hwnd: HWND) {
     let _ = hwnd;
 }
 
+fn apply_simple_method() {
+    let method = CONTROLS
+        .lock()
+        .ok()
+        .and_then(|guard| {
+            guard.as_ref().map(|controls| {
+                if combo_index(controls.simple_method) == 1 {
+                    InputMethod::Telex
+                } else {
+                    InputMethod::Vni
+                }
+            })
+        })
+        .unwrap_or(InputMethod::Vni);
+    crate::host::set_input_method_runtime(method, crate::hook::now_ms());
+    populate_simple_controls();
+}
+
+fn apply_simple_learning() {
+    let enabled = CONTROLS
+        .lock()
+        .ok()
+        .and_then(|guard| {
+            guard.as_ref().map(|controls| unsafe {
+                send_msg(controls.simple_learning, BM_GETCHECK, 0, 0)
+                    .0
+                    .cast_unsigned()
+                    == BST_CHECKED
+            })
+        })
+        .unwrap_or(true);
+    crate::host::set_learning_enabled_runtime(enabled);
+    populate_simple_controls();
+}
+
+fn apply_simple_suggestions() {
+    let show = CONTROLS
+        .lock()
+        .ok()
+        .and_then(|guard| {
+            guard.as_ref().map(|controls| unsafe {
+                send_msg(controls.simple_suggestions, BM_GETCHECK, 0, 0)
+                    .0
+                    .cast_unsigned()
+                    == BST_CHECKED
+            })
+        })
+        .unwrap_or(true);
+    crate::host::set_show_suggestions_runtime(show);
+    populate_simple_controls();
+}
+
+fn apply_simple_mode(mode: Mode) {
+    crate::host::set_mode_runtime(mode, crate::hook::now_ms());
+    populate_simple_controls();
+}
+
+fn apply_simple_hotkey_hints() {
+    let show = CONTROLS
+        .lock()
+        .ok()
+        .and_then(|guard| {
+            guard.as_ref().map(|controls| unsafe {
+                send_msg(controls.simple_hotkey_hints, BM_GETCHECK, 0, 0)
+                    .0
+                    .cast_unsigned()
+                    == BST_CHECKED
+            })
+        })
+        .unwrap_or(true);
+    crate::host::set_hotkey_hints_runtime(show);
+    populate_simple_controls();
+}
+
 #[allow(clippy::too_many_lines)]
 unsafe extern "system" fn settings_wnd_proc(
     hwnd: HWND,
@@ -2780,7 +3323,7 @@ unsafe extern "system" fn settings_wnd_proc(
                         COLORREF(0x00FF_FFFF),
                         COLORREF(0x0072_6353),
                     )
-                } else if control == controls.status_label {
+                } else if control == controls.status_label || control == controls.simple_status {
                     (
                         controls.window_brush,
                         COLORREF(0x00FF_FFFF),
@@ -2876,6 +3419,10 @@ unsafe extern "system" fn settings_wnd_proc(
             apply_dpi_layout(hwnd, new_dpi);
             LRESULT(0)
         }
+        WM_MODE_CHANGED => {
+            populate_simple_controls();
+            LRESULT(0)
+        }
         WM_CLOSE => {
             unsafe {
                 let _ = ShowWindow(hwnd, SW_HIDE);
@@ -2928,6 +3475,50 @@ unsafe extern "system" fn settings_wnd_proc(
             }
             if id == IDC_BTN_APPLY {
                 apply_settings_from_ui(hwnd);
+                return LRESULT(0);
+            }
+            if id == IDC_BTN_SIMPLE_VIEW {
+                set_view_mode(hwnd, UiViewMode::Simple, None);
+                populate_simple_controls();
+                return LRESULT(0);
+            }
+            if id == IDC_SIMPLE_ADVANCED {
+                set_view_mode(hwnd, UiViewMode::Advanced, Some(0));
+                populate_controls(hwnd);
+                return LRESULT(0);
+            }
+            if id == IDC_SIMPLE_CLOSE {
+                unsafe {
+                    let _ = ShowWindow(hwnd, SW_HIDE);
+                }
+                return LRESULT(0);
+            }
+            if id == IDC_SIMPLE_EXIT {
+                crate::tray::request_exit();
+                return LRESULT(0);
+            }
+            if id == IDC_SIMPLE_GUIDE {
+                apply_simple_hotkey_hints();
+                return LRESULT(0);
+            }
+            if id == IDC_SIMPLE_VIET {
+                apply_simple_mode(Mode::Viet);
+                return LRESULT(0);
+            }
+            if id == IDC_SIMPLE_ENGLISH {
+                apply_simple_mode(Mode::English);
+                return LRESULT(0);
+            }
+            if id == IDC_SIMPLE_METHOD && code == CBN_SELCHANGE as usize {
+                apply_simple_method();
+                return LRESULT(0);
+            }
+            if id == IDC_SIMPLE_LEARNING {
+                apply_simple_learning();
+                return LRESULT(0);
+            }
+            if id == IDC_SIMPLE_SUGGESTIONS {
+                apply_simple_suggestions();
                 return LRESULT(0);
             }
             if id == IDC_RADIO_VIET || id == IDC_RADIO_ENG {
@@ -3079,6 +3670,9 @@ unsafe extern "system" fn settings_wnd_proc(
                     let _ = DeleteObject(controls.accent_pressed_brush.into());
                     let _ = DeleteObject(controls.soft_blue_brush.into());
                     let _ = DeleteObject(controls.window_brush.into());
+                    if !controls.window_mode_icon.is_invalid() {
+                        let _ = DestroyIcon(controls.window_mode_icon);
+                    }
                 }
             }
             LRESULT(0)

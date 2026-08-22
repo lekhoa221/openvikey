@@ -49,6 +49,21 @@ pub fn set_tray_mode(mode: Mode) {
 }
 
 #[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModeIconSurface {
+    Tray,
+    Window,
+}
+
+#[cfg(windows)]
+pub(crate) fn create_mode_icon(
+    mode: Mode,
+    surface: ModeIconSurface,
+) -> windows::core::Result<windows::Win32::UI::WindowsAndMessaging::HICON> {
+    shell_tray::create_mode_icon(mode, surface)
+}
+
+#[cfg(windows)]
 mod shell_tray {
     use std::sync::{Arc, Mutex};
 
@@ -70,6 +85,7 @@ mod shell_tray {
     };
     use windows::core::{HSTRING, PCWSTR, Result, w};
 
+    use super::ModeIconSurface;
     use crate::persist::HostShutdown;
     use crate::policy::Mode;
 
@@ -110,7 +126,7 @@ mod shell_tray {
         ///
         /// Win32 shell notification APIs.
         pub unsafe fn install(hwnd: HWND, mode: Mode) -> Result<Self> {
-            let hicon = create_mode_icon(mode)?;
+            let hicon = create_mode_icon(mode, ModeIconSurface::Tray)?;
             let mut data = NOTIFYICONDATAW {
                 cbSize: u32::try_from(std::mem::size_of::<NOTIFYICONDATAW>()).unwrap_or(u32::MAX),
                 uID: 1,
@@ -132,7 +148,7 @@ mod shell_tray {
         /// Calls Win32 `Shell_NotifyIconW`.
         pub unsafe fn set_mode(&mut self, mode: Mode) {
             set_tip(&mut self.data, mode);
-            if let Ok(icon) = create_mode_icon(mode) {
+            if let Ok(icon) = create_mode_icon(mode, ModeIconSurface::Tray) {
                 let old = self.icon;
                 self.icon = icon;
                 self.data.hIcon = icon;
@@ -157,52 +173,35 @@ mod shell_tray {
         }
     }
 
-    fn mode_icon_pixels(mode: Mode) -> [u32; 16 * 16] {
-        let glyph: [u16; 16] = match mode {
-            Mode::Viet => [
-                0, 0, 0x6006, 0x6006, 0x300C, 0x300C, 0x1818, 0x1818, 0x0C30, 0x0C30, 0x0660,
-                0x0660, 0x03C0, 0x0180, 0, 0,
-            ],
-            Mode::English => [
-                0, 0, 0x7FFE, 0x6000, 0x6000, 0x6000, 0x7FF0, 0x6000, 0x6000, 0x6000, 0x6000,
-                0x6000, 0x7FFE, 0, 0, 0,
-            ],
-        };
-        let background = match mode {
-            Mode::Viet => 0xFFE5_3935,    // UniKey-like red V
-            Mode::English => 0xFF19_76D2, // blue E
-        };
-        let mut pixels = [0_u32; 16 * 16];
-        for y in 0..16 {
-            for x in 0..16 {
-                let rounded_square = match y {
-                    0 | 15 => (3..=12).contains(&x),
-                    1 | 14 => (1..=14).contains(&x),
-                    _ => true,
-                };
-                if rounded_square {
-                    pixels[y * 16 + x] = background;
-                }
-                if glyph[y] & (0x8000 >> x) != 0 {
-                    pixels[y * 16 + x] = 0xFFFF_FFFF;
-                }
-            }
+    const VIET_TRAY_BGRA: &[u8; 16 * 16 * 4] =
+        include_bytes!("../assets/openvikey-vn-tray-16.bgra");
+    const ENGLISH_TRAY_BGRA: &[u8; 16 * 16 * 4] =
+        include_bytes!("../assets/openvikey-en-tray-16.bgra");
+    const VIET_WINDOW_BGRA: &[u8; 32 * 32 * 4] =
+        include_bytes!("../assets/openvikey-vn-window-32.bgra");
+    const ENGLISH_WINDOW_BGRA: &[u8; 32 * 32 * 4] =
+        include_bytes!("../assets/openvikey-en-window-32.bgra");
+
+    fn mode_icon_pixels(mode: Mode, surface: ModeIconSurface) -> (&'static [u8], i32) {
+        match (mode, surface) {
+            (Mode::Viet, ModeIconSurface::Tray) => (VIET_TRAY_BGRA, 16),
+            (Mode::English, ModeIconSurface::Tray) => (ENGLISH_TRAY_BGRA, 16),
+            (Mode::Viet, ModeIconSurface::Window) => (VIET_WINDOW_BGRA, 32),
+            (Mode::English, ModeIconSurface::Window) => (ENGLISH_WINDOW_BGRA, 32),
         }
-        pixels
     }
 
-    fn create_mode_icon(mode: Mode) -> Result<HICON> {
-        let pixels = mode_icon_pixels(mode);
+    pub(super) fn create_mode_icon(mode: Mode, surface: ModeIconSurface) -> Result<HICON> {
+        let (pixels, size) = mode_icon_pixels(mode, surface);
         let bitmap_info = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
                 biSize: u32::try_from(std::mem::size_of::<BITMAPINFOHEADER>()).unwrap_or(u32::MAX),
-                biWidth: 16,
-                biHeight: -16,
+                biWidth: size,
+                biHeight: -size,
                 biPlanes: 1,
                 biBitCount: 32,
                 biCompression: BI_RGB.0,
-                biSizeImage: u32::try_from(pixels.len() * std::mem::size_of::<u32>())
-                    .unwrap_or(u32::MAX),
+                biSizeImage: u32::try_from(pixels.len()).unwrap_or(u32::MAX),
                 ..Default::default()
             },
             ..Default::default()
@@ -219,13 +218,14 @@ mod shell_tray {
             )?
         };
         unsafe {
-            std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits.cast::<u32>(), pixels.len());
+            std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits.cast::<u8>(), pixels.len());
         }
-        let mask_bits = [0_u8; 32];
+        let mask_stride = usize::try_from(((size + 15) / 16) * 2).unwrap_or(0);
+        let mask_bits = vec![0_u8; mask_stride * usize::try_from(size).unwrap_or(0)];
         let mask = unsafe {
             CreateBitmap(
-                16,
-                16,
+                size,
+                size,
                 1,
                 1,
                 Some(mask_bits.as_ptr().cast::<core::ffi::c_void>()),
@@ -286,13 +286,13 @@ mod shell_tray {
         lparam: LPARAM,
     ) -> LRESULT {
         if msg == WM_OPEN_SETTINGS {
-            crate::control::show_settings_window(Some(0));
+            crate::control::show_simple_window();
             return LRESULT(0);
         }
         if msg == WM_TRAYICON {
             let mouse = u32::try_from(lparam.0.cast_unsigned()).unwrap_or(0);
             if mouse == WM_LBUTTONDBLCLK {
-                crate::control::show_settings_window(Some(0));
+                crate::control::show_simple_window();
             } else if mouse == WM_LBUTTONUP {
                 if let Some(shutdown) = peek_shutdown()
                     && super::apply_tray_event(super::TrayEvent::LeftClick, &shutdown)
@@ -308,7 +308,7 @@ mod shell_tray {
         if msg == WM_COMMAND {
             let id = wparam.0 & 0xFFFF;
             if id == ID_SETTINGS {
-                crate::control::show_settings_window(Some(0));
+                crate::control::show_simple_window();
                 return LRESULT(0);
             }
             if id == ID_LEARNED {
@@ -489,6 +489,16 @@ mod shell_tray {
         Ok(())
     }
 
+    /// Request the same graceful shutdown path as the tray Exit command.
+    pub fn request_exit() {
+        if let Some(shutdown) = peek_shutdown() {
+            super::apply_tray_event(super::TrayEvent::Exit, &shutdown);
+        }
+        unsafe {
+            PostQuitMessage(0);
+        }
+    }
+
     /// Overlay + tray + Gợi ý/Exit sink for the host coordinator.
     pub struct HostUi {
         _overlay: crate::overlay::OverlayWindow,
@@ -549,19 +559,40 @@ mod shell_tray {
     mod icon_tests {
         use super::*;
 
+        fn average_red_blue(pixels: &[u8]) -> (u64, u64) {
+            let pixel_count = u64::try_from(pixels.len() / 4).unwrap_or(1);
+            let red = pixels
+                .chunks_exact(4)
+                .map(|pixel| u64::from(pixel[2]))
+                .sum::<u64>()
+                / pixel_count;
+            let blue = pixels
+                .chunks_exact(4)
+                .map(|pixel| u64::from(pixel[0]))
+                .sum::<u64>()
+                / pixel_count;
+            (red, blue)
+        }
+
         #[test]
-        fn tray_mode_icons_use_distinct_unikey_style_colors_and_white_letters() {
-            let viet = mode_icon_pixels(Mode::Viet);
-            let english = mode_icon_pixels(Mode::English);
-            assert_eq!(viet[0], 0);
-            assert_eq!(english[0], 0);
-            assert_eq!(viet[8 * 16], 0xFFE5_3935);
-            assert_eq!(english[8 * 16], 0xFF19_76D2);
-            assert!(viet.contains(&0xFFFF_FFFF));
-            assert!(english.contains(&0xFFFF_FFFF));
+        fn supplied_mode_artwork_is_distinct_and_color_matched() {
+            for surface in [ModeIconSurface::Tray, ModeIconSurface::Window] {
+                let (viet, viet_size) = mode_icon_pixels(Mode::Viet, surface);
+                let (english, english_size) = mode_icon_pixels(Mode::English, surface);
+                assert_eq!(viet_size, english_size);
+                assert_ne!(viet, english);
+                assert!(viet.chunks_exact(4).all(|pixel| pixel[3] == 255));
+                assert!(english.chunks_exact(4).all(|pixel| pixel[3] == 255));
+                let (viet_red, viet_blue) = average_red_blue(viet);
+                let (english_red, english_blue) = average_red_blue(english);
+                assert!(viet_red > viet_blue, "Vietnamese icon must read red");
+                assert!(english_blue > english_red, "English icon must read blue");
+            }
         }
     }
 }
 
 #[cfg(windows)]
-pub use shell_tray::{HostUi, TrayIcon, WM_OPEN_SETTINGS, WM_TRAYICON, install_host_ui};
+pub use shell_tray::{
+    HostUi, TrayIcon, WM_OPEN_SETTINGS, WM_TRAYICON, install_host_ui, request_exit,
+};

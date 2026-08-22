@@ -10,6 +10,10 @@ use thiserror::Error;
 
 pub const SETTINGS_VERSION: u32 = 1;
 
+const fn default_true() -> bool {
+    true
+}
+
 const fn settings_version() -> u32 {
     SETTINGS_VERSION
 }
@@ -81,6 +85,10 @@ pub struct SettingsV1 {
     pub mode_on_start: StartupMode,
     pub last_mode_viet: bool,
     pub show_suggestions: bool,
+    #[serde(default = "default_true")]
+    pub show_hotkey_hints: bool,
+    #[serde(default = "default_true")]
+    pub learning_enabled: bool,
     #[serde(default)]
     pub allow_terminal: bool,
     pub start_with_windows: bool,
@@ -99,6 +107,8 @@ impl Default for SettingsV1 {
             mode_on_start: StartupMode::RestoreLast,
             last_mode_viet: true,
             show_suggestions: true,
+            show_hotkey_hints: true,
+            learning_enabled: true,
             allow_terminal: false,
             start_with_windows: false,
             hotkeys: HotkeySettingsV1::default(),

@@ -35,6 +35,8 @@ struct HostRuntime {
     sending: Arc<AtomicBool>,
     mode: Arc<AtomicU8>,
     show_suggestions: Arc<AtomicBool>,
+    show_hotkey_hints: Arc<AtomicBool>,
+    learning_enabled: Arc<AtomicBool>,
     allow_terminal: Arc<AtomicBool>,
     app_policies: Arc<ArcSwap<Vec<AppPolicyV1>>>,
     context: Arc<ContextProjectionSlot>,
@@ -153,11 +155,21 @@ pub fn bind_runtime_with_context_and_settings(
     context: Arc<ContextProjectionSlot>,
     settings_path: Option<PathBuf>,
 ) {
-    let (sending, mode, show_suggestions, allow_terminal, app_policies) = match host.lock() {
+    let (
+        sending,
+        mode,
+        show_suggestions,
+        show_hotkey_hints,
+        learning_enabled,
+        allow_terminal,
+        app_policies,
+    ) = match host.lock() {
         Ok(guard) => (
             Arc::clone(&guard.sending),
             Arc::clone(&guard.mode_flag),
             Arc::clone(&guard.suggestions_flag),
+            Arc::clone(&guard.hotkey_hints_flag),
+            Arc::clone(&guard.learning_enabled_flag),
             Arc::clone(&guard.allow_terminal_flag),
             Arc::new(ArcSwap::from_pointee(guard.app_policies.clone())),
         ),
@@ -167,6 +179,8 @@ pub fn bind_runtime_with_context_and_settings(
                 Arc::clone(&guard.sending),
                 Arc::clone(&guard.mode_flag),
                 Arc::clone(&guard.suggestions_flag),
+                Arc::clone(&guard.hotkey_hints_flag),
+                Arc::clone(&guard.learning_enabled_flag),
                 Arc::clone(&guard.allow_terminal_flag),
                 Arc::new(ArcSwap::from_pointee(guard.app_policies.clone())),
             )
@@ -178,6 +192,8 @@ pub fn bind_runtime_with_context_and_settings(
         sending,
         mode,
         show_suggestions,
+        show_hotkey_hints,
+        learning_enabled,
         allow_terminal,
         app_policies,
         context,
@@ -294,10 +310,14 @@ fn after_unlock_with_notice(
     } else if let Some(notice) = notice {
         crate::overlay::push_learning_notice(notice);
     } else {
-        crate::overlay::push_overlay_lines(lines);
+        let show_hotkey_hint = RUNTIME
+            .get()
+            .is_none_or(|rt| rt.show_hotkey_hints.load(Ordering::SeqCst));
+        crate::overlay::push_overlay_lines(lines, show_hotkey_hint);
     }
     if let Some(mode) = mode {
         crate::tray::set_tray_mode(mode);
+        crate::control::notify_mode_changed(mode);
     }
 }
 
@@ -444,10 +464,13 @@ pub fn suggestions_visible() -> bool {
 
 /// Lightweight snapshot for tray menus to prevent blocking typing mutex with large learned models.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct HostTraySnapshot {
     pub mode: Mode,
     pub method: InputMethod,
     pub show_suggestions: bool,
+    pub show_hotkey_hints: bool,
+    pub learning_enabled: bool,
     pub allow_terminal: bool,
 }
 
@@ -456,6 +479,8 @@ pub fn tray_snapshot() -> Option<HostTraySnapshot> {
     let rt = RUNTIME.get()?;
     let mode = mode_from_u8(rt.mode.load(Ordering::SeqCst));
     let show_suggestions = rt.show_suggestions.load(Ordering::SeqCst);
+    let show_hotkey_hints = rt.show_hotkey_hints.load(Ordering::SeqCst);
+    let learning_enabled = rt.learning_enabled.load(Ordering::SeqCst);
     let allow_terminal = rt.allow_terminal.load(Ordering::SeqCst);
     let method = if let Ok(guard) = rt.host.try_lock() {
         guard.session.engine_config().method
@@ -468,6 +493,8 @@ pub fn tray_snapshot() -> Option<HostTraySnapshot> {
         mode,
         method,
         show_suggestions,
+        show_hotkey_hints,
+        learning_enabled,
         allow_terminal,
     })
 }
@@ -477,10 +504,12 @@ pub fn tray_snapshot() -> Option<HostTraySnapshot> {
 /// Learning-chart fields are filled here on the Settings/idle path only; the
 /// hook and inject paths never call `control_snapshot`.
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ControlSnapshot {
     pub mode: Mode,
     pub engine_config: EngineConfig,
     pub show_suggestions: bool,
+    pub learning_enabled: bool,
     pub allow_terminal: bool,
     pub foreground_exe: String,
     pub last_external_exe: String,
@@ -577,6 +606,7 @@ pub fn control_snapshot() -> Option<ControlSnapshot> {
         mode,
         engine_config,
         show_suggestions,
+        learning_enabled,
         allow_terminal,
         foreground_exe,
         last_external_exe,
@@ -596,6 +626,7 @@ pub fn control_snapshot() -> Option<ControlSnapshot> {
             guard.mode,
             guard.session.engine_config(),
             guard.show_suggestions,
+            guard.learning_enabled,
             guard.allow_terminal,
             guard.foreground_exe.clone(),
             guard.last_external_exe.clone(),
@@ -631,6 +662,7 @@ pub fn control_snapshot() -> Option<ControlSnapshot> {
         mode,
         engine_config,
         show_suggestions,
+        learning_enabled,
         allow_terminal,
         foreground_exe,
         last_external_exe,
@@ -733,6 +765,31 @@ pub fn set_show_suggestions_runtime(show: bool) {
         );
     }
     let _ = persist_runtime_setting(|settings| settings.show_suggestions = show);
+}
+
+/// Show or hide the configured accept hotkey alongside suggestion candidates.
+pub fn set_hotkey_hints_runtime(show: bool) {
+    let Some(rt) = RUNTIME.get() else {
+        return;
+    };
+    let mut guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
+    guard.set_show_hotkey_hints(show);
+    let lines = guard.overlay_display_lines();
+    drop(guard);
+    after_unlock(&lines, None, false);
+    let _ = persist_runtime_setting(|settings| settings.show_hotkey_hints = show);
+}
+
+/// Enable or pause all personal learning while keeping deterministic typing active.
+pub fn set_learning_enabled_runtime(enabled: bool) {
+    let Some(rt) = RUNTIME.get() else {
+        return;
+    };
+    let mut guard = rt.host.lock().unwrap_or_else(PoisonError::into_inner);
+    guard.learning_enabled = enabled;
+    guard.learning_enabled_flag.store(enabled, Ordering::SeqCst);
+    drop(guard);
+    let _ = persist_runtime_setting(move |settings| settings.learning_enabled = enabled);
 }
 
 /// Set terminal transformation permission from settings.
@@ -850,9 +907,15 @@ pub struct TypingHost {
     pub meta: bool,
     /// Shared with [`crate::inject::SendingGuard`] so policy sees in-flight SendInput.
     pub sending: Arc<AtomicBool>,
+    /// Global user preference. Context policy may still disable learning independently.
+    pub learning_enabled: bool,
+    pub learning_enabled_flag: Arc<AtomicBool>,
     /// When false, candidates still generate (Ctrl+.) but the overlay HWND stays hidden.
     pub show_suggestions: bool,
     pub suggestions_flag: Arc<AtomicBool>,
+    /// Controls whether the accept hotkey is rendered inside the suggestion capsule.
+    pub show_hotkey_hints: bool,
+    pub hotkey_hints_flag: Arc<AtomicBool>,
     /// Optional `%LOCALAPPDATA%\OpenViKey\ui.ovkdev.json` written from the tray thread.
     pub ui_path: Option<PathBuf>,
     pub profile: InjectProfile,
@@ -920,8 +983,12 @@ impl TypingHost {
             alt: false,
             meta: false,
             sending: Arc::new(AtomicBool::new(false)),
+            learning_enabled: true,
+            learning_enabled_flag: Arc::new(AtomicBool::new(true)),
             show_suggestions: true,
             suggestions_flag: Arc::new(AtomicBool::new(true)),
+            show_hotkey_hints: true,
+            hotkey_hints_flag: Arc::new(AtomicBool::new(true)),
             ui_path: None,
             profile: InjectProfile::Win32,
             recorded: Vec::new(),
@@ -1043,6 +1110,11 @@ impl TypingHost {
     pub fn set_show_suggestions(&mut self, show: bool) {
         self.show_suggestions = show;
         self.suggestions_flag.store(show, Ordering::SeqCst);
+    }
+
+    pub fn set_show_hotkey_hints(&mut self, show: bool) {
+        self.show_hotkey_hints = show;
+        self.hotkey_hints_flag.store(show, Ordering::SeqCst);
     }
 
     /// Set startup mode before hooks are installed.
@@ -1293,7 +1365,10 @@ impl TypingHost {
     }
 
     fn allow_learning_for_foreground(&self) -> bool {
-        if self.mode != Mode::Viet || !crate::policy::allows_learning(&self.foreground_exe) {
+        if !self.learning_enabled
+            || self.mode != Mode::Viet
+            || !crate::policy::allows_learning(&self.foreground_exe)
+        {
             return false;
         }
         app_policy_for(&self.foreground_exe, &self.app_policies)
