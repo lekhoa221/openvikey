@@ -74,6 +74,7 @@ const IDC_BTN_FORGET_RULE: usize = 303;
 const IDC_BTN_FORGET_LAST: usize = 304;
 const IDC_BTN_REFRESH_RULES: usize = 305;
 const IDC_CHART_CANVAS: usize = 306;
+const IDC_CHK_EVIDENCE_ONLY: usize = 307;
 
 const IDC_LIST_APPS: usize = 401;
 const IDC_EDIT_APP_EXE: usize = 402;
@@ -196,6 +197,7 @@ struct UiControls {
     chk_autostart: HWND,
     chk_terminal: HWND,
     txt_search_rules: HWND,
+    chk_evidence_only: HWND,
     list_rules: HWND,
     lbl_detail_original: HWND,
     lbl_detail_candidate: HWND,
@@ -964,6 +966,28 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
     add_layout(txt_search_rules, 304, 14, 426, 24);
     page_1.push(txt_search_rules);
 
+    let chk_evidence_only = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("BUTTON"),
+            w!("Chỉ hiện rule có bằng chứng"),
+            ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_AUTOCHECKBOX as u32),
+            scale_dpi(204, dpi),
+            scale_dpi(392, dpi),
+            scale_dpi(260, dpi),
+            scale_dpi(22, dpi),
+            Some(hwnd),
+            Some(HMENU(IDC_CHK_EVIDENCE_ONLY as *mut core::ffi::c_void)),
+            Some(HINSTANCE::default()),
+            None,
+        )?
+    };
+    unsafe {
+        let _ = send_msg(chk_evidence_only, BM_SETCHECK, BST_CHECKED, 0);
+    }
+    add_layout(chk_evidence_only, 204, 392, 260, 22);
+    page_1.push(chk_evidence_only);
+
     let list_rules = unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE::default(),
@@ -1121,7 +1145,7 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
         CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             w!("BUTTON"),
-            w!("Quên rule đã chọn"),
+            w!("Quên đã chọn"),
             ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_PUSHBUTTON as u32),
             scale_dpi(204, dpi),
             scale_dpi(354, dpi),
@@ -1140,7 +1164,7 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
         CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             w!("BUTTON"),
-            w!("Quên rule vừa học"),
+            w!("Quên gần nhất"),
             ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_PUSHBUTTON as u32),
             scale_dpi(352, dpi),
             scale_dpi(354, dpi),
@@ -1174,14 +1198,25 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
     add_layout(btn_refresh_rules, 500, 354, 105, 30);
     page_1.push(btn_refresh_rules);
 
-    let lbl_chart_overview = create_label(
-        hwnd,
-        "Tổng quan: chưa có dữ liệu.",
-        scale_dpi(204, dpi),
-        scale_dpi(392, dpi),
-        scale_dpi(526, dpi),
-        scale_dpi(74, dpi),
-    )?;
+    let lbl_chart_overview = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("EDIT"),
+            w!("Tổng quan: chưa có dữ liệu."),
+            ws(
+                WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_BORDER,
+                (ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL) as u32,
+            ),
+            scale_dpi(204, dpi),
+            scale_dpi(392, dpi),
+            scale_dpi(526, dpi),
+            scale_dpi(74, dpi),
+            Some(hwnd),
+            None,
+            Some(HINSTANCE::default()),
+            None,
+        )?
+    };
     add_layout(lbl_chart_overview, 204, 392, 526, 74);
     page_1.push(lbl_chart_overview);
 
@@ -1190,7 +1225,7 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
             WINDOW_EX_STYLE::default(),
             w!("STATIC"),
             w!(""),
-            WS_CHILD | WS_VISIBLE | WINDOW_STYLE(SS_OWNERDRAW.0),
+            WS_CHILD | WS_VISIBLE | WS_BORDER | WINDOW_STYLE(SS_OWNERDRAW.0),
             scale_dpi(204, dpi),
             scale_dpi(468, dpi),
             scale_dpi(526, dpi),
@@ -1693,20 +1728,27 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
     override_layout(&mut layouts, lbl_term_hint, 38, 338, 675, 30);
     override_layout(&mut layouts, grp_local, 20, 393, 710, 62);
     override_layout(&mut layouts, lbl_local, 38, 417, 675, 26);
-    override_layout(&mut layouts, lbl_search, 24, 111, 95, 20);
-    override_layout(&mut layouts, txt_search_rules, 124, 109, 606, 24);
-    override_layout(&mut layouts, list_rules, 24, 139, 706, 190);
-    override_layout(&mut layouts, grp_details, 24, 338, 706, 124);
-    override_layout(&mut layouts, lbl_detail_original, 40, 358, 325, 18);
-    override_layout(&mut layouts, lbl_detail_candidate, 380, 358, 325, 18);
-    override_layout(&mut layouts, lbl_detail_method, 40, 380, 325, 18);
-    override_layout(&mut layouts, lbl_detail_source, 380, 380, 325, 18);
-    override_layout(&mut layouts, lbl_detail_evidence, 40, 402, 325, 18);
-    override_layout(&mut layouts, lbl_detail_state, 380, 402, 325, 18);
-    override_layout(&mut layouts, lbl_detail_rule_id, 40, 424, 665, 18);
-    override_layout(&mut layouts, btn_forget_selected, 24, 474, 140, 30);
-    override_layout(&mut layouts, btn_forget_last, 172, 474, 140, 30);
-    override_layout(&mut layouts, btn_refresh_rules, 320, 474, 105, 30);
+    // Learning page: keep the timeline and its text alternative fully inside
+    // the fixed-height Settings client area. Actions share the search row;
+    // details/overview and chart/breakdown use balanced two-column bands.
+    override_layout(&mut layouts, lbl_search, 24, 111, 65, 20);
+    override_layout(&mut layouts, txt_search_rules, 94, 109, 296, 24);
+    override_layout(&mut layouts, btn_forget_selected, 400, 108, 105, 26);
+    override_layout(&mut layouts, btn_forget_last, 512, 108, 105, 26);
+    override_layout(&mut layouts, btn_refresh_rules, 624, 108, 106, 26);
+    override_layout(&mut layouts, list_rules, 24, 139, 706, 148);
+    override_layout(&mut layouts, grp_details, 24, 296, 350, 119);
+    override_layout(&mut layouts, lbl_detail_original, 38, 314, 160, 18);
+    override_layout(&mut layouts, lbl_detail_candidate, 204, 314, 158, 18);
+    override_layout(&mut layouts, lbl_detail_method, 38, 334, 160, 18);
+    override_layout(&mut layouts, lbl_detail_source, 204, 334, 158, 18);
+    override_layout(&mut layouts, lbl_detail_evidence, 38, 354, 324, 18);
+    override_layout(&mut layouts, lbl_detail_state, 38, 374, 324, 18);
+    override_layout(&mut layouts, lbl_detail_rule_id, 38, 394, 324, 14);
+    override_layout(&mut layouts, chk_evidence_only, 390, 296, 340, 22);
+    override_layout(&mut layouts, lbl_chart_overview, 390, 320, 340, 95);
+    override_layout(&mut layouts, chart_canvas, 24, 422, 430, 105);
+    override_layout(&mut layouts, lbl_chart_breakdown, 464, 422, 266, 105);
     override_layout(&mut layouts, status_label, 18, 545, 480, 20);
     override_layout(&mut layouts, btn_close, 515, 536, 100, 32);
     override_layout(&mut layouts, btn_apply, 625, 536, 105, 32);
@@ -1749,6 +1791,7 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
         chk_autostart,
         chk_terminal,
         txt_search_rules,
+        chk_evidence_only,
         list_rules,
         lbl_detail_original,
         lbl_detail_candidate,
@@ -1928,9 +1971,9 @@ fn select_page(hwnd: HWND, page_index: usize) {
 
 fn rule_state_label(state: openvikey_core::decision::DecisionState) -> &'static str {
     match state {
-        openvikey_core::decision::DecisionState::Ignore => "Observed",
-        openvikey_core::decision::DecisionState::Suggest => "Suggest",
-        openvikey_core::decision::DecisionState::Auto => "Auto",
+        openvikey_core::decision::DecisionState::Ignore => "Quan sát",
+        openvikey_core::decision::DecisionState::Suggest => "Gợi ý",
+        openvikey_core::decision::DecisionState::Auto => "Tự sửa",
     }
 }
 
@@ -1991,15 +2034,9 @@ fn update_rule_details_view(controls: &UiControls, row: Option<&ModelInspectionR
             CandidateSource::Diacritics => "Bổ sung dấu thanh (Diacritics)",
         };
         let state_desc = match r.state {
-            openvikey_core::decision::DecisionState::Auto => {
-                "Auto (Tự động chuyển đổi tại ranh giới từ)"
-            }
-            openvikey_core::decision::DecisionState::Suggest => {
-                "Suggest (Được đề xuất trên thanh gợi ý)"
-            }
-            openvikey_core::decision::DecisionState::Ignore => {
-                "Observed (Đang quan sát / Chưa đủ tin cậy)"
-            }
+            openvikey_core::decision::DecisionState::Auto => "Có thể tự sửa tại ranh giới từ",
+            openvikey_core::decision::DecisionState::Suggest => "Đang được đề xuất",
+            openvikey_core::decision::DecisionState::Ignore => "Đang quan sát / chưa đủ tin cậy",
         };
         let orig = format!("• Từ gốc:        {}", r.original_nfc);
         let cand = format!("• Từ thay thế:   {}", r.candidate_nfc);
@@ -2076,24 +2113,37 @@ fn update_rule_details_view(controls: &UiControls, row: Option<&ModelInspectionR
     }
 }
 
+fn row_has_learning_evidence(row: &ModelInspectionRow) -> bool {
+    row.evidence_count > 0
+        || row.positive_evidence > f64::EPSILON
+        || row.negative_evidence > f64::EPSILON
+        || row.selected_count > 0
+        || row.recent_auto_count > 0
+        || row.recent_undo_count > 0
+}
+
 fn apply_rules_filter_inner(controls: &mut UiControls) {
     let query = get_edit_text(controls.txt_search_rules).to_lowercase();
     let query = query.trim();
-
-    controls.filtered_rows = if query.is_empty() {
-        controls.all_rows.clone()
-    } else {
-        controls
-            .all_rows
-            .iter()
-            .filter(|r| {
-                r.original_nfc.to_lowercase().contains(query)
-                    || r.candidate_nfc.to_lowercase().contains(query)
-                    || r.source_rule_id.to_lowercase().contains(query)
-            })
-            .cloned()
-            .collect()
+    let evidence_only = unsafe {
+        send_msg(controls.chk_evidence_only, BM_GETCHECK, 0, 0)
+            .0
+            .cast_unsigned()
+            == BST_CHECKED
     };
+
+    controls.filtered_rows = controls
+        .all_rows
+        .iter()
+        .filter(|row| !evidence_only || row_has_learning_evidence(row))
+        .filter(|row| {
+            query.is_empty()
+                || row.original_nfc.to_lowercase().contains(query)
+                || row.candidate_nfc.to_lowercase().contains(query)
+                || row.source_rule_id.to_lowercase().contains(query)
+        })
+        .cloned()
+        .collect();
 
     unsafe {
         let _ = send_msg(controls.list_rules, WM_SETREDRAW, 0, 0);
@@ -2126,6 +2176,7 @@ fn apply_rules_filter_inner(controls: &mut UiControls) {
 
     if controls.filtered_rows.is_empty() {
         update_rule_details_view(controls, None);
+        update_rule_chart_view(controls, None);
     } else {
         let mut selected = LVITEMW {
             state: LVIS_SELECTED,
@@ -2140,7 +2191,9 @@ fn apply_rules_filter_inner(controls: &mut UiControls) {
                 (&raw mut selected) as isize,
             );
         }
-        update_rule_details_view(controls, controls.filtered_rows.first());
+        let first = controls.filtered_rows.first().cloned();
+        update_rule_details_view(controls, first.as_ref());
+        update_rule_chart_view(controls, first.as_ref());
     }
 
     unsafe {
@@ -2985,7 +3038,9 @@ unsafe extern "system" fn settings_wnd_proc(
                 }
                 return LRESULT(0);
             }
-            if id == IDC_TXT_SEARCH_RULES && code == EN_CHANGE as usize {
+            if (id == IDC_TXT_SEARCH_RULES && code == EN_CHANGE as usize)
+                || id == IDC_CHK_EVIDENCE_ONLY
+            {
                 let Ok(mut guard) = CONTROLS.lock() else {
                     return LRESULT(0);
                 };
@@ -3029,5 +3084,51 @@ unsafe extern "system" fn settings_wnd_proc(
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openvikey_core::decision::DecisionState;
+    use openvikey_core::types::{CandidateSource, InputMethod};
+
+    fn inspection_row() -> ModelInspectionRow {
+        ModelInspectionRow {
+            input_method: InputMethod::Vni,
+            source: CandidateSource::Fuzzy,
+            original_nfc: "thich".into(),
+            candidate_nfc: "thích".into(),
+            left_token_nfc: None,
+            source_rule_id: "fuzzy:test".into(),
+            state: DecisionState::Suggest,
+            evidence_count: 0,
+            positive_evidence: 0.0,
+            negative_evidence: 0.0,
+            last_evidence_at_ms: None,
+            shown_count: 20,
+            selected_count: 0,
+            last_shown_at_ms: Some(1),
+            recent_auto_count: 0,
+            recent_undo_count: 0,
+        }
+    }
+
+    #[test]
+    fn learned_page_distinguishes_impressions_from_evidence() {
+        let mut row = inspection_row();
+        assert!(!row_has_learning_evidence(&row));
+
+        row.evidence_count = 1;
+        row.positive_evidence = 1.0;
+        assert!(row_has_learning_evidence(&row));
+
+        let mut selected = inspection_row();
+        selected.selected_count = 1;
+        assert!(row_has_learning_evidence(&selected));
+
+        let mut intervened = inspection_row();
+        intervened.recent_auto_count = 1;
+        assert!(row_has_learning_evidence(&intervened));
     }
 }

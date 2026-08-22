@@ -156,7 +156,7 @@ impl LearningOverview {
                 .join(", ")
         };
         format!(
-            "Trạng thái: Quan sát {} · Gợi ý {} · Tự sửa {} · Cooldown {}\r\nNguồn: TelexFix {} · Fuzzy {} · Viết tắt {} · Dấu {} · Cá nhân {}\r\nConfidence 0–20/40/60/80/100%: {}/{}/{}/{}/{} · Cửa sổ gần đây giữ/undo: {}/{}\r\nModel: {} row · đã prune {} · Revert nhiều: {}",
+            "Toàn bộ model: Quan sát {} · Gợi ý {} · Tự sửa {} · Cooldown {}\r\nNguồn: TelexFix {} · Fuzzy {} · Viết tắt {} · Dấu {} · Cá nhân {}\r\nConfidence 0–20/40/60/80/100%: {}/{}/{}/{}/{} · Cửa sổ gần đây giữ/undo: {}/{}\r\nModel: {} row · đã prune {} · Revert nhiều: {}",
             self.observe,
             self.suggest,
             self.auto,
@@ -406,7 +406,7 @@ fn draw_hatch(dc: HDC, rect: &RECT) {
 )]
 fn draw_confidence_polyline(dc: HDC, rect: &RECT, snapshot: &ChartSnapshot) {
     let points = &snapshot.points;
-    if points.len() < 2 {
+    if points.is_empty() {
         return;
     }
     let width = (rect.right - rect.left).max(1);
@@ -419,13 +419,19 @@ fn draw_confidence_polyline(dc: HDC, rect: &RECT, snapshot: &ChartSnapshot) {
     unsafe {
         let pen = CreatePen(PS_SOLID, 2, COLORREF(0x0060_3070));
         let old_pen = SelectObject(dc, pen.into());
-        for (index, point) in points.iter().enumerate() {
-            let x = rect.left + (width * index as i32) / (points.len() - 1) as i32;
-            let y = rect.bottom - (f64::from(height) * point.confidence.clamp(0.0, 1.0)) as i32;
-            if index == 0 {
-                let _ = MoveToEx(dc, x, y, None);
-            } else {
-                let _ = LineTo(dc, x, y);
+        if points.len() == 1 {
+            let y = rect.bottom - (f64::from(height) * points[0].confidence.clamp(0.0, 1.0)) as i32;
+            let _ = MoveToEx(dc, rect.left, y, None);
+            let _ = LineTo(dc, rect.right, y);
+        } else {
+            for (index, point) in points.iter().enumerate() {
+                let x = rect.left + (width * index as i32) / (points.len() - 1) as i32;
+                let y = rect.bottom - (f64::from(height) * point.confidence.clamp(0.0, 1.0)) as i32;
+                if index == 0 {
+                    let _ = MoveToEx(dc, x, y, None);
+                } else {
+                    let _ = LineTo(dc, x, y);
+                }
             }
         }
         let _ = SelectObject(dc, old_pen);
@@ -437,14 +443,21 @@ fn draw_confidence_polyline(dc: HDC, rect: &RECT, snapshot: &ChartSnapshot) {
         unsafe {
             let pen = CreatePen(PS_SOLID, 1, COLORREF(0x00A0_6020));
             let old_pen = SelectObject(dc, pen.into());
-            for (index, point) in points.iter().enumerate() {
-                let x = rect.left + (width * index as i32) / (points.len() - 1) as i32;
+            if points.len() == 1 {
                 let y = rect.bottom
-                    - (f64::from(height) * point.blended_confidence.clamp(0.0, 1.0)) as i32;
-                if index == 0 {
-                    let _ = MoveToEx(dc, x, y, None);
-                } else {
-                    let _ = LineTo(dc, x, y);
+                    - (f64::from(height) * points[0].blended_confidence.clamp(0.0, 1.0)) as i32;
+                let _ = MoveToEx(dc, rect.left, y, None);
+                let _ = LineTo(dc, rect.right, y);
+            } else {
+                for (index, point) in points.iter().enumerate() {
+                    let x = rect.left + (width * index as i32) / (points.len() - 1) as i32;
+                    let y = rect.bottom
+                        - (f64::from(height) * point.blended_confidence.clamp(0.0, 1.0)) as i32;
+                    if index == 0 {
+                        let _ = MoveToEx(dc, x, y, None);
+                    } else {
+                        let _ = LineTo(dc, x, y);
+                    }
                 }
             }
             let _ = SelectObject(dc, old_pen);

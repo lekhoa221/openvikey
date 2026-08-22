@@ -10,10 +10,11 @@ use openvikey_win::host::{
 };
 use openvikey_win::persist::{load_open_personal_store, save_open_snapshot};
 use openvikey_win::policy::{HostHotkey, Mode, RawKey};
-use windows::Win32::Foundation::{LPARAM, RECT, WPARAM};
+use windows::Win32::Foundation::{LPARAM, POINT, RECT, WPARAM};
+use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::UI::Controls::TCM_GETITEMRECT;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetDlgItem, IsWindow, IsWindowVisible, SendMessageW, WM_CLOSE,
+    GetClientRect, GetDlgItem, GetWindowRect, IsWindow, IsWindowVisible, SendMessageW, WM_CLOSE,
 };
 
 fn learned_key(left: &str) -> RuleContextKey {
@@ -128,7 +129,7 @@ fn learned_rules_ui_does_not_render_surrounding_context() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let source = std::fs::read_to_string(manifest.join("src/control.rs")).unwrap();
     assert!(!source.contains("Ngữ cảnh trước:"));
-    assert!(source.contains("DecisionState::Ignore => \"Observed\""));
+    assert!(source.contains("DecisionState::Ignore => \"Quan sát\""));
     assert!(source.contains("WC_LISTVIEWW"));
 
     // The learning chart must stay context-free as well: it renders the
@@ -186,6 +187,29 @@ fn learned_rules_page_remains_responsive_during_repeated_navigation() {
                 for (index, id) in representative_ids.iter().enumerate() {
                     let control = GetDlgItem(Some(hwnd), *id).unwrap();
                     assert_eq!(IsWindowVisible(control).as_bool(), index == page);
+                }
+                if page == 1 {
+                    let chart = GetDlgItem(Some(hwnd), 306).expect("learning chart canvas");
+                    let mut chart_rect = RECT::default();
+                    GetWindowRect(chart, &raw mut chart_rect).expect("chart screen rect");
+                    let mut chart_top_left = POINT {
+                        x: chart_rect.left,
+                        y: chart_rect.top,
+                    };
+                    let mut chart_bottom_right = POINT {
+                        x: chart_rect.right,
+                        y: chart_rect.bottom,
+                    };
+                    assert!(ScreenToClient(hwnd, &raw mut chart_top_left).as_bool());
+                    assert!(ScreenToClient(hwnd, &raw mut chart_bottom_right).as_bool());
+                    let mut client = RECT::default();
+                    GetClientRect(hwnd, &raw mut client).expect("settings client rect");
+                    assert!(chart_top_left.y >= 0);
+                    assert!(chart_bottom_right.y <= client.bottom);
+                    assert!(
+                        chart_bottom_right.y - chart_top_left.y >= 60,
+                        "learning timeline must have visible plotting height"
+                    );
                 }
             }
         }
