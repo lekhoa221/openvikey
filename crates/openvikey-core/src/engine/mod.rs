@@ -4,7 +4,7 @@
 
 pub mod backend;
 
-use crate::engine::backend::{is_boundary_char, transform_raw};
+use crate::engine::backend::{backspace_visible_grapheme, is_boundary_char, transform_raw};
 use crate::types::{
     CompositionSnapshot, EngineAction, InputEvent, InputKind, InputMethod, TonePlacement,
 };
@@ -146,8 +146,12 @@ impl Engine {
                 if self.raw_keys.is_empty() {
                     Vec::new()
                 } else {
-                    self.raw_keys.pop();
-                    self.recompute();
+                    (self.raw_keys, self.rendered_cache) = backspace_visible_grapheme(
+                        &self.raw_keys,
+                        &self.rendered_cache,
+                        self.config.method,
+                        self.config.tone_placement,
+                    );
                     self.revision = self.revision.wrapping_add(1);
                     vec![EngineAction::UpdateComposition {
                         revision: self.revision,

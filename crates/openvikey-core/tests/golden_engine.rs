@@ -7,6 +7,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use unicode_normalization::UnicodeNormalization;
+use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug, Deserialize)]
 struct GoldenCase {
@@ -195,7 +196,6 @@ fn test_backspace_at_various_positions() {
     }
     assert_eq!(engine.rendered(), "đường");
 
-    // Backspace 1 (pops 'f' tone mark) -> "đương"
     let bs = InputEvent {
         seq: 2,
         at_ms: 200,
@@ -204,20 +204,14 @@ fn test_backspace_at_various_positions() {
         is_repeat: false,
         context: InputContext::default(),
     };
-    engine.process(&bs);
-    assert_eq!(engine.rendered(), "đương");
 
-    // Backspace 2 (pops 'g') -> "đươn"
-    engine.process(&bs);
-    assert_eq!(engine.rendered(), "đươn");
-
-    // Remaining prefixes are pinned through the empty composition.
+    // Each Backspace removes one visible grapheme while preserving modifiers
+    // that still belong to the visible prefix.
     let remaining = [
-        ("đuơ", "dduow"),
-        ("đuo", "dduo"),
-        ("đu", "ddu"),
+        ("đườn", "dduownf"),
+        ("đườ", "dduowf"),
+        ("đư", "dduw"),
         ("đ", "dd"),
-        ("d", "d"),
         ("", ""),
     ];
     for (expected_rendered, expected_raw) in remaining {
@@ -226,6 +220,110 @@ fn test_backspace_at_various_positions() {
         assert_eq!(engine.raw_keys().iter().collect::<String>(), expected_raw);
     }
     assert!(engine.is_empty());
+}
+
+fn assert_composed_grapheme_backspace(method: InputMethod, raw: &str) {
+    let mut engine = Engine::new(EngineConfig {
+        method,
+        tone_placement: TonePlacement::Modern,
+    });
+    for (seq, ch) in raw.chars().enumerate() {
+        engine.process(&key_event(seq as u64, ch));
+    }
+    assert_eq!(engine.rendered(), "kể", "setup failed for {method:?}");
+
+    engine.process(&InputEvent {
+        seq: 10,
+        at_ms: 100,
+        kind: InputKind::Backspace,
+        modifiers: Modifiers::empty(),
+        is_repeat: false,
+        context: InputContext::default(),
+    });
+
+    assert_eq!(
+        engine.rendered(),
+        "k",
+        "Backspace must remove visible `ể`, not only its final input modifier for {method:?}"
+    );
+}
+
+#[test]
+fn repeated_backspace_reduces_exactly_one_visible_grapheme() {
+    let cases = [
+        (InputMethod::Telex, "keer"),
+        (InputMethod::Telex, "dduowngf"),
+        (InputMethod::Telex, "vieetj"),
+        (InputMethod::Telex, "nghieengs"),
+        (InputMethod::Telex, "aaa"),
+        (InputMethod::Vni, "ke63"),
+        (InputMethod::Vni, "d9u7o7ng2"),
+        (InputMethod::Vni, "vie6t5"),
+    ];
+
+    for (method, raw) in cases {
+        let mut engine = Engine::new(EngineConfig {
+            method,
+            tone_placement: TonePlacement::Modern,
+        });
+        engine.restore_raw_keys(raw);
+        while !engine.is_empty() {
+            let before_graphemes = engine.rendered().graphemes(true).count();
+            let before_raw = engine.raw_keys().len();
+            engine.process(&InputEvent {
+                seq: 1,
+                at_ms: 1,
+                kind: InputKind::Backspace,
+                modifiers: Modifiers::empty(),
+                is_repeat: false,
+                context: InputContext::default(),
+            });
+            assert_eq!(
+                engine.rendered().graphemes(true).count(),
+                before_graphemes - 1,
+                "wrong visible deletion for {method:?} raw `{raw}`"
+            );
+            assert!(
+                engine.raw_keys().len() < before_raw,
+                "Backspace must consume raw history for {method:?} raw `{raw}`"
+            );
+        }
+    }
+}
+
+#[test]
+fn typing_resumes_from_raw_history_after_visible_backspace() {
+    let mut engine = Engine::new(EngineConfig::default());
+    for (seq, ch) in "dduowngf".chars().enumerate() {
+        engine.process(&key_event(seq as u64, ch));
+    }
+    let backspace = InputEvent {
+        seq: 20,
+        at_ms: 200,
+        kind: InputKind::Backspace,
+        modifiers: Modifiers::empty(),
+        is_repeat: false,
+        context: InputContext::default(),
+    };
+    engine.process(&backspace);
+    engine.process(&backspace);
+    assert_eq!(engine.rendered(), "đườ");
+    assert_eq!(engine.raw_keys().iter().collect::<String>(), "dduowf");
+
+    engine.process(&key_event(21, 'n'));
+    assert_eq!(engine.rendered(), "đườn");
+    engine.process(&key_event(22, 'g'));
+    assert_eq!(engine.rendered(), "đường");
+}
+
+#[test]
+fn telex_backspace_removes_the_last_visible_composed_grapheme() {
+    assert_composed_grapheme_backspace(InputMethod::Telex, "keer");
+}
+
+#[test]
+fn vni_backspace_removes_the_last_visible_composed_grapheme() {
+    assert_composed_grapheme_backspace(InputMethod::Vni, "ke63");
 }
 
 fn key_event(seq: u64, ch: char) -> InputEvent {

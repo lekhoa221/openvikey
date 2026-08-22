@@ -1,5 +1,7 @@
 //! Milestone 2: vi-rs compatibility gate.
 
+use openvikey_core::engine::{Engine, EngineConfig};
+use openvikey_core::types::{InputContext, InputEvent, InputKind, Modifiers};
 use std::time::Instant;
 use vi::methods::{
     TELEX, VNI, transform_buffer, transform_buffer_incremental,
@@ -211,5 +213,50 @@ fn test_replay_backspace_performance_p95_on_max_composing_token() {
     assert!(
         p95.as_micros() < 5000,
         "P95 latency {p95:?} exceeds 5ms threshold"
+    );
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+#[test]
+fn test_visible_grapheme_backspace_performance_p95_on_max_composing_token() {
+    let tokens = [
+        "nghieengs",
+        "nghieeux",
+        "khuys",
+        "thuyeesn",
+        "dduowngf",
+        "keer",
+    ];
+    let backspace = InputEvent {
+        seq: 1,
+        at_ms: 1,
+        kind: InputKind::Backspace,
+        modifiers: Modifiers::empty(),
+        is_repeat: false,
+        context: InputContext::default(),
+    };
+    let mut durations = Vec::new();
+
+    for token in tokens {
+        for _ in 0..500 {
+            let mut engine = Engine::new(EngineConfig::default());
+            engine.restore_raw_keys(token);
+            let start = Instant::now();
+            engine.process(&backspace);
+            durations.push(start.elapsed());
+        }
+    }
+
+    durations.sort();
+    let p95_idx = (durations.len() as f64 * 0.95) as usize;
+    let p95 = durations[p95_idx];
+    println!("Visible-grapheme Backspace P95 latency: {p95:?}");
+    assert!(
+        p95.as_micros() < 5000,
+        "visible-grapheme Backspace P95 {p95:?} exceeds 5ms threshold"
     );
 }

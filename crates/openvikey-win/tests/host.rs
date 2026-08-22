@@ -78,6 +78,32 @@ fn ordinary_composition_backspace_deletes_one_visible_grapheme() {
 }
 
 #[test]
+fn composed_vowel_backspace_deletes_one_visible_grapheme() {
+    assert_eq!(openvikey_win::sync::grapheme_len("ể"), 1);
+    let mut host = TypingHost::new_telex_fixture();
+    for vk in [
+        0x48u16, 0x41, 0x59, 0x58, 0x20, // hãy + space
+        0x4B, 0x45, 0x45, 0x52, // kể
+    ] {
+        host.handle_key(key(vk), 1);
+    }
+    assert_eq!(host.session.composition_text(), "kể");
+
+    host.recorded.clear();
+    host.handle_key(key(0x08), 2);
+
+    assert_eq!(host.session.composition_text(), "k");
+    assert_eq!(
+        host.recorded,
+        vec![InjectCommand::Replace {
+            backspace_graphemes: 1,
+            text_nfc: String::new(),
+        }],
+        "the first Backspace must delete visible `ể`, not replace it with `ê`"
+    );
+}
+
+#[test]
 fn deleting_latest_space_preserves_an_exact_token_for_lazy_reopen() {
     let mut host = TypingHost::new_telex_fixture();
     for vk in [0x58u16, 0x49, 0x4E, 0x20] {

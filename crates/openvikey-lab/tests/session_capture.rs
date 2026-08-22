@@ -1552,7 +1552,8 @@ fn personal_pair_promotes_on_second_composition_session() {
     for round in 0..2 {
         let base = i64::from(round) * 40;
         type_keys(&mut session, "aaa", base);
-        backspace_n(&mut session, 3, base + 3);
+        assert_eq!(session.composition_text(), "aa");
+        backspace_n(&mut session, 2, base + 3);
         type_keys(&mut session, "bbb", base + 6);
         space_at(&mut session, base + 20);
     }
