@@ -5,6 +5,7 @@ pub mod classify;
 pub mod console;
 pub mod context_bridge;
 pub mod control;
+pub mod diag;
 pub mod focus;
 pub mod hook;
 pub mod host;

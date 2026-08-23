@@ -327,11 +327,15 @@ fn dispatch_locked_key(
     at_ms: i64,
     sync: Option<&FocusSync>,
 ) -> KeyDecision {
+    let diag_on = crate::diag::global().is_enabled();
+    let started = diag_on.then(std::time::Instant::now);
+    let hook_us = || crate::diag::elapsed_us(started);
     let (caps_lock, alt, meta) = sync.map_or((false, false, false), |sync| {
         (sync.caps_lock, sync.alt, sync.meta)
     });
     let (state, foreground) = sample_host_state(caps_lock, alt, meta);
     let decision = decide(&raw, &state);
+    let profile = profile_for_exe(&state.foreground_exe);
     if !needs_session(&decision) {
         if state.context_state == ContextState::Sensitive {
             crate::overlay::dismiss_overlay();
@@ -341,16 +345,34 @@ fn dispatch_locked_key(
         if cancels_reopen && let Ok(mut guard) = host.try_lock() {
             guard.cancel_reopen_anchor();
         }
+        if diag_on {
+            crate::diag::record_key(at_ms, &raw, &state, &decision, profile, hook_us(), false);
+        }
         return decision;
     }
     let Ok(mut guard) = host.try_lock() else {
-        return on_try_lock_fail(&decision);
+        let failed = on_try_lock_fail(&decision);
+        if diag_on {
+            crate::diag::record_key(at_ms, &raw, &state, &failed, profile, hook_us(), true);
+        }
+        return failed;
     };
     let context_projection = if let Some(rt) = RUNTIME.get() {
         let Some(projection) = foreground
             .as_ref()
             .and_then(|snapshot| rt.context.try_projection_for(&snapshot.identity))
         else {
+            if diag_on {
+                crate::diag::record_key(
+                    at_ms,
+                    &raw,
+                    &state,
+                    &KeyDecision::Pass,
+                    profile,
+                    hook_us(),
+                    false,
+                );
+            }
             return KeyDecision::Pass;
         };
         Some(projection)
@@ -1024,7 +1046,7 @@ impl TypingHost {
 
     fn reset_for_focus_change(&mut self, at_ms: i64) {
         let (cmds, sent) = commands_from_caret_break(&self.sent);
-        let _ = self.apply_commands(&cmds);
+        let _ = self.apply_commands(&cmds, at_ms);
         self.sent = sent;
         self.last_injected_token.clear();
         self.last_injected_hwnd = 0;
@@ -1037,6 +1059,12 @@ impl TypingHost {
         if self.context_projection == projection {
             return;
         }
+        crate::diag::record_context(
+            at_ms,
+            &self.foreground_exe,
+            projection_state(&self.context_projection),
+            projection_state(&projection),
+        );
         let entering_blocked = !projection_blocks_input(&self.context_projection)
             && projection_blocks_input(&projection);
         if entering_blocked {
@@ -1144,6 +1172,39 @@ impl TypingHost {
     /// [`KeyDecision::EatAndIgnore`] (same as try_lock fail) so we never eat a key that did not
     /// appear on screen.
     pub fn handle_key(&mut self, raw: RawKey, at_ms: i64) -> KeyDecision {
+        let diag_on = crate::diag::global().is_enabled();
+        let started = diag_on.then(std::time::Instant::now);
+        let decision = self.handle_key_impl(raw, at_ms);
+        if diag_on {
+            crate::diag::record_key(
+                at_ms,
+                &raw,
+                &self.diag_host_state(),
+                &decision,
+                self.profile,
+                crate::diag::elapsed_us(started),
+                false,
+            );
+        }
+        decision
+    }
+
+    fn diag_host_state(&self) -> HostState {
+        HostState {
+            mode: self.mode,
+            foreground_exe: self.foreground_exe.clone(),
+            is_sending: self.sending.load(Ordering::SeqCst),
+            allow_terminal: self.allow_terminal,
+            app_transform: app_policy_for(&self.foreground_exe, &self.app_policies)
+                .map_or(AppTransformPolicy::Default, |policy| policy.transform),
+            caps_lock: self.caps_lock,
+            alt: self.alt,
+            meta: self.meta,
+            context_state: projection_state(&self.context_projection),
+        }
+    }
+
+    fn handle_key_impl(&mut self, raw: RawKey, at_ms: i64) -> KeyDecision {
         let state = HostState {
             mode: self.mode,
             foreground_exe: self.foreground_exe.clone(),
@@ -1221,7 +1282,7 @@ impl TypingHost {
         };
         let (cmds, sent, token) =
             commands_from_accept(&visual, &self.sent, &self.last_injected_token);
-        if self.apply_commands(&cmds).is_err() {
+        if self.apply_commands(&cmds, at_ms).is_err() {
             self.session.restore_inject_checkpoint(checkpoint);
             return;
         }
@@ -1243,7 +1304,7 @@ impl TypingHost {
             return;
         };
         let cmds = commands_from_undo(&visual, &self.last_injected_token);
-        if self.apply_commands(&cmds).is_err() {
+        if self.apply_commands(&cmds, at_ms).is_err() {
             self.session.restore_inject_checkpoint(checkpoint);
             return;
         }
@@ -1278,7 +1339,7 @@ impl TypingHost {
                 backspace_graphemes: grapheme_len(&last_token),
                 text_nfc: obs.snapshot.rendered.clone(),
             }];
-            if let Err(error) = self.apply_commands(&cmds) {
+            if let Err(error) = self.apply_commands(&cmds, at_ms) {
                 self.session.restore_inject_checkpoint(checkpoint);
                 self.session.cancel_pending_reopen();
                 return Err(error);
@@ -1296,7 +1357,7 @@ impl TypingHost {
                 backspace_graphemes: grapheme_len(&last_token).saturating_add(1),
                 text_nfc: obs.snapshot.rendered.clone(),
             }];
-            if let Err(error) = self.apply_commands(&cmds) {
+            if let Err(error) = self.apply_commands(&cmds, at_ms) {
                 self.session.restore_inject_checkpoint(checkpoint);
                 return Err(error);
             }
@@ -1309,7 +1370,7 @@ impl TypingHost {
             return Ok(());
         }
         let (cmds, sent) = commands_from_typed(&obs, &self.sent);
-        if let Err(error) = self.apply_commands(&cmds) {
+        if let Err(error) = self.apply_commands(&cmds, at_ms) {
             self.session.restore_inject_checkpoint(checkpoint);
             return Err(error);
         }
@@ -1377,7 +1438,7 @@ impl TypingHost {
 
     fn apply_caret_break(&mut self, at_ms: i64) {
         let (cmds, sent) = commands_from_caret_break(&self.sent);
-        let _ = self.apply_commands(&cmds);
+        let _ = self.apply_commands(&cmds, at_ms);
         self.sent = sent;
         self.inject_caret_break_without_persistence(at_ms);
         self.cancel_reopen_anchor();
@@ -1402,16 +1463,53 @@ impl TypingHost {
         self.session.restore_persistent_state(&checkpoint);
     }
 
-    fn apply_commands(&mut self, cmds: &[InjectCommand]) -> Result<(), InjectError> {
-        if let Some(injector) = self.injector.as_mut() {
-            injector.apply_commands(cmds, self.profile)?;
+    fn apply_commands(&mut self, cmds: &[InjectCommand], at_ms: i64) -> Result<(), InjectError> {
+        let diag_on = crate::diag::global().is_enabled();
+        let started = diag_on.then(std::time::Instant::now);
+        let (backspaces, utf16_units) = inject_command_counts(cmds);
+        let result = if let Some(injector) = self.injector.as_mut() {
+            injector.apply_commands(cmds, self.profile)
+        } else {
+            Ok(())
+        };
+        if diag_on {
+            crate::diag::record_inject(
+                at_ms,
+                &self.foreground_exe,
+                self.profile,
+                backspaces,
+                utf16_units,
+                crate::diag::elapsed_us(started),
+                matches!(result, Err(InjectError::Partial { .. })),
+            );
         }
+        result?;
         if !cmds.is_empty() {
             self.stack_trace.push("inject".into());
         }
         self.recorded.extend(cmds.iter().cloned());
         Ok(())
     }
+}
+
+fn inject_command_counts(cmds: &[InjectCommand]) -> (usize, usize) {
+    let mut backspaces = 0usize;
+    let mut utf16_units = 0usize;
+    for cmd in cmds {
+        match cmd {
+            InjectCommand::Replace {
+                backspace_graphemes,
+                text_nfc,
+            } => {
+                backspaces = backspaces.saturating_add(*backspace_graphemes);
+                utf16_units = utf16_units.saturating_add(text_nfc.encode_utf16().count());
+            }
+            InjectCommand::AppendDelimiter { delimiter } => {
+                utf16_units = utf16_units.saturating_add(delimiter.len_utf16());
+            }
+        }
+    }
+    (backspaces, utf16_units)
 }
 
 fn projection_state(projection: &ContextProjection) -> ContextState {

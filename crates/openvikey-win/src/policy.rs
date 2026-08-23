@@ -336,7 +336,8 @@ pub fn allows_learning(exe: &str) -> bool {
     !is_terminal_exe(exe) && !is_denylisted(exe)
 }
 
-fn requires_terminal_opt_in(exe: &str) -> bool {
+#[must_use]
+pub(crate) fn requires_terminal_opt_in(exe: &str) -> bool {
     let name = executable_name(exe);
     is_terminal_exe(exe)
         || AMBIGUOUS_TERMINAL_HOSTS

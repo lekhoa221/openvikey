@@ -2,7 +2,7 @@
 
 #[test]
 fn no_println_on_hot_path() {
-    for path in ["src/hook.rs", "src/inject.rs", "src/host.rs"] {
+    for path in ["src/hook.rs", "src/inject.rs", "src/host.rs", "src/diag.rs"] {
         let src = std::fs::read_to_string(path).unwrap();
         assert!(!src.contains("println!"), "{path}");
         assert!(!src.contains("eprintln!"), "{path}");

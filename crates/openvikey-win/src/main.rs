@@ -63,6 +63,9 @@ struct Cli {
     capture: Option<PathBuf>,
     #[arg(long, default_value_t = 0)]
     electron_gap_ms: u64,
+    /// Write typing diagnostics to %LOCALAPPDATA%\\OpenViKey\\diag.jsonl (no keystrokes).
+    #[arg(long)]
+    diag: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -114,6 +117,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     startup_trace("cli");
     // Reserved for Electron SendInput gap (inject path).
     let _ = cli.electron_gap_ms;
+    if cli.diag || openvikey_win::diag::env_requests_diag() {
+        openvikey_win::diag::global().set_enabled(true);
+    }
 
     let lexicon_bytes = if let Some(path) = &cli.lexicon {
         std::fs::read(path)?
@@ -261,6 +267,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         settings.start_with_windows = openvikey_win::startup::enabled();
     }
     save_settings(&settings_path, &settings)?;
+    if openvikey_win::diag::global().is_enabled() {
+        let path = openvikey_win::diag::default_diag_path(local_app_data.as_deref());
+        let _ = openvikey_win::diag::global().flush_to(&path);
+    }
     #[cfg(windows)]
     drop(console_control);
     drop(pair_saver);
