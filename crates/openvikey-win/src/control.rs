@@ -7,11 +7,11 @@ use openvikey_core::model::ModelInspectionRow;
 use openvikey_core::types::{CandidateSource, InputMethod, TonePlacement};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, COLOR_WINDOW, CreateFontW, CreateSolidBrush,
+    CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, COLOR_WINDOW, CreateFontW, CreatePen, CreateSolidBrush,
     DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DeleteObject,
     DrawFocusRect, DrawTextW, FF_DONTCARE, FW_NORMAL, FillRect, HBRUSH, HDC, HFONT,
-    OUT_DEFAULT_PRECIS, RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW, RedrawWindow,
-    SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
+    OUT_DEFAULT_PRECIS, PS_SOLID, RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW,
+    RedrawWindow, RoundRect, SelectObject, SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
 };
 use windows::Win32::System::SystemServices::SS_OWNERDRAW;
 use windows::Win32::UI::Controls::{
@@ -20,9 +20,9 @@ use windows::Win32::UI::Controls::{
     LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_TEXT, LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS,
     LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE,
     LVM_SETITEMSTATE, LVM_SETITEMW, LVN_ITEMCHANGED, LVNI_SELECTED, LVS_EX_DOUBLEBUFFER,
-    LVS_EX_FULLROWSELECT, LVS_REPORT, LVS_SINGLESEL, NMHDR, ODS_FOCUS, ODS_SELECTED, TCIF_IMAGE,
-    TCIF_TEXT, TCITEMW, TCM_GETCURSEL, TCM_INSERTITEMW, TCM_SETCURSEL, TCM_SETIMAGELIST,
-    TCN_SELCHANGE, TCS_HOTTRACK, WC_LISTVIEWW, WC_TABCONTROLW,
+    LVS_EX_FULLROWSELECT, LVS_REPORT, LVS_SINGLESEL, NMHDR, ODS_DISABLED, ODS_FOCUS, ODS_HOTLIGHT,
+    ODS_SELECTED, TCIF_IMAGE, TCIF_TEXT, TCITEMW, TCM_GETCURSEL, TCM_INSERTITEMW, TCM_SETCURSEL,
+    TCM_SETIMAGELIST, TCN_SELCHANGE, TCS_HOTTRACK, WC_LISTVIEWW, WC_TABCONTROLW,
 };
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
@@ -111,6 +111,8 @@ const IDC_SIMPLE_ADVANCED: usize = 907;
 const IDC_SIMPLE_CLOSE: usize = 908;
 const IDC_SIMPLE_VIET: usize = 909;
 const IDC_SIMPLE_ENGLISH: usize = 910;
+const IDC_SIMPLE_GROUP_CONTROLS: usize = 911;
+const IDC_SIMPLE_GROUP_SYSTEM: usize = 912;
 
 const WM_MODE_CHANGED: u32 = WM_APP + 52;
 
@@ -130,6 +132,11 @@ unsafe fn send_msg(hwnd: HWND, msg: u32, wparam: usize, lparam: isize) -> LRESUL
 #[inline]
 const fn ws(base: WINDOW_STYLE, extra: u32) -> WINDOW_STYLE {
     WINDOW_STYLE(base.0 | extra)
+}
+
+#[inline]
+fn rgb(red: u8, green: u8, blue: u8) -> COLORREF {
+    COLORREF(u32::from(red) | (u32::from(green) << 8) | (u32::from(blue) << 16))
 }
 
 #[inline]
@@ -218,6 +225,8 @@ struct UiControls {
     chk_suggestions: HWND,
     chk_autostart: HWND,
     chk_terminal: HWND,
+    simple_group_controls: HWND,
+    simple_group_system: HWND,
     simple_status: HWND,
     simple_method: HWND,
     simple_learning: HWND,
@@ -1739,16 +1748,17 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
     // Compact mode follows the supplied native-window sketch. Layout comes
     // first; native control styling remains intentionally unchanged.
     let mut simple_controls = Vec::new();
-    simple_controls.push(make_control(
-        w!("BUTTON"),
-        " Điều khiển ",
-        ws(WS_CHILD | WS_VISIBLE, BS_GROUPBOX as u32),
-        None,
+    let simple_group_controls = make_control(
+        w!("STATIC"),
+        "",
+        WS_CHILD | WS_VISIBLE | WINDOW_STYLE(SS_OWNERDRAW.0),
+        Some(IDC_SIMPLE_GROUP_CONTROLS),
         16,
         10,
-        528,
+        512,
         108,
-    )?);
+    )?;
+    simple_controls.push(simple_group_controls);
     let simple_radio_viet = make_control(
         w!("BUTTON"),
         "Tiếng Việt (V)",
@@ -1821,7 +1831,7 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
         Some(IDC_SIMPLE_ENCODING),
         362,
         72,
-        165,
+        150,
         120,
     )?;
     unsafe {
@@ -1831,16 +1841,17 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
     }
     simple_controls.push(simple_encoding);
 
-    simple_controls.push(make_control(
-        w!("BUTTON"),
-        " Hệ thống ",
-        ws(WS_CHILD | WS_VISIBLE, BS_GROUPBOX as u32),
-        None,
+    let simple_group_system = make_control(
+        w!("STATIC"),
+        "",
+        WS_CHILD | WS_VISIBLE | WINDOW_STYLE(SS_OWNERDRAW.0),
+        Some(IDC_SIMPLE_GROUP_SYSTEM),
         16,
         126,
-        528,
+        512,
         58,
-    )?);
+    )?;
+    simple_controls.push(simple_group_system);
     let simple_learning = make_control(
         w!("BUTTON"),
         "Tự học cá nhân",
@@ -1857,9 +1868,9 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
         "Hiển thị gợi ý",
         ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_AUTOCHECKBOX as u32),
         Some(IDC_SIMPLE_SUGGESTIONS),
-        194,
+        192,
         147,
-        145,
+        144,
         24,
     )?;
     simple_controls.push(simple_suggestions);
@@ -1868,9 +1879,9 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
         "Hướng dẫn phím tắt",
         ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_AUTOCHECKBOX as u32),
         Some(IDC_SIMPLE_GUIDE),
-        356,
+        352,
         147,
-        172,
+        160,
         24,
     )?;
     simple_controls.push(simple_hotkey_hints);
@@ -1888,7 +1899,7 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
     simple_controls.push(make_control(
         w!("BUTTON"),
         "Kết thúc",
-        ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_PUSHBUTTON as u32),
+        ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_OWNERDRAW as u32),
         Some(IDC_SIMPLE_EXIT),
         20,
         216,
@@ -1898,9 +1909,9 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
     simple_controls.push(make_control(
         w!("BUTTON"),
         "Nâng cao",
-        ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_DEFPUSHBUTTON as u32),
+        ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_OWNERDRAW as u32),
         Some(IDC_SIMPLE_ADVANCED),
-        195,
+        187,
         216,
         170,
         34,
@@ -1908,9 +1919,9 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
     simple_controls.push(make_control(
         w!("BUTTON"),
         "Đóng cửa sổ",
-        ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_PUSHBUTTON as u32),
+        ws(WS_CHILD | WS_VISIBLE | WS_TABSTOP, BS_OWNERDRAW as u32),
         Some(IDC_SIMPLE_CLOSE),
-        410,
+        394,
         216,
         130,
         34,
@@ -2024,6 +2035,8 @@ fn build_child_controls(hwnd: HWND, dpi: u32) -> Result<()> {
         chk_suggestions,
         chk_autostart,
         chk_terminal,
+        simple_group_controls,
+        simple_group_system,
         simple_status,
         simple_method,
         simple_learning,
@@ -3281,6 +3294,139 @@ fn apply_simple_hotkey_hints() {
     populate_simple_controls();
 }
 
+fn draw_simple_group(item: &DRAWITEMSTRUCT, controls: &UiControls) -> bool {
+    let title = if item.hwndItem == controls.simple_group_controls {
+        "Điều khiển"
+    } else if item.hwndItem == controls.simple_group_system {
+        "Hệ thống"
+    } else {
+        return false;
+    };
+    let border_pen = unsafe { CreatePen(PS_SOLID, 1, rgb(190, 198, 208)) };
+    let old_pen = unsafe { SelectObject(item.hDC, border_pen.into()) };
+    let old_brush = unsafe { SelectObject(item.hDC, controls.window_brush.into()) };
+    let old_font = unsafe { SelectObject(item.hDC, controls.current_font.into()) };
+    let rect = item.rcItem;
+    unsafe {
+        let _ = FillRect(item.hDC, &raw const rect, controls.window_brush);
+        let _ = RoundRect(
+            item.hDC,
+            rect.left,
+            rect.top + 8,
+            rect.right - 1,
+            rect.bottom - 1,
+            10,
+            10,
+        );
+    }
+    let mut title_rect = windows::Win32::Foundation::RECT {
+        left: rect.left + 12,
+        top: rect.top,
+        right: rect.left + if title == "Điều khiển" { 91 } else { 78 },
+        bottom: rect.top + 20,
+    };
+    unsafe {
+        let _ = FillRect(item.hDC, &raw const title_rect, controls.window_brush);
+        let _ = SetBkMode(item.hDC, TRANSPARENT);
+        let _ = SetTextColor(item.hDC, rgb(42, 48, 57));
+        let mut text: Vec<u16> = title.encode_utf16().collect();
+        let _ = DrawTextW(
+            item.hDC,
+            &mut text,
+            &raw mut title_rect,
+            DT_SINGLELINE | DT_VCENTER,
+        );
+        let _ = SelectObject(item.hDC, old_font);
+        let _ = SelectObject(item.hDC, old_brush);
+        let _ = SelectObject(item.hDC, old_pen);
+        let _ = DeleteObject(border_pen.into());
+    }
+    true
+}
+
+fn draw_simple_button(item: &DRAWITEMSTRUCT, controls: &UiControls) -> bool {
+    let id = usize::try_from(item.CtlID).unwrap_or(0);
+    let (text, normal_background, normal_border, normal_text) = match id {
+        IDC_SIMPLE_EXIT => (
+            "Kết thúc",
+            rgb(255, 249, 249),
+            rgb(218, 150, 150),
+            rgb(139, 35, 35),
+        ),
+        IDC_SIMPLE_ADVANCED => (
+            "Nâng cao",
+            rgb(239, 246, 255),
+            rgb(105, 151, 211),
+            rgb(25, 78, 145),
+        ),
+        IDC_SIMPLE_CLOSE => (
+            "Đóng cửa sổ",
+            rgb(248, 250, 252),
+            rgb(174, 184, 196),
+            rgb(42, 48, 57),
+        ),
+        _ => return false,
+    };
+    let selected = item.itemState.0 & ODS_SELECTED.0 != 0;
+    let hot = item.itemState.0 & ODS_HOTLIGHT.0 != 0;
+    let focused = item.itemState.0 & ODS_FOCUS.0 != 0;
+    let disabled = item.itemState.0 & ODS_DISABLED.0 != 0;
+    let background = if disabled {
+        rgb(244, 244, 244)
+    } else if selected {
+        rgb(225, 232, 241)
+    } else if hot {
+        rgb(246, 249, 253)
+    } else {
+        normal_background
+    };
+    let border = if focused {
+        rgb(45, 108, 190)
+    } else if disabled {
+        rgb(207, 211, 217)
+    } else {
+        normal_border
+    };
+    let foreground = if disabled {
+        rgb(145, 151, 160)
+    } else {
+        normal_text
+    };
+    let brush = unsafe { CreateSolidBrush(background) };
+    let pen = unsafe { CreatePen(PS_SOLID, if focused { 2 } else { 1 }, border) };
+    let old_brush = unsafe { SelectObject(item.hDC, brush.into()) };
+    let old_pen = unsafe { SelectObject(item.hDC, pen.into()) };
+    let old_font = unsafe { SelectObject(item.hDC, controls.current_font.into()) };
+    let mut rect = item.rcItem;
+    unsafe {
+        let _ = FillRect(item.hDC, &raw const rect, controls.window_brush);
+        let _ = RoundRect(
+            item.hDC,
+            rect.left,
+            rect.top,
+            rect.right - 1,
+            rect.bottom - 1,
+            12,
+            12,
+        );
+        let _ = SetBkMode(item.hDC, TRANSPARENT);
+        let _ = SetTextColor(item.hDC, foreground);
+        let mut label: Vec<u16> = text.encode_utf16().collect();
+        let _ = DrawTextW(
+            item.hDC,
+            &mut label,
+            &raw mut rect,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+        );
+        let _ = SelectObject(item.hDC, old_font);
+        let _ = SelectObject(item.hDC, old_pen);
+        let _ = SelectObject(item.hDC, old_brush);
+        let _ = DeleteObject(pen.into());
+        let _ = DeleteObject(brush.into());
+    }
+    true
+}
+
 #[allow(clippy::too_many_lines)]
 unsafe extern "system" fn settings_wnd_proc(
     hwnd: HWND,
@@ -3369,15 +3515,19 @@ unsafe extern "system" fn settings_wnd_proc(
                 let _ = crate::chart_view::handle_draw_item(item, snapshot.as_ref());
                 return LRESULT(1);
             }
-            if usize::try_from(item.CtlID).unwrap_or(0) != IDC_BTN_APPLY {
-                return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
-            }
             let Ok(guard) = CONTROLS.try_lock() else {
                 return LRESULT(0);
             };
             let Some(controls) = guard.as_ref() else {
                 return LRESULT(0);
             };
+            if draw_simple_group(item, controls) || draw_simple_button(item, controls) {
+                return LRESULT(1);
+            }
+            if usize::try_from(item.CtlID).unwrap_or(0) != IDC_BTN_APPLY {
+                drop(guard);
+                return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+            }
             let selected = item.itemState.0 & ODS_SELECTED.0 != 0;
             let brush = if selected {
                 controls.accent_pressed_brush

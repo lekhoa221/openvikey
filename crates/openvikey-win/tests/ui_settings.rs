@@ -203,11 +203,13 @@ fn settings_window_lifecycle_and_tray_interactions() {
     };
     use openvikey_win::persist::HostShutdown;
     use openvikey_win::tray::{WM_OPEN_SETTINGS, WM_TRAYICON, install_host_ui};
-    use windows::Win32::Foundation::{LPARAM, RECT, WPARAM};
+    use windows::Win32::Foundation::{LPARAM, POINT, RECT, WPARAM};
+    use windows::Win32::Graphics::Gdi::ClientToScreen;
+    use windows::Win32::System::SystemServices::SS_OWNERDRAW;
     use windows::Win32::UI::WindowsAndMessaging::{
-        BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, GWL_STYLE, GetDlgItem, GetWindowLongW, GetWindowRect,
-        GetWindowTextW, ICON_SMALL, IsWindow, IsWindowVisible, SendMessageW, WM_CLOSE, WM_GETICON,
-        WM_LBUTTONDBLCLK, WS_CLIPCHILDREN,
+        BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, BS_OWNERDRAW, GWL_STYLE, GetClientRect, GetDlgItem,
+        GetWindowLongW, GetWindowRect, GetWindowTextW, ICON_SMALL, IsWindow, IsWindowVisible,
+        SendMessageW, WM_CLOSE, WM_GETICON, WM_LBUTTONDBLCLK, WS_CLIPCHILDREN,
     };
 
     let shutdown = Arc::new(HostShutdown::new());
@@ -223,8 +225,13 @@ fn settings_window_lifecycle_and_tray_interactions() {
     show_simple_window();
     let simple_method = unsafe { GetDlgItem(Some(hwnd), 901) }.unwrap();
     let simple_guide = unsafe { GetDlgItem(Some(hwnd), 905) }.unwrap();
+    let simple_exit = unsafe { GetDlgItem(Some(hwnd), 906) }.unwrap();
+    let simple_advanced = unsafe { GetDlgItem(Some(hwnd), 907) }.unwrap();
+    let simple_close = unsafe { GetDlgItem(Some(hwnd), 908) }.unwrap();
     let simple_viet = unsafe { GetDlgItem(Some(hwnd), 909) }.unwrap();
     let simple_english = unsafe { GetDlgItem(Some(hwnd), 910) }.unwrap();
+    let simple_control_group = unsafe { GetDlgItem(Some(hwnd), 911) }.unwrap();
+    let simple_system_group = unsafe { GetDlgItem(Some(hwnd), 912) }.unwrap();
     let advanced_method = unsafe { GetDlgItem(Some(hwnd), 203) }.unwrap();
     assert!(unsafe { IsWindowVisible(simple_method) }.as_bool());
     assert!(unsafe { IsWindowVisible(simple_viet) }.as_bool());
@@ -243,6 +250,25 @@ fn settings_window_lifecycle_and_tray_interactions() {
     assert_eq!(viet_style & 0x0F, BS_AUTORADIOBUTTON as u32);
     assert_eq!(english_style & 0x0F, BS_AUTORADIOBUTTON as u32);
     assert_eq!(guide_style & 0x0F, BS_AUTOCHECKBOX as u32);
+    for button in [simple_exit, simple_advanced, simple_close] {
+        let style = unsafe { GetWindowLongW(button, GWL_STYLE) }.cast_unsigned();
+        assert_eq!(style & 0x0F, BS_OWNERDRAW as u32);
+    }
+    for group in [simple_control_group, simple_system_group] {
+        let style = unsafe { GetWindowLongW(group, GWL_STYLE) }.cast_unsigned();
+        assert_eq!(style & 0x1F, SS_OWNERDRAW.0);
+        let mut group_rect = RECT::default();
+        let mut client_rect = RECT::default();
+        let mut client_origin = POINT::default();
+        unsafe {
+            GetWindowRect(group, &raw mut group_rect).unwrap();
+            GetClientRect(hwnd, &raw mut client_rect).unwrap();
+            ClientToScreen(hwnd, &raw mut client_origin).unwrap();
+        }
+        let left_margin = group_rect.left - client_origin.x;
+        let right_margin = client_rect.right - (group_rect.right - client_origin.x);
+        assert!((left_margin - right_margin).abs() <= 1);
+    }
     let title_icon = unsafe {
         SendMessageW(
             hwnd,
